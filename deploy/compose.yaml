@@ -296,6 +296,12 @@ services:
       CLUSTERING_ENABLED: "false"
     ports:
       - "${BIND_ADDRESS}:${LAMINAR_FRONTEND_PORT}:5667"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5667/"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
     restart: unless-stopped
 
   laminar-bootstrap:
