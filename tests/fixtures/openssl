@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $1 == rand && $2 == -hex ]]
+case "$3" in
+  16) printf '0123456789abcdef0%s23456789abcdef\n' "${UUID_TEST_BYTE:?}" ;;
+  32) printf '%064d\n' 0 ;;
+  *) exit 1 ;;
+esac

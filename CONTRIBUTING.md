@@ -37,6 +37,7 @@ may proceed directly when they preserve the accepted contract.
 ```bash
 bash -n deploy/init.sh deploy/laminar/bootstrap-project-key.sh tests/compose-invariants.sh
 tests/compose-invariants.sh
+bash tests/bootstrap.sh
 ```
 
 With Docker Compose available:

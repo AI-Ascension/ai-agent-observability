@@ -16,6 +16,16 @@ if [[ ${#LAMINAR_PROJECT_API_KEY} -ne 64 ]]; then
   exit 64
 fi
 
+# Reject persisted malformed identities before waiting for or changing the DB.
+# Never regenerate them here: existing identities belong to the deployment.
+uuid_pattern='^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$'
+for identity_name in LAMINAR_PROJECT_ID LAMINAR_WORKSPACE_ID; do
+  if [[ ! ${!identity_name} =~ $uuid_pattern ]]; then
+    printf '%s must be a canonical UUID; correct that identity in deploy/.env without replacing other values.\n' "$identity_name" >&2
+    exit 64
+  fi
+done
+
 database_args=(
   --host=laminar-postgres
   --port=5432

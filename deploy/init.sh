@@ -9,7 +9,7 @@ network_name="ai-agent-observability-net"
 new_uuid() {
   local value
   value="$(openssl rand -hex 16)"
-  printf '%s-%s-4%s-%s%s-%s\n' \
+  printf '%s-%s-4%s-%x%s-%s\n' \
     "${value:0:8}" \
     "${value:8:4}" \
     "${value:13:3}" \

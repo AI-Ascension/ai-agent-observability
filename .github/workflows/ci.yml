@@ -28,8 +28,11 @@ jobs:
 
       - name: Check shell syntax and style
         run: |
-          bash -n deploy/init.sh deploy/laminar/bootstrap-project-key.sh tests/compose-invariants.sh
-          shellcheck --severity=warning deploy/init.sh deploy/laminar/bootstrap-project-key.sh tests/compose-invariants.sh
+          bash -n deploy/init.sh deploy/laminar/bootstrap-project-key.sh tests/compose-invariants.sh tests/bootstrap.sh tests/fixtures/*
+          shellcheck --severity=warning deploy/init.sh deploy/laminar/bootstrap-project-key.sh tests/compose-invariants.sh tests/bootstrap.sh tests/fixtures/*
+
+      - name: Test bootstrap without a container runtime
+        run: bash tests/bootstrap.sh
 
       - name: Check text and secret hygiene
         run: |

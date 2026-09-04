@@ -4,6 +4,14 @@ This directory is self-contained after checkout. Run `./init.sh` once on a
 host with Docker Compose or Podman. The script generates `.env` and starts the
 full stack; `.env` is ignored by Git and must remain mode `0600`.
 
+The bootstrap rejects malformed project/workspace UUIDs without changing them.
+Earlier initializers could generate a five-character UUID variant group starting
+with `10` or `11`. For a deployment affected by that defect, preserve the `.env`
+and inspect its database identity before correcting only the affected ID: replace
+that group's `10` prefix with `a`, or `11` with `b`. Do not regenerate the entire
+environment, rotate secrets, or change an already valid database identity.
+This repair requires an operator; rerunning initialization preserves the file.
+
 ## Runtime choices
 
 - `COMPOSE_ENGINE=docker` uses Docker Compose. On a rootful Podman host, set
