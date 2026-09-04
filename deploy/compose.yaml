@@ -1,0 +1,360 @@
+name: ai-agent-observability
+
+services:
+  mlflow-postgres:
+    image: docker.io/library/postgres:15
+    container_name: ai-agent-observability-mlflow-postgres
+    pull_policy: missing
+    environment:
+      POSTGRES_USER: ${MLFLOW_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${MLFLOW_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${MLFLOW_POSTGRES_DB}
+    volumes:
+      - mlflow-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  mlflow-storage:
+    image: docker.io/rustfs/rustfs:1.0.0-alpha.83
+    container_name: ai-agent-observability-mlflow-storage
+    pull_policy: missing
+    environment:
+      RUSTFS_ADDRESS: :9000
+      RUSTFS_SERVER_DOMAINS: mlflow-storage:9000
+      RUSTFS_REGION: ${AWS_DEFAULT_REGION}
+      RUSTFS_ACCESS_KEY: ${AWS_ACCESS_KEY_ID}
+      RUSTFS_SECRET_KEY: ${AWS_SECRET_ACCESS_KEY}
+      RUSTFS_CONSOLE_ENABLE: ${RUSTFS_CONSOLE_ENABLE}
+    ports:
+      - "${BIND_ADDRESS}:${RUSTFS_API_PORT}:9000"
+      - "${BIND_ADDRESS}:${RUSTFS_CONSOLE_PORT}:9001"
+    volumes:
+      - mlflow-storage-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/health | grep -q 'status.*ok'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+
+  mlflow-create-bucket:
+    image: docker.io/amazon/aws-cli:2.33.25
+    container_name: ai-agent-observability-mlflow-create-bucket
+    pull_policy: missing
+    depends_on:
+      mlflow-storage:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        if aws --endpoint-url "$${MLFLOW_S3_ENDPOINT_URL}" s3api head-bucket --bucket "$${MLFLOW_S3_BUCKET}" >/dev/null 2>&1; then
+          echo 'MLflow artifact bucket already exists.'
+        else
+          aws --endpoint-url "$${MLFLOW_S3_ENDPOINT_URL}" s3api create-bucket --bucket "$${MLFLOW_S3_BUCKET}" --region "$${AWS_DEFAULT_REGION}" >/dev/null
+          echo 'MLflow artifact bucket created.'
+        fi
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
+      AWS_S3_ADDRESSING_STYLE: path
+      MLFLOW_S3_ENDPOINT_URL: http://mlflow-storage:9000
+      MLFLOW_S3_BUCKET: ${MLFLOW_S3_BUCKET}
+    restart: "no"
+
+  mlflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.mlflow
+      args:
+        MLFLOW_VERSION: ${MLFLOW_VERSION}
+    image: localhost/ai-ascension/ai-agent-observability/mlflow:${MLFLOW_VERSION}
+    container_name: ai-agent-observability-mlflow
+    depends_on:
+      mlflow-postgres:
+        condition: service_healthy
+      mlflow-storage:
+        condition: service_healthy
+      mlflow-create-bucket:
+        condition: service_completed_successfully
+    environment:
+      MLFLOW_BACKEND_STORE_URI: ${MLFLOW_BACKEND_STORE_URI}
+      MLFLOW_S3_ENDPOINT_URL: http://mlflow-storage:9000
+      MLFLOW_S3_IGNORE_TLS: "true"
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
+      AWS_S3_ADDRESSING_STYLE: path
+    command:
+      - server
+      - --backend-store-uri
+      - ${MLFLOW_BACKEND_STORE_URI}
+      - --artifacts-destination
+      - s3://${MLFLOW_S3_BUCKET}
+      - --serve-artifacts
+      - --host
+      - 0.0.0.0
+      - --port
+      - "5000"
+    ports:
+      - "${BIND_ADDRESS}:${MLFLOW_PORT}:5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    restart: unless-stopped
+
+  laminar-rabbitmq:
+    image: docker.io/library/rabbitmq:4.3.5-management
+    container_name: ai-agent-observability-laminar-rabbitmq
+    pull_policy: missing
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+    restart: unless-stopped
+
+  laminar-clickhouse:
+    image: docker.io/clickhouse/clickhouse-server:26.5
+    container_name: ai-agent-observability-laminar-clickhouse
+    pull_policy: missing
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    volumes:
+      - laminar-clickhouse-data:/var/lib/clickhouse
+      - laminar-clickhouse-logs:/var/log/clickhouse-server
+      - ./laminar/clickhouse-profiles-config.xml:/etc/clickhouse-server/users.d/ai-agent-observability.xml:ro
+      - ./laminar/clickhouse-server-config.xml:/etc/clickhouse-server/config.d/ai-agent-observability.xml:ro
+    cap_add:
+      - SYS_NICE
+      - IPC_LOCK
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --host 127.0.0.1 --user \"$${CLICKHOUSE_USER}\" --password \"$${CLICKHOUSE_PASSWORD}\" --query 'SELECT 1' >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 20s
+    restart: unless-stopped
+
+  laminar-postgres:
+    image: docker.io/library/postgres:16
+    container_name: ai-agent-observability-laminar-postgres
+    pull_policy: missing
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - laminar-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  laminar-quickwit:
+    image: docker.io/quickwit/quickwit:v0.8.2
+    container_name: ai-agent-observability-laminar-quickwit
+    pull_policy: missing
+    command: ["run"]
+    environment:
+      QW_DATA_DIR: /quickwit/qwdata
+    ports:
+      - "${BIND_ADDRESS}:${QUICKWIT_HTTP_PORT}:7280"
+      - "${BIND_ADDRESS}:${QUICKWIT_OTLP_PORT}:7281"
+    volumes:
+      - laminar-quickwit-data:/quickwit/qwdata
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:7280/health/livez"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 20s
+    restart: unless-stopped
+
+  laminar-app-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.laminar
+      target: app-server
+      args:
+        LAMINAR_VERSION: ${LAMINAR_VERSION}
+    image: localhost/ai-ascension/ai-agent-observability/laminar-app-server:${LAMINAR_VERSION}
+    container_name: ai-agent-observability-laminar-app-server
+    depends_on:
+      laminar-postgres:
+        condition: service_healthy
+      laminar-rabbitmq:
+        condition: service_healthy
+      laminar-clickhouse:
+        condition: service_healthy
+      laminar-quickwit:
+        condition: service_healthy
+    environment:
+      PORT: 8000
+      GRPC_PORT: 8001
+      CONSUMER_PORT: 8002
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@laminar-postgres:5432/${POSTGRES_DB}
+      RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@laminar-rabbitmq:5672/%2f
+      CLICKHOUSE_URL: http://laminar-clickhouse:8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_RO_USER: ${CLICKHOUSE_RO_USER}
+      CLICKHOUSE_RO_PASSWORD: ${CLICKHOUSE_RO_PASSWORD}
+      SHARED_SECRET_TOKEN: ${SHARED_SECRET_TOKEN}
+      ENVIRONMENT: FULL
+      AEAD_SECRET_KEY: ${AEAD_SECRET_KEY}
+      SLACK_ENCRYPTION_KEY: ${SLACK_ENCRYPTION_KEY}
+      QUICKWIT_SEARCH_URL: http://laminar-quickwit:7280
+      QUICKWIT_INGEST_URL: http://laminar-quickwit:7281
+      QUICKWIT_SPANS_INDEX_ID: spans_v2
+      LAMINAR_TELEMETRY_DISABLED: ${LAMINAR_TELEMETRY_DISABLED}
+      RUST_LOG: ${RUST_LOG}
+    ports:
+      - "${BIND_ADDRESS}:${LAMINAR_HTTP_PORT}:8000"
+      - "${BIND_ADDRESS}:${LAMINAR_GRPC_PORT}:8001"
+      - "${BIND_ADDRESS}:${LAMINAR_REALTIME_PORT}:8002"
+    restart: unless-stopped
+
+  laminar-frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.laminar
+      target: frontend
+      args:
+        LAMINAR_VERSION: ${LAMINAR_VERSION}
+    image: localhost/ai-ascension/ai-agent-observability/laminar-frontend:${LAMINAR_VERSION}
+    container_name: ai-agent-observability-laminar-frontend
+    depends_on:
+      laminar-postgres:
+        condition: service_healthy
+      laminar-clickhouse:
+        condition: service_healthy
+      laminar-quickwit:
+        condition: service_healthy
+      laminar-app-server:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 5667
+      BACKEND_URL: http://laminar-app-server:8000
+      BACKEND_RT_URL: http://laminar-app-server:8002
+      SHARED_SECRET_TOKEN: ${SHARED_SECRET_TOKEN}
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@laminar-postgres:5432/${POSTGRES_DB}
+      BETTER_AUTH_URL: ${LAMINAR_PUBLIC_URL}
+      BETTER_AUTH_SECRET: ${NEXTAUTH_SECRET}
+      NEXTAUTH_URL: ${LAMINAR_PUBLIC_URL}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+      NEXT_PUBLIC_URL: ${LAMINAR_PUBLIC_URL}
+      NEXT_PUBLIC_BASE_PATH: ""
+      NEXT_PUBLIC_APP_VERSION: ${LAMINAR_VERSION}
+      ENVIRONMENT: FULL
+      FORCE_EMAIL_AUTH: "true"
+      FORCE_RUN_MIGRATIONS: "true"
+      POSTGRES_CREATE_SCHEMA: "true"
+      LAMINAR_CLOUD: "false"
+      LAMINAR_TELEMETRY_DISABLED: ${LAMINAR_TELEMETRY_DISABLED}
+      POSTHOG_TELEMETRY: "false"
+      CLICKHOUSE_URL: http://laminar-clickhouse:8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      LLM_PROVIDER: ${LLM_PROVIDER}
+      LLM_BASE_URL: ${LLM_BASE_URL}
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_MODEL_SMALL: ${LLM_MODEL_SMALL}
+      LLM_MODEL_MEDIUM: ${LLM_MODEL_MEDIUM}
+      LLM_MODEL_LARGE: ${LLM_MODEL_LARGE}
+      AWS_REGION: ${AWS_REGION}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AGENT_CHAT_ENABLED: "false"
+      SIGNALS_ENABLED: "false"
+      CLUSTERING_ENABLED: "false"
+    ports:
+      - "${BIND_ADDRESS}:${LAMINAR_FRONTEND_PORT}:5667"
+    restart: unless-stopped
+
+  laminar-bootstrap:
+    build:
+      context: .
+      dockerfile: Dockerfile.laminar
+      target: bootstrap
+      args:
+        LAMINAR_VERSION: ${LAMINAR_VERSION}
+    image: localhost/ai-ascension/ai-agent-observability/laminar-bootstrap:${LAMINAR_VERSION}
+    container_name: ai-agent-observability-laminar-bootstrap
+    depends_on:
+      laminar-frontend:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      LAMINAR_PROJECT_API_KEY: ${LAMINAR_PROJECT_API_KEY}
+      LAMINAR_PROJECT_ID: ${LAMINAR_PROJECT_ID}
+      LAMINAR_WORKSPACE_ID: ${LAMINAR_WORKSPACE_ID}
+      LAMINAR_PROJECT_NAME: ${LAMINAR_PROJECT_NAME}
+      LAMINAR_WORKSPACE_NAME: ${LAMINAR_WORKSPACE_NAME}
+      LAMINAR_ADMIN_EMAIL: ${LAMINAR_ADMIN_EMAIL}
+    restart: "no"
+
+  otel-collector:
+    image: docker.io/otel/opentelemetry-collector-contrib:0.160.0
+    container_name: ai-agent-observability-otel-collector
+    pull_policy: missing
+    depends_on:
+      mlflow:
+        condition: service_healthy
+      laminar-bootstrap:
+        condition: service_completed_successfully
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    environment:
+      MLFLOW_EXPERIMENT_ID: ${MLFLOW_EXPERIMENT_ID}
+      LAMINAR_PROJECT_API_KEY: ${LAMINAR_PROJECT_API_KEY}
+    ports:
+      - "${BIND_ADDRESS}:${OTEL_GRPC_PORT}:4317"
+      - "${BIND_ADDRESS}:${OTEL_HTTP_PORT}:4318"
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  mlflow-postgres-data:
+    name: ai-agent-observability-mlflow-postgres-data
+  mlflow-storage-data:
+    name: ai-agent-observability-mlflow-storage-data
+  laminar-clickhouse-data:
+    name: ai-agent-observability-laminar-clickhouse-data
+  laminar-clickhouse-logs:
+    name: ai-agent-observability-laminar-clickhouse-logs
+  laminar-postgres-data:
+    name: ai-agent-observability-laminar-postgres-data
+  laminar-quickwit-data:
+    name: ai-agent-observability-laminar-quickwit-data
+
+networks:
+  default:
+    name: ai-agent-observability-net

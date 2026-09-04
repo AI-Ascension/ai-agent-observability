@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1
+
+ARG LAMINAR_VERSION=v0.2.3
+
+# Laminar's published app-server image is a release artifact. The wrapper adds
+# a health probe without rebuilding the Rust application.
+FROM ghcr.io/lmnr-ai/app-server:${LAMINAR_VERSION} AS app-server
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=12 \
+  CMD curl -fsS http://127.0.0.1:8000/health >/dev/null || exit 1
+
+# The published frontend runs as nextjs. Install curl before dropping back to
+# that non-root runtime user so the Compose healthcheck has a stable probe.
+FROM ghcr.io/lmnr-ai/frontend:${LAMINAR_VERSION} AS frontend
+USER root
+RUN apk add --no-cache curl
+USER nextjs
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=12 \
+  CMD curl -fsS http://127.0.0.1:5667/ >/dev/null || exit 1
+
+# This target is intentionally small and disposable. It creates the single
+# least-privilege ingest project/key used by the Collector, then exits. The
+# plaintext key comes only from the target's mode-0600 Compose environment and
+# is never written to the database.
+FROM postgres:16 AS bootstrap
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY laminar/bootstrap-project-key.sh /usr/local/bin/bootstrap-project-key.sh
+RUN chmod 0755 /usr/local/bin/bootstrap-project-key.sh
+ENTRYPOINT ["/usr/local/bin/bootstrap-project-key.sh"]

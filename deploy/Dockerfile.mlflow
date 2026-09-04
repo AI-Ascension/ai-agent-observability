@@ -1,0 +1,15 @@
+# syntax=docker/dockerfile:1
+
+ARG MLFLOW_VERSION=v3.16.0
+FROM ghcr.io/mlflow/mlflow:${MLFLOW_VERSION}
+
+# The upstream MLflow image is intentionally minimal. These are the only
+# optional integrations needed by this deployment: PostgreSQL metadata and
+# S3-compatible RustFS artifacts.
+USER root
+RUN pip install --no-cache-dir \
+    "boto3==1.43.88" \
+    "psycopg2-binary==2.9.12"
+
+EXPOSE 5000
+ENTRYPOINT ["mlflow"]
