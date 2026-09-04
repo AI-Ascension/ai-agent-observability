@@ -55,7 +55,7 @@ if ! git check-ignore -q deploy/.env; then
 fi
 
 forbidden_pattern='anime[0-9]+|BEGIN (OPENSSH|RSA|EC|DSA) PRIVATE KEY|/mnt/c/Users/|/home/timot/'
-if git grep -nE "$forbidden_pattern" -- .; then
+if git grep -nE "$forbidden_pattern" -- . ':(exclude)tests/compose-invariants.sh'; then
   printf '%s\n' 'repository contains a forbidden credential or personal path' >&2
   exit 1
 fi
