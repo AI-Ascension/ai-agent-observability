@@ -1,0 +1,10 @@
+# Local deployment secrets and generated state
+deploy/.env
+deploy/.env.*
+!deploy/.env.example
+*.log
+
+# Tool and editor state
+.DS_Store
+.idea/
+.vscode/
