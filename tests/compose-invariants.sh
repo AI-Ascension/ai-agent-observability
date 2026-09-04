@@ -6,6 +6,16 @@ cd "$repo_root"
 
 compose_output="$(docker compose --env-file deploy/.env.example -f deploy/compose.yaml config)"
 
+# MLflow validates the full Host header, including the published port. Health
+# probes bypass that validation, so a healthy container does not cover UI/API.
+for allowed_host in localhost:15000 127.0.0.1:15000; do
+  grep -Fq "$allowed_host" <<<"$compose_output"
+done
+override_output="$(MLFLOW_PORT=15001 docker compose --env-file deploy/.env.example -f deploy/compose.yaml config)"
+for allowed_host in localhost:15001 127.0.0.1:15001; do
+  grep -Fq "$allowed_host" <<<"$override_output"
+done
+
 required_services=(
   ai-agent-observability-mlflow-postgres
   ai-agent-observability-mlflow-storage

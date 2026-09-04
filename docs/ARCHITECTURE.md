@@ -62,7 +62,8 @@ change the internal protocol contract.
    plaintext key in PostgreSQL.
 7. The Collector starts and fans out accepted traces to both backends.
 
-The one-shot initializers are idempotent for the generated deployment identity.
+The one-shot initializers are idempotent for the generated deployment identity;
+Laminar's database changes are committed together or rolled back together.
 Do not reuse a `.env` with a new database volume unless the operator intends to
 create a new logical deployment.
 

@@ -89,6 +89,22 @@ delete live volumes to force a migration.
 
 ## Failure boundaries
 
+The Collector's sending queues are in memory; its acknowledgement is not proof
+that both backends have durably stored a trace. Export retries can duplicate
+delivery, and queue overflow, retry exhaustion, or process replacement can lose
+pending spans. RabbitMQ has no named persistent volume in this initial stack;
+container recreation can lose queued ingest work. The six named volumes preserve
+the configured databases, artifacts, search data, and ClickHouse logs, not all
+in-flight telemetry. Quiesce producers and verify both downstream records before
+using restart survival as experimental evidence. Durable ingestion across
+outages requires a separately validated queue/storage design.
+
+The Laminar bootstrap applies workspace/project creation, collector-key
+replacement, and invitation creation in one PostgreSQL transaction. A failed
+statement rolls back the replacement, preserving the previous key. This does
+not coordinate a key rotation with a running Collector: recreate the appropriate
+services using the approved rotation procedure and verify ingestion afterwards.
+
 - Image pull/build failure: build evidence is unavailable; existing running
   services are not changed by the failed build.
 - Database or search failure: health and end-to-end evidence are unavailable;

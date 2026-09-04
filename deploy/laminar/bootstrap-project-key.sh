@@ -65,7 +65,7 @@ PGPASSWORD="$POSTGRES_PASSWORD" psql "${database_args[@]}" \
   --set=admin_email="$LAMINAR_ADMIN_EMAIL" \
   --set=api_key_hash="$api_key_hash" \
   --set=api_key_shorthand="$api_key_shorthand" \
-  -v ON_ERROR_STOP=1 -q <<'SQL'
+  --single-transaction -f - -v ON_ERROR_STOP=1 -q <<'SQL'
 INSERT INTO workspaces (id, name, tier_id, settings)
 VALUES (:'workspace_id'::uuid, :'workspace_name', 1, '{}'::jsonb)
 ON CONFLICT (id) DO NOTHING;
