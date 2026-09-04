@@ -22,7 +22,7 @@ for variant in 8 9 a b; do
   bash "$test_root/$variant/init.sh" >/dev/null
   generated_env="$test_root/$variant/.env"
   for key in LAMINAR_WORKSPACE_ID LAMINAR_PROJECT_ID; do
-    grep -Eq "^$key=[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-$variant[0-9a-f]{3}-[0-9a-f]{12}$" "$generated_env"
+    grep -Eq "^$key=[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-${variant}[0-9a-f]{3}-[0-9a-f]{12}$" "$generated_env"
   done
   [[ $(stat -c %a "$generated_env") == 600 ]]
   before="$(sha256sum "$generated_env")"
