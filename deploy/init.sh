@@ -18,12 +18,14 @@ new_uuid() {
 }
 
 compose() {
+  local compose_bake="${COMPOSE_BAKE:-false}"
+
   case "${COMPOSE_ENGINE:-docker}" in
     docker)
-      docker compose "$@"
+      COMPOSE_BAKE="$compose_bake" docker compose "$@"
       ;;
     podman)
-      podman compose "$@"
+      COMPOSE_BAKE="$compose_bake" podman compose "$@"
       ;;
     *)
       printf '%s\n' 'COMPOSE_ENGINE must be docker or podman' >&2

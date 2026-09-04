@@ -231,6 +231,12 @@ services:
       - "${BIND_ADDRESS}:${LAMINAR_HTTP_PORT}:8000"
       - "${BIND_ADDRESS}:${LAMINAR_GRPC_PORT}:8001"
       - "${BIND_ADDRESS}:${LAMINAR_REALTIME_PORT}:8002"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 20s
     restart: unless-stopped
 
   laminar-frontend:
@@ -358,3 +364,5 @@ volumes:
 networks:
   default:
     name: ai-agent-observability-net
+    driver_opts:
+      isolate: "false"
