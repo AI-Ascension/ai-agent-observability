@@ -1,0 +1,6 @@
+# Compose uses deploy/ as the build context; the repository-root ignore file
+# does not apply here. Keep target-local secrets out of every builder context.
+.env
+.env.*
+!.env.example
+*.log

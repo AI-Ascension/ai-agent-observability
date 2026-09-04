@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# No daemon contact: initializer tests only exercise local environment creation.
+exit 0

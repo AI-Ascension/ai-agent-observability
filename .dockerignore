@@ -1,0 +1,17 @@
+.git
+.env
+.env.*
+!.env.example
+*.log
+docs/
+prompts/
+tests/
+systemd/
+README.md
+AGENTS.md
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+SECURITY.md
+LICENSE
+CHANGELOG.md
+THIRD_PARTY_NOTICES.md

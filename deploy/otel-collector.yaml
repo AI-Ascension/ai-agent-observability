@@ -1,0 +1,59 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  batch:
+    send_batch_size: 128
+    timeout: 5s
+
+exporters:
+  otlp_http/mlflow:
+    endpoint: http://mlflow:5000
+    headers:
+      x-mlflow-experiment-id: "${MLFLOW_EXPERIMENT_ID}"
+    compression: gzip
+    timeout: 10s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 300s
+    sending_queue:
+      enabled: true
+      num_consumers: 2
+      queue_size: 1024
+
+  otlp_http/laminar:
+    endpoint: http://laminar-app-server:8000
+    headers:
+      authorization: "Bearer ${LAMINAR_PROJECT_API_KEY}"
+    compression: gzip
+    timeout: 10s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 300s
+    sending_queue:
+      enabled: true
+      num_consumers: 2
+      queue_size: 1024
+
+service:
+  telemetry:
+    logs:
+      level: warn
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_http/mlflow, otlp_http/laminar]

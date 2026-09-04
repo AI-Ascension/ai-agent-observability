@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<!-- Adapted from lmnr-ai/lmnr at v0.2.3; see THIRD_PARTY_NOTICES.md. -->
+<clickhouse>
+    <profiles>
+        <default>
+            <date_time_input_format replace="replace">best_effort</date_time_input_format>
+        </default>
+    </profiles>
+</clickhouse>
