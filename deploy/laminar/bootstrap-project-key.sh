@@ -24,7 +24,14 @@ database_args=(
   --no-password
 )
 
-until PGPASSWORD="$POSTGRES_PASSWORD" pg_isready "${database_args[@]}" >/dev/null 2>&1; do
+readiness_args=(
+  --host=laminar-postgres
+  --port=5432
+  --username="$POSTGRES_USER"
+  --dbname="$POSTGRES_DB"
+)
+
+until PGPASSWORD="$POSTGRES_PASSWORD" pg_isready "${readiness_args[@]}" >/dev/null 2>&1; do
   sleep 2
 done
 

@@ -16,7 +16,7 @@ processors:
     timeout: 5s
 
 exporters:
-  otlphttp/mlflow:
+  otlp_http/mlflow:
     endpoint: http://mlflow:5000
     headers:
       x-mlflow-experiment-id: "${MLFLOW_EXPERIMENT_ID}"
@@ -32,7 +32,7 @@ exporters:
       num_consumers: 2
       queue_size: 1024
 
-  otlphttp/laminar:
+  otlp_http/laminar:
     endpoint: http://laminar-app-server:8000
     headers:
       authorization: "Bearer ${LAMINAR_PROJECT_API_KEY}"
@@ -56,4 +56,4 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [otlphttp/mlflow, otlphttp/laminar]
+      exporters: [otlp_http/mlflow, otlp_http/laminar]

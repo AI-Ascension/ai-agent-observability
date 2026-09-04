@@ -10,7 +10,9 @@ Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/home/completetrain/ai-agent-observability/deploy
 Environment=DOCKER_HOST=unix:///run/podman/podman.sock
-ExecStart=/usr/bin/docker compose -p ai-agent-observability -f compose.yaml up -d --no-build
+Environment=COMPOSE_BAKE=false
+Environment=COMPOSE_BUILD=false
+ExecStart=/home/completetrain/ai-agent-observability/deploy/init.sh
 ExecStop=/usr/bin/docker compose -p ai-agent-observability -f compose.yaml down
 TimeoutStartSec=0
 TimeoutStopSec=300

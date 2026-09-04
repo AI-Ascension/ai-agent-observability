@@ -172,5 +172,16 @@ fi
 
 ensure_network
 compose -p "$project_name" -f compose.yaml config --quiet
-compose -p "$project_name" -f compose.yaml up -d --build
+case "${COMPOSE_BUILD:-true}" in
+  true)
+    compose -p "$project_name" -f compose.yaml up -d --build
+    ;;
+  false)
+    compose -p "$project_name" -f compose.yaml up -d --no-build
+    ;;
+  *)
+    printf '%s\n' 'COMPOSE_BUILD must be true or false' >&2
+    exit 64
+    ;;
+esac
 printf '%s\n' 'AI-agent observability stack start requested.'
