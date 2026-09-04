@@ -364,5 +364,4 @@ volumes:
 networks:
   default:
     name: ai-agent-observability-net
-    driver_opts:
-      isolate: "false"
+    external: true

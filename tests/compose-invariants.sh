@@ -44,6 +44,11 @@ if grep -Fq 'host_ip: 0.0.0.0' <<<"$compose_output"; then
   exit 1
 fi
 
+if ! grep -Fq 'external: true' <<<"$compose_output"; then
+  printf '%s\n' 'the runtime network is not declared external' >&2
+  exit 1
+fi
+
 if ! git check-ignore -q deploy/.env; then
   printf '%s\n' 'deploy/.env is not ignored' >&2
   exit 1

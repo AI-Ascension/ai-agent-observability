@@ -4,6 +4,7 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 env_file="$script_dir/.env"
 project_name="ai-agent-observability"
+network_name="ai-agent-observability-net"
 
 new_uuid() {
   local value
@@ -30,6 +31,35 @@ compose() {
     *)
       printf '%s\n' 'COMPOSE_ENGINE must be docker or podman' >&2
       exit 64
+      ;;
+  esac
+}
+
+ensure_network() {
+  case "${COMPOSE_ENGINE:-docker}" in
+    podman)
+      if podman network inspect "$network_name" >/dev/null 2>&1; then
+        if ! podman network inspect "$network_name" | grep -Fq '"isolate": "false"'; then
+          printf '%s\n' "Podman network $network_name exists without isolate=false; remove it only after confirming it is dedicated to this stack." >&2
+          exit 69
+        fi
+      else
+        podman network create --opt isolate=false "$network_name" >/dev/null
+      fi
+      ;;
+    docker)
+      if [[ "${DOCKER_HOST:-}" == *podman.sock ]] && command -v podman >/dev/null 2>&1; then
+        if podman network inspect "$network_name" >/dev/null 2>&1; then
+          if ! podman network inspect "$network_name" | grep -Fq '"isolate": "false"'; then
+            printf '%s\n' "Podman network $network_name exists without isolate=false; remove it only after confirming it is dedicated to this stack." >&2
+            exit 69
+          fi
+        else
+          podman network create --opt isolate=false "$network_name" >/dev/null
+        fi
+      else
+        docker network inspect "$network_name" >/dev/null 2>&1 || docker network create --driver bridge "$network_name" >/dev/null
+      fi
       ;;
   esac
 }
@@ -140,6 +170,7 @@ EOF
   printf '%s\n' 'Created deploy/.env with fresh target-local secrets (mode 0600).'
 fi
 
+ensure_network
 compose -p "$project_name" -f compose.yaml config --quiet
 compose -p "$project_name" -f compose.yaml up -d --build
 printf '%s\n' 'AI-agent observability stack start requested.'

@@ -14,6 +14,11 @@ full stack; `.env` is ignored by Git and must remain mode `0600`.
 - `BIND_ADDRESS` defaults to `127.0.0.1`. Do not change it without reviewing
   authentication, firewall, TLS, and trace-data exposure.
 
+The initializer creates the dedicated `ai-agent-observability-net` network. On
+Podman-backed Docker sockets it sets `isolate=false`, which is required for
+service-name DNS and container-to-container traffic on hosts that enable
+network isolation by default.
+
 ## Agent endpoint
 
 Prefer the collector for normal agent traces:
