@@ -72,6 +72,7 @@ else
   rabbitmq_password="$(openssl rand -hex 32)"
   clickhouse_password="$(openssl rand -hex 32)"
   shared_secret="$(openssl rand -hex 32)"
+  nextauth_secret="$(openssl rand -hex 32)"
   aead_secret="$(openssl rand -hex 32)"
   slack_secret="$(openssl rand -hex 32)"
   laminar_project_api_key="$(openssl rand -hex 32)"
@@ -110,6 +111,7 @@ CLICKHOUSE_PASSWORD=$clickhouse_password
 CLICKHOUSE_RO_USER=lmnr
 CLICKHOUSE_RO_PASSWORD=$clickhouse_password
 SHARED_SECRET_TOKEN=$shared_secret
+NEXTAUTH_SECRET=$nextauth_secret
 AEAD_SECRET_KEY=$aead_secret
 SLACK_ENCRYPTION_KEY=$slack_secret
 LAMINAR_TELEMETRY_DISABLED=true
