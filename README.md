@@ -36,7 +36,7 @@ Useful local endpoints after startup:
 | MLflow | `http://127.0.0.1:15000` | Runs, experiments, and artifacts |
 | Laminar UI | `http://127.0.0.1:15667` | Trace and evaluation UI |
 | Laminar HTTP | `http://127.0.0.1:18000` | Direct OTLP/HTTP and API access |
-| Laminar gRPC | `http://127.0.0.1:18001` | Direct OTLP/gRPC access |
+| Laminar gRPC | `127.0.0.1:18001` | Direct OTLP/gRPC access |
 | OTLP Collector HTTP | `http://127.0.0.1:14318` | Recommended agent endpoint |
 | OTLP Collector gRPC | `127.0.0.1:14317` | Recommended agent endpoint |
 
