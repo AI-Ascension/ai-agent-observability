@@ -35,10 +35,16 @@ may proceed directly when they preserve the accepted contract.
 ## Static gates
 
 ```bash
-bash -n deploy/init.sh deploy/laminar/bootstrap-project-key.sh tests/compose-invariants.sh
-tests/compose-invariants.sh
+bash -n deploy/init.sh deploy/laminar/bootstrap-project-key.sh tests/compose-invariants.sh tests/bootstrap.sh tests/fixtures/*
+shellcheck --severity=warning deploy/init.sh deploy/laminar/bootstrap-project-key.sh tests/compose-invariants.sh tests/bootstrap.sh tests/fixtures/*
 bash tests/bootstrap.sh
+git diff --check
+tests/compose-invariants.sh
 ```
+
+`tests/bootstrap.sh` asserts the generated `.env` mode is `0600`; on filesystems
+without POSIX modes that assertion fails locally and CI on Linux is the
+authoritative result.
 
 With Docker Compose available:
 
