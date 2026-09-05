@@ -25,7 +25,7 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=12 \
 # least-privilege ingest project/key used by the Collector, then exits. The
 # plaintext key comes only from the target's mode-0600 Compose environment and
 # is never written to the database.
-FROM postgres:16 AS bootstrap
+FROM docker.io/library/postgres:16 AS bootstrap
 RUN apt-get update \
     && apt-get install -y --no-install-recommends openssl ca-certificates \
     && rm -rf /var/lib/apt/lists/*

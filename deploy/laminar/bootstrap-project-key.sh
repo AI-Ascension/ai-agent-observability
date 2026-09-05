@@ -10,6 +10,7 @@ set -euo pipefail
 : "${LAMINAR_PROJECT_NAME:?LAMINAR_PROJECT_NAME is required}"
 : "${LAMINAR_WORKSPACE_NAME:?LAMINAR_WORKSPACE_NAME is required}"
 : "${LAMINAR_ADMIN_EMAIL:?LAMINAR_ADMIN_EMAIL is required}"
+READINESS_TIMEOUT_SECONDS="${READINESS_TIMEOUT_SECONDS:-300}"
 
 if [[ ${#LAMINAR_PROJECT_API_KEY} -ne 64 ]]; then
   printf '%s\n' 'LAMINAR_PROJECT_API_KEY must be exactly 64 characters' >&2
@@ -41,14 +42,24 @@ readiness_args=(
   --dbname="$POSTGRES_DB"
 )
 
+readiness_deadline=$((SECONDS + READINESS_TIMEOUT_SECONDS))
 until PGPASSWORD="$POSTGRES_PASSWORD" pg_isready "${readiness_args[@]}" >/dev/null 2>&1; do
+  if ((SECONDS >= readiness_deadline)); then
+    printf 'database did not accept connections within %ss\n' "$READINESS_TIMEOUT_SECONDS" >&2
+    exit 1
+  fi
   sleep 2
 done
 
+schema_deadline=$((SECONDS + READINESS_TIMEOUT_SECONDS))
 until schema_ready="$({
   PGPASSWORD="$POSTGRES_PASSWORD" psql "${database_args[@]}" -Atqc \
     "SELECT (to_regclass('public.project_api_keys') IS NOT NULL) AND (to_regclass('public.workspace_invitations') IS NOT NULL) AND (to_regclass('public.subscription_tiers') IS NOT NULL) AND EXISTS (SELECT 1 FROM subscription_tiers WHERE id = 1);"
 } 2>/dev/null)" && [[ "$schema_ready" == t ]]; do
+  if ((SECONDS >= schema_deadline)); then
+    printf 'database schema was not ready within %ss\n' "$READINESS_TIMEOUT_SECONDS" >&2
+    exit 1
+  fi
   sleep 2
 done
 

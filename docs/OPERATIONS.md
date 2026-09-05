@@ -3,11 +3,14 @@
 ## First deployment on a Podman host
 
 Copy the repository to a dedicated directory on the target host, then run the
-initializer as the account that owns the deployment directory. For the
+initializer as the account that owns the deployment directory. The unit and the
+commands below use `/opt/ai-agent-observability`; if you install elsewhere, change
+`WorkingDirectory` and `ExecStart` in `systemd/ai-agent-observability.service` to
+match. Do not commit a host account path back to this repository. For the
 rootful/system Podman convention used by the Train domain, the command is:
 
 ```bash
-cd /home/completetrain/ai-agent-observability/deploy
+cd /opt/ai-agent-observability/deploy
 sudo env DOCKER_HOST=unix:///run/podman/podman.sock COMPOSE_ENGINE=docker ./init.sh
 ```
 
@@ -37,7 +40,7 @@ The unit uses the rootful Podman API socket, an explicit project name, and
 ## Inspection without secret output
 
 ```bash
-cd /home/completetrain/ai-agent-observability/deploy
+cd /opt/ai-agent-observability/deploy
 sudo env DOCKER_HOST=unix:///run/podman/podman.sock \
   docker compose -p ai-agent-observability -f compose.yaml ps
 sudo podman ps --filter name=ai-agent-observability --format '{{.Names}}|{{.Status}}|{{.Ports}}'
