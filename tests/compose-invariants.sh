@@ -69,7 +69,7 @@ fi
 grep -Fxq '.env' deploy/.dockerignore
 grep -Fxq '.env.*' deploy/.dockerignore
 
-forbidden_pattern='anime[0-9]+|BEGIN (OPENSSH|RSA|EC|DSA) PRIVATE KEY|/mnt/c/Users/|/home/timot/'
+forbidden_pattern='anime[0-9]+|BEGIN (OPENSSH|RSA|EC|DSA) PRIVATE KEY|/mnt/c/Users/|/home/[a-z_][a-z0-9_-]*/|/Users/[a-z_][a-z0-9_-]*/'
 if git grep -qE "$forbidden_pattern" -- . ':(exclude)tests/compose-invariants.sh'; then
   printf '%s\n' 'repository contains a forbidden credential or personal path' >&2
   exit 1
