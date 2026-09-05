@@ -92,8 +92,6 @@ services:
       AWS_S3_ADDRESSING_STYLE: path
     command:
       - server
-      - --backend-store-uri
-      - ${MLFLOW_BACKEND_STORE_URI}
       - --artifacts-destination
       - s3://${MLFLOW_S3_BUCKET}
       - --serve-artifacts
@@ -102,7 +100,7 @@ services:
       - --port
       - "5000"
       - --allowed-hosts
-      - localhost,127.0.0.1,mlflow,localhost:5000,127.0.0.1:5000,mlflow:5000,localhost:${MLFLOW_PORT},127.0.0.1:${MLFLOW_PORT}
+      - localhost,127.0.0.1,mlflow,localhost:5000,127.0.0.1:5000,mlflow:5000,localhost:${MLFLOW_PORT},127.0.0.1:${MLFLOW_PORT},${BIND_ADDRESS},${BIND_ADDRESS}:${MLFLOW_PORT}
     ports:
       - "${BIND_ADDRESS:?BIND_ADDRESS must be set; use 127.0.0.1 for the loopback-only default}:${MLFLOW_PORT:?MLFLOW_PORT must be set}:5000"
     healthcheck:
