@@ -45,6 +45,10 @@ bash tests/compose-invariants.sh
 bash tests/bootstrap.sh
 ```
 
+`tests/bootstrap.sh` asserts the generated `.env` mode is `0600`; on filesystems
+without POSIX modes (for example NTFS under Git Bash) that assertion fails
+locally and CI on Linux is the authoritative result.
+
 With Docker Compose available:
 
 ```bash

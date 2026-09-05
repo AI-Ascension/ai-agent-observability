@@ -97,7 +97,7 @@ review from another specialist, but only the owner writes the file.
 | F09 Compose integrator | `deploy/compose.yaml`, `deploy/.env.example` |
 | F10 Collector contract | `deploy/otel-collector.yaml` |
 | F11 First-run/runtime | `deploy/init.sh`, `systemd/ai-agent-observability.service` |
-| F12 Validation and CI | `tests/compose-invariants.sh`, `tests/bootstrap.sh`, `tests/fixtures/docker`, `tests/fixtures/openssl`, `.github/workflows/ci.yml`, `.dockerignore`, `deploy/.dockerignore`, `.gitattributes`, `.editorconfig`, `.gitignore` |
+| F12 Validation and CI | `tests/compose-invariants.sh`, `tests/compose-required-settings.sh`, `tests/validation-regressions.sh`, `tests/bootstrap.sh`, `tests/fixtures/docker`, `tests/fixtures/docker-compose-config`, `tests/fixtures/openssl`, `.github/workflows/ci.yml`, `.dockerignore`, `deploy/.dockerignore`, `.gitattributes`, `.editorconfig`, `.gitignore` |
 | F13 Orchestration prompt | `prompts/AI_AGENT_OBSERVABILITY_ORCHESTRATION_PROMPT.md` |
 
 The Compose integrator is the sole writer of service names, volume names,
