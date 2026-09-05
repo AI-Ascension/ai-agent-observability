@@ -41,7 +41,15 @@ readiness_args=(
   --dbname="$POSTGRES_DB"
 )
 
+# Bound both waits: the Collector depends on this one-shot completing, so an
+# endless wait would hide a broken database or migration instead of failing.
+max_attempts=150
+attempt=0
 until PGPASSWORD="$POSTGRES_PASSWORD" pg_isready "${readiness_args[@]}" >/dev/null 2>&1; do
+  if (( ++attempt >= max_attempts )); then
+    printf '%s\n' 'laminar-postgres did not become ready within the bootstrap deadline' >&2
+    exit 69
+  fi
   sleep 2
 done
 
@@ -49,6 +57,10 @@ until schema_ready="$({
   PGPASSWORD="$POSTGRES_PASSWORD" psql "${database_args[@]}" -Atqc \
     "SELECT (to_regclass('public.project_api_keys') IS NOT NULL) AND (to_regclass('public.workspace_invitations') IS NOT NULL) AND (to_regclass('public.subscription_tiers') IS NOT NULL) AND EXISTS (SELECT 1 FROM subscription_tiers WHERE id = 1);"
 } 2>/dev/null)" && [[ "$schema_ready" == t ]]; do
+  if (( ++attempt >= max_attempts )); then
+    printf '%s\n' 'Laminar schema did not become ready within the bootstrap deadline' >&2
+    exit 69
+  fi
   sleep 2
 done
 
