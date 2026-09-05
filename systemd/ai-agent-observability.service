@@ -8,6 +8,8 @@ Requires=podman.socket
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# Default deployment directory. Override WorkingDirectory and ExecStart with a
+# `systemctl edit` drop-in for another path; see docs/OPERATIONS.md.
 WorkingDirectory=/opt/ai-agent-observability/deploy
 Environment=DOCKER_HOST=unix:///run/podman/podman.sock
 Environment=COMPOSE_BAKE=false

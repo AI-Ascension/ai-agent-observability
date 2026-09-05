@@ -4,6 +4,8 @@ All notable changes to this repository are recorded here.
 
 ## [Unreleased]
 
+- Admit the configured bind address in the MLflow Host allowlist and document
+  a systemd drop-in for deployment directories other than the unit default.
 - Fail closed on missing deployment listener settings and validate every
   published binding; keep the MLflow backend credential out of process arguments.
 - Exercise invalid rendered bindings and secret-safe bootstrap errors in CI.
