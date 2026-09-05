@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Imported shell functions take precedence over PATH fixtures.
+unset -f docker openssl
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 test_root="$(mktemp -d)"
 trap 'rm -r -- "$test_root"' EXIT
@@ -43,6 +45,9 @@ for identity_name in LAMINAR_PROJECT_ID LAMINAR_WORKSPACE_ID; do
   [[ $status == 64 ]]
   grep -Fq "$identity_name must be a canonical UUID" "$test_root/output"
   # Errors name the field, never its value or any deployment secrets.
-  ! grep -Fq '01234567' "$test_root/output"
+  if grep -Fq '01234567' "$test_root/output"; then
+    printf '%s\n' 'Invalid-identity error exposed the identity value.' >&2
+    exit 1
+  fi
 done
 printf '%s\n' 'Bootstrap UUID variants, environment preservation, and invalid identities passed.'

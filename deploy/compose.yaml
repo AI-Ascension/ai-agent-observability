@@ -30,8 +30,8 @@ services:
       RUSTFS_SECRET_KEY: ${AWS_SECRET_ACCESS_KEY}
       RUSTFS_CONSOLE_ENABLE: ${RUSTFS_CONSOLE_ENABLE}
     ports:
-      - "${BIND_ADDRESS}:${RUSTFS_API_PORT}:9000"
-      - "${BIND_ADDRESS}:${RUSTFS_CONSOLE_PORT}:9001"
+      - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${RUSTFS_API_PORT:?RUSTFS_API_PORT is required}:9000"
+      - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${RUSTFS_CONSOLE_PORT:?RUSTFS_CONSOLE_PORT is required}:9001"
     volumes:
       - mlflow-storage-data:/data
     healthcheck:
@@ -92,8 +92,6 @@ services:
       AWS_S3_ADDRESSING_STYLE: path
     command:
       - server
-      - --backend-store-uri
-      - ${MLFLOW_BACKEND_STORE_URI}
       - --artifacts-destination
       - s3://${MLFLOW_S3_BUCKET}
       - --serve-artifacts
@@ -104,7 +102,7 @@ services:
       - --allowed-hosts
       - localhost,127.0.0.1,mlflow,localhost:5000,127.0.0.1:5000,mlflow:5000,localhost:${MLFLOW_PORT},127.0.0.1:${MLFLOW_PORT}
     ports:
-      - "${BIND_ADDRESS}:${MLFLOW_PORT}:5000"
+      - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${MLFLOW_PORT:?MLFLOW_PORT is required}:5000"
     healthcheck:
       test: ["CMD", "python", "-c", "__import__('urllib.request').request.urlopen('http://127.0.0.1:5000/health')"]
       interval: 10s
@@ -179,8 +177,8 @@ services:
     environment:
       QW_DATA_DIR: /quickwit/qwdata
     ports:
-      - "${BIND_ADDRESS}:${QUICKWIT_HTTP_PORT}:7280"
-      - "${BIND_ADDRESS}:${QUICKWIT_OTLP_PORT}:7281"
+      - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${QUICKWIT_HTTP_PORT:?QUICKWIT_HTTP_PORT is required}:7280"
+      - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${QUICKWIT_OTLP_PORT:?QUICKWIT_OTLP_PORT is required}:7281"
     volumes:
       - laminar-quickwit-data:/quickwit/qwdata
     healthcheck:
@@ -230,9 +228,9 @@ services:
       LAMINAR_TELEMETRY_DISABLED: ${LAMINAR_TELEMETRY_DISABLED}
       RUST_LOG: ${RUST_LOG}
     ports:
-      - "${BIND_ADDRESS}:${LAMINAR_HTTP_PORT}:8000"
-      - "${BIND_ADDRESS}:${LAMINAR_GRPC_PORT}:8001"
-      - "${BIND_ADDRESS}:${LAMINAR_REALTIME_PORT}:8002"
+      - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${LAMINAR_HTTP_PORT:?LAMINAR_HTTP_PORT is required}:8000"
+      - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${LAMINAR_GRPC_PORT:?LAMINAR_GRPC_PORT is required}:8001"
+      - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${LAMINAR_REALTIME_PORT:?LAMINAR_REALTIME_PORT is required}:8002"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
       interval: 10s
@@ -297,7 +295,7 @@ services:
       SIGNALS_ENABLED: "false"
       CLUSTERING_ENABLED: "false"
     ports:
-      - "${BIND_ADDRESS}:${LAMINAR_FRONTEND_PORT}:5667"
+      - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${LAMINAR_FRONTEND_PORT:?LAMINAR_FRONTEND_PORT is required}:5667"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:5667/"]
       interval: 10s
@@ -344,8 +342,8 @@ services:
       MLFLOW_EXPERIMENT_ID: ${MLFLOW_EXPERIMENT_ID}
       LAMINAR_PROJECT_API_KEY: ${LAMINAR_PROJECT_API_KEY}
     ports:
-      - "${BIND_ADDRESS}:${OTEL_GRPC_PORT}:4317"
-      - "${BIND_ADDRESS}:${OTEL_HTTP_PORT}:4318"
+      - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${OTEL_GRPC_PORT:?OTEL_GRPC_PORT is required}:4317"
+      - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${OTEL_HTTP_PORT:?OTEL_HTTP_PORT is required}:4318"
     volumes:
       - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
     read_only: true

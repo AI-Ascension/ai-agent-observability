@@ -35,8 +35,13 @@ may proceed directly when they preserve the accepted contract.
 ## Static gates
 
 ```bash
-bash -n deploy/init.sh deploy/laminar/bootstrap-project-key.sh tests/compose-invariants.sh
-tests/compose-invariants.sh
+for script in deploy/init.sh deploy/laminar/bootstrap-project-key.sh tests/*.sh tests/fixtures/*; do
+  bash -n "$script"
+done
+shellcheck --severity=warning deploy/init.sh deploy/laminar/bootstrap-project-key.sh tests/*.sh tests/fixtures/*
+git diff --check
+bash tests/validation-regressions.sh
+bash tests/compose-invariants.sh
 bash tests/bootstrap.sh
 ```
 
@@ -44,6 +49,7 @@ With Docker Compose available:
 
 ```bash
 docker compose --env-file deploy/.env.example -f deploy/compose.yaml config --quiet
+bash tests/compose-required-settings.sh
 docker buildx build --check -f deploy/Dockerfile.mlflow deploy
 docker buildx build --check -f deploy/Dockerfile.laminar deploy
 ```

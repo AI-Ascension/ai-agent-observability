@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   validate:
@@ -19,7 +19,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
 
       - name: Install shellcheck
         run: |
@@ -28,13 +30,15 @@ jobs:
 
       - name: Check shell syntax and style
         run: |
-          for script in deploy/init.sh deploy/laminar/bootstrap-project-key.sh tests/compose-invariants.sh tests/bootstrap.sh tests/fixtures/*; do
+          for script in deploy/init.sh deploy/laminar/bootstrap-project-key.sh tests/*.sh tests/fixtures/*; do
             bash -n "$script"
           done
-          shellcheck --severity=warning deploy/init.sh deploy/laminar/bootstrap-project-key.sh tests/compose-invariants.sh tests/bootstrap.sh tests/fixtures/*
+          shellcheck --severity=warning deploy/init.sh deploy/laminar/bootstrap-project-key.sh tests/*.sh tests/fixtures/*
 
       - name: Test bootstrap without a container runtime
-        run: bash tests/bootstrap.sh
+        run: |
+          bash tests/bootstrap.sh
+          bash tests/validation-regressions.sh
 
       - name: Check text and secret hygiene
         run: |
@@ -42,7 +46,9 @@ jobs:
           tests/compose-invariants.sh
 
       - name: Validate Compose model
-        run: docker compose --env-file deploy/.env.example -f deploy/compose.yaml config --quiet
+        run: |
+          docker compose --env-file deploy/.env.example -f deploy/compose.yaml config --quiet
+          bash tests/compose-required-settings.sh
 
       - name: Lint Dockerfile syntax
         run: |

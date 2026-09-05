@@ -37,7 +37,13 @@ for service_name in "${required_services[@]}"; do
   fi
 done
 
-if ! grep -Fq 'host_ip: 127.0.0.1' <<<"$compose_output"; then
+# Compose renders one host_ip and published field for each explicit host bind.
+# Check all bindings, including omitted host_ip (an all-interface default).
+if ! awk '
+  $1 == "host_ip:" { hosts++; if ($2 != "127.0.0.1") invalid = 1 }
+  $1 == "published:" { ports++ }
+  END { exit (invalid || ports == 0 || hosts != ports) }
+' <<<"$compose_output"; then
   printf '%s\n' 'host bindings are not loopback-only' >&2
   exit 1
 fi
@@ -48,11 +54,6 @@ for published_port in 15000 15667 14317 14318; do
     exit 1
   fi
 done
-
-if grep -Fq 'host_ip: 0.0.0.0' <<<"$compose_output"; then
-  printf '%s\n' 'a host port is exposed on all interfaces' >&2
-  exit 1
-fi
 
 if ! grep -Fq 'external: true' <<<"$compose_output"; then
   printf '%s\n' 'the runtime network is not declared external' >&2
@@ -69,7 +70,7 @@ grep -Fxq '.env' deploy/.dockerignore
 grep -Fxq '.env.*' deploy/.dockerignore
 
 forbidden_pattern='anime[0-9]+|BEGIN (OPENSSH|RSA|EC|DSA) PRIVATE KEY|/mnt/c/Users/|/home/timot/'
-if git grep -nE "$forbidden_pattern" -- . ':(exclude)tests/compose-invariants.sh'; then
+if git grep -qE "$forbidden_pattern" -- . ':(exclude)tests/compose-invariants.sh'; then
   printf '%s\n' 'repository contains a forbidden credential or personal path' >&2
   exit 1
 fi
