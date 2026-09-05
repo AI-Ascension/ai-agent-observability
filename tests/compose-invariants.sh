@@ -42,6 +42,18 @@ if ! grep -Fq 'host_ip: 127.0.0.1' <<<"$compose_output"; then
   exit 1
 fi
 
+# Every published host port must carry an explicit loopback host_ip. One
+# loopback binding elsewhere in the render must not mask a new port mapping
+# declared without ${BIND_ADDRESS}.
+published_count="$(grep -cE '^[[:space:]]*published:' <<<"$compose_output" || true)"
+loopback_count="$(grep -cF 'host_ip: 127.0.0.1' <<<"$compose_output" || true)"
+if [[ "$published_count" != "$loopback_count" ]]; then
+  printf 'published host ports: %s, loopback bindings: %s\n' \
+    "$published_count" "$loopback_count" >&2
+  printf '%s\n' 'a published host port is not bound to loopback' >&2
+  exit 1
+fi
+
 for published_port in 15000 15667 14317 14318; do
   if ! grep -Fq "published: \"$published_port\"" <<<"$compose_output"; then
     printf 'missing published loopback port: %s\n' "$published_port" >&2
@@ -68,8 +80,9 @@ fi
 grep -Fxq '.env' deploy/.dockerignore
 grep -Fxq '.env.*' deploy/.dockerignore
 
-forbidden_pattern='anime[0-9]+|BEGIN (OPENSSH|RSA|EC|DSA) PRIVATE KEY|/mnt/c/Users/|/home/timot/'
-if git grep -nE "$forbidden_pattern" -- . ':(exclude)tests/compose-invariants.sh'; then
+forbidden_pattern='anime[0-9]+|BEGIN (OPENSSH|RSA|EC|DSA) PRIVATE KEY|/mnt/c/Users/|/home/timot/|/home/completetrain/'
+# Report only file names: never echo a matched key or path into a CI log.
+if git grep -lE "$forbidden_pattern" -- . ':(exclude)tests/compose-invariants.sh'; then
   printf '%s\n' 'repository contains a forbidden credential or personal path' >&2
   exit 1
 fi
