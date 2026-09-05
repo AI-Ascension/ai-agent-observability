@@ -3,11 +3,15 @@
 ## First deployment on a Podman host
 
 Copy the repository to a dedicated directory on the target host, then run the
-initializer as the account that owns the deployment directory. For the
-rootful/system Podman convention used by the Train domain, the command is:
+initializer as the account that owns the deployment directory. The examples
+below write `<deployment-dir>` for that directory; substitute the host's chosen
+path. The checked-in systemd unit defaults to `/opt/ai-agent-observability`;
+any other path is set by the drop-in described under
+[Install boot orchestration](#install-boot-orchestration). For the
+rootful/system Podman convention, the command is:
 
 ```bash
-cd /home/completetrain/ai-agent-observability/deploy
+cd <deployment-dir>/deploy
 sudo env DOCKER_HOST=unix:///run/podman/podman.sock COMPOSE_ENGINE=docker ./init.sh
 ```
 
@@ -34,10 +38,29 @@ sudo systemctl enable --now ai-agent-observability.service
 The unit uses the rootful Podman API socket, an explicit project name, and
 `--no-build` on boot. Builds and upgrades remain deliberate operator actions.
 
+The unit's `WorkingDirectory` and `ExecStart` default to
+`/opt/ai-agent-observability/deploy`. For any other `<deployment-dir>`, leave
+the checked-in unit unchanged and override both paths with a drop-in:
+
+```bash
+sudo systemctl edit ai-agent-observability.service
+```
+
+```ini
+[Service]
+WorkingDirectory=<deployment-dir>/deploy
+ExecStart=
+ExecStart=<deployment-dir>/deploy/init.sh
+```
+
+The empty `ExecStart=` line clears the checked-in command before the override
+adds its own; without it the `oneshot` unit would run both. `systemctl edit`
+reloads the manager after saving, so re-run only `systemctl enable --now`.
+
 ## Inspection without secret output
 
 ```bash
-cd /home/completetrain/ai-agent-observability/deploy
+cd <deployment-dir>/deploy
 sudo env DOCKER_HOST=unix:///run/podman/podman.sock \
   docker compose -p ai-agent-observability -f compose.yaml ps
 sudo podman ps --filter name=ai-agent-observability --format '{{.Names}}|{{.Status}}|{{.Ports}}'
