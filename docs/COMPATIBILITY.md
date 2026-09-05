@@ -24,9 +24,12 @@ revalidated before an upgrade or redistribution.
 
 - Docker Engine with Docker Compose v2, or rootful Podman exposed through its
   Docker-compatible API socket.
-- Linux hosts with an amd64-compatible container runtime are the tested target
-  for the initial deployment. Other architectures depend on the upstream
-  images publishing a compatible manifest and are `unverified` until tested.
+- Linux hosts with an amd64-compatible container runtime are the intended
+  target for the initial deployment (`proposed`). Earlier author-reported
+  deployment evidence on such a host is historical and was not reproduced at
+  the reviewed head; repository CI provides static evidence only. Other
+  architectures depend on the upstream images publishing a compatible manifest
+  and are `unverified` until tested.
 - Host ports must be free or explicitly overridden in `.env`.
 - A persistent filesystem is required for all six named volumes.
 
