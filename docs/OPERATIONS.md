@@ -4,10 +4,11 @@
 
 Copy the repository to a dedicated directory on the target host, then run the
 initializer as the account that owns the deployment directory. The unit and the
-commands below use `/opt/ai-agent-observability`; if you install elsewhere, change
-`WorkingDirectory` and `ExecStart` in `systemd/ai-agent-observability.service` to
-match. Do not commit a host account path back to this repository. For the
-rootful/system Podman convention used by the Train domain, the command is:
+commands below use `/opt/ai-agent-observability`; if you install elsewhere,
+leave the checked-in unit unchanged and override its paths with the drop-in
+described under [Install boot orchestration](#install-boot-orchestration). Do
+not commit a host account path back to this repository. For the rootful/system
+Podman convention used by the Train domain, the command is:
 
 ```bash
 cd /opt/ai-agent-observability/deploy
@@ -36,6 +37,25 @@ sudo systemctl enable --now ai-agent-observability.service
 
 The unit uses the rootful Podman API socket, an explicit project name, and
 `--no-build` on boot. Builds and upgrades remain deliberate operator actions.
+
+The unit's `WorkingDirectory` and `ExecStart` default to
+`/opt/ai-agent-observability/deploy`. For any other deployment directory, leave
+the checked-in unit unchanged and override both paths with a drop-in:
+
+```bash
+sudo systemctl edit ai-agent-observability.service
+```
+
+```ini
+[Service]
+WorkingDirectory=<deployment-dir>/deploy
+ExecStart=
+ExecStart=<deployment-dir>/deploy/init.sh
+```
+
+The empty `ExecStart=` line clears the checked-in command before the override
+adds its own; without it the `oneshot` unit would run both. `systemctl edit`
+reloads the manager after saving, so re-run only `systemctl enable --now`.
 
 ## Inspection without secret output
 
