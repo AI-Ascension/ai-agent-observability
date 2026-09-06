@@ -131,6 +131,7 @@ db_restore_sql="$private_dir/.query-restore.$nonce.sql"
 ch_config="$private_dir/.clickhouse-config.$nonce.xml"
 ch_ro_config="$private_dir/.clickhouse-ro-config.$nonce.xml"
 ch_sql="$private_dir/.clickhouse-query.$nonce.sql"
+ch_grant_sql="$private_dir/.clickhouse-grant.$nonce.sql"
 ch_output="$private_dir/.clickhouse-query.$nonce.out"
 ch_error="$private_dir/.clickhouse-query.$nonce.err"
 env_backup="$private_dir/.env.before-query-provision.$nonce"
@@ -146,7 +147,8 @@ key_backup_state="$private_dir/.laminar-query-key.before-query-provision.$nonce.
 cleanup() {
   rm -f "$sql_file" "$sql_output" "$sql_error" "$db_preflight_sql" \
     "$db_preflight_output" "$ch_config" "$ch_ro_config" "$ch_sql" \
-    "$ch_output" "$ch_error" "$env_fragment" "$new_key_file" "$pgpass_file"
+    "$ch_grant_sql" "$ch_output" "$ch_error" "$env_fragment" \
+    "$new_key_file" "$pgpass_file"
   podman exec "$ch_container" rm -f "$ch_config_path" "$ch_ro_config_path" \
     >/dev/null 2>&1 || true
   podman exec "$pg_container" rm -f "$pgpass_path" >/dev/null 2>&1 || true
@@ -362,6 +364,10 @@ chmod 600 "$new_key_file"
 cat >"$ch_sql" <<SQL
 CREATE USER \`$ro_user\`
   IDENTIFIED WITH sha256_password BY '$clickhouse_ro_password';
+SQL
+chmod 600 "$ch_sql"
+
+cat >"$ch_grant_sql" <<SQL
 ALTER USER \`$ro_user\`
   DEFAULT ROLE NONE
   SETTINGS
@@ -374,7 +380,7 @@ ALTER USER \`$ro_user\`
 GRANT SELECT ON default.spans TO \`$ro_user\`;
 GRANT SELECT ON default.spans_v0 TO \`$ro_user\`;
 SQL
-chmod 600 "$ch_sql"
+chmod 600 "$ch_grant_sql"
 
 cat >"$ch_ro_config" <<XML
 <config><host>127.0.0.1</host><user>$ro_user</user><password>$clickhouse_ro_password</password></config>
@@ -384,6 +390,7 @@ chmod 600 "$ch_ro_config"
 # All preconditions and backups are complete. From this point onward every
 # persistent write has a compensation path and a deterministic rollback order.
 ch_mutation_attempted=false
+ch_user_created=false
 pg_mutation_attempted=false
 key_mutation_attempted=false
 env_mutation_attempted=false
@@ -433,10 +440,19 @@ SQL
       fi
     fi
     if [[ "$ch_mutation_attempted" == true ]]; then
-      if ! run_clickhouse_query "$ch_config_path" \
-        "DROP USER IF EXISTS \`$ro_user\`"; then
+      if [[ "$ch_user_created" == true ]]; then
+        if ! run_clickhouse_query "$ch_config_path" \
+          "DROP USER IF EXISTS \`$ro_user\`"; then
+          rollback_failed=true
+          printf '%s\n' 'rollback failed while removing the staged ClickHouse user' >&2
+        fi
+      elif ! run_clickhouse_query "$ch_config_path" \
+        "SELECT name FROM system.users WHERE name = '$ro_user' FORMAT TSV"; then
         rollback_failed=true
-        printf '%s\n' 'rollback failed while removing the staged ClickHouse user' >&2
+        printf '%s\n' 'rollback could not determine whether a foreign ClickHouse user appeared' >&2
+      elif grep -Fxq "$ro_user" "$ch_output"; then
+        rollback_failed=true
+        printf '%s\n' 'refusing to drop a ClickHouse user after an ambiguous CREATE failure; reconcile it manually' >&2
       fi
     fi
     printf 'rollback_env_backup=%s\n' "$env_backup" >&2
@@ -513,13 +529,20 @@ fi
 printf '%s\n' 'operator query key transaction=committed collector_key=preserved'
 
 # The target account was proved absent, so CREATE USER cannot overwrite a
-# pre-existing account. If this command or a later step fails, DROP USER is
-# the compensation path.
+# pre-existing account. CREATE runs separately from grants so compensation
+# drops the account only after a confirmed successful CREATE. An ambiguous
+# CREATE failure is inspected but never drops a possibly foreign account.
 ch_mutation_attempted=true
 if ! podman exec -i "$ch_container" clickhouse-client \
   --config-file "$ch_config_path" --multiquery <"$ch_sql" \
   >"$ch_output" 2>"$ch_error"; then
-  die 1 'ClickHouse read-only user transaction failed; raw output remains root-private'
+  die 1 'ClickHouse read-only user creation failed; raw output remains root-private'
+fi
+ch_user_created=true
+if ! podman exec -i "$ch_container" clickhouse-client \
+  --config-file "$ch_config_path" --multiquery <"$ch_grant_sql" \
+  >"$ch_output" 2>"$ch_error"; then
+  die 1 'ClickHouse read-only user grants failed; raw output remains root-private'
 fi
 
 if ! podman exec -i "$ch_container" sh -c 'umask 077; cat > "$1"' sh "$ch_ro_config_path" \

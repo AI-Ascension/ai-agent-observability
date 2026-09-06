@@ -23,6 +23,8 @@ for required in \
   'migration_target=' \
   'deterministic compensation' \
   'DROP USER IF EXISTS' \
+  'ch_user_created=false' \
+  'refusing to drop a ClickHouse user after an ambiguous CREATE failure' \
   'protected key before the database commit' \
   'no-align --tuples-only'; do
   grep -Fq -- "$required" "$script"
