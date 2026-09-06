@@ -30,15 +30,16 @@ jobs:
 
       - name: Check shell syntax and style
         run: |
-          for script in deploy/init.sh deploy/laminar/bootstrap-project-key.sh tests/*.sh tests/fixtures/*; do
+          for script in deploy/init.sh deploy/laminar/bootstrap-project-key.sh deploy/laminar/provision-query-readonly.sh tests/*.sh tests/fixtures/*; do
             bash -n "$script"
           done
-          shellcheck --severity=warning deploy/init.sh deploy/laminar/bootstrap-project-key.sh tests/*.sh tests/fixtures/*
+          shellcheck --severity=warning deploy/init.sh deploy/laminar/bootstrap-project-key.sh deploy/laminar/provision-query-readonly.sh tests/*.sh tests/fixtures/*
 
       - name: Test bootstrap without a container runtime
         run: |
           bash tests/bootstrap.sh
           bash tests/validation-regressions.sh
+          bash tests/query-provision-invariants.sh
 
       - name: Check text and secret hygiene
         run: |

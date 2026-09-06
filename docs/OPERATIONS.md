@@ -128,6 +128,40 @@ statement rolls back the replacement, preserving the previous key. This does
 not coordinate a key rotation with a running Collector: recreate the appropriate
 services using the approved rotation procedure and verify ingestion afterwards.
 
+### Provision a read-only query account
+
+The checked-in `deploy/laminar/provision-query-readonly.sh` is the reviewed
+procedure for the separate operator query path. Before running it, confirm the
+deployment directory, Compose project, Laminar PostgreSQL and ClickHouse
+container names, and the configured `LAMINAR_PROJECT_ID` against the same live
+stack. Run it only as root with the explicit approval guard:
+
+```bash
+cd /opt/ai-agent-observability/deploy
+sudo env OBSERVABILITY_QUERY_PROVISION_APPROVED=true \
+  ./laminar/provision-query-readonly.sh
+```
+
+The helper performs a deployed schema preflight, preserving the existing
+Collector `is_ingest_only=true` project key row, then creates an operator key
+and a ClickHouse user with `readonly = 1`, bounded execution time, memory,
+rows, bytes, and threads. It grants `SELECT` only on `default.spans` and
+`default.spans_v0`, verifies those grants and both queries, writes the new
+operator key to a mode-0600 root-owned file, and updates only the two
+read-only ClickHouse values in `.env`. Credentials stay in protected files or
+stdin; they are not passed as command-line values. The helper does not restart
+the stack.
+
+The helper prints a sanitized container identity and image ID plus a root-only
+`.env` backup path under `/run/ai-agent-observability/`. Keep that backup until
+the query consumer has been checked. The PostgreSQL key update and ClickHouse
+account update are separate service operations, so a failure after one has
+committed can leave an account or key that needs operator reconciliation. Use
+the printed backup to restore local configuration only after checking which
+remote operation committed; do not remove the Collector key or rotate the
+entire `.env`. Record the exact container and image identity with any live
+evidence, and classify a failed query or backend check as unverified.
+
 - Image pull/build failure: build evidence is unavailable; existing running
   services are not changed by the failed build.
 - Database or search failure: health and end-to-end evidence are unavailable;

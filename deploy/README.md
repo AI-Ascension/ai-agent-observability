@@ -51,3 +51,34 @@ docker compose -p ai-agent-observability -f compose.yaml up -d
 
 Do not use `down -v` or prune commands. Use [`../docs/OPERATIONS.md`](../docs/OPERATIONS.md)
 for backups, upgrades, systemd, and evidence capture.
+
+## Read-only query access
+
+The Laminar operator query path has separate credentials from the Collector's
+ingest-only key and ClickHouse writer account. After reviewing the target
+host's deployment identity, provision them with the root-only helper:
+
+```bash
+cd /opt/ai-agent-observability/deploy
+sudo env OBSERVABILITY_QUERY_PROVISION_APPROVED=true \
+  ./laminar/provision-query-readonly.sh
+```
+
+The helper reads the root-owned mode-0600 `.env` as data, sends PostgreSQL
+credentials through a protected `PGPASSFILE`, and sends ClickHouse credentials
+through temporary root-private XML config files. It validates the deployed
+`default.spans` table and `default.spans_v0` view, creates the bounded
+read-only ClickHouse account, verifies both objects with that account, and
+stores the new Laminar operator key at
+`/root/ai-agent-observability/laminar-query-key` with mode `0600`. It does not
+restart or recreate any service. Inspect the protected `.env` diff and use the
+reviewed Compose command for the query consumer afterwards.
+
+The helper retains a root-only pre-change `.env` backup under
+`/run/ai-agent-observability/` and prints only its path and non-secret
+container identity. Preserve that backup until the query path has been
+verified. If a later step fails, do not rerun blindly: inspect the helper's
+sanitized status, restore the saved `.env` if needed, and reconcile the
+operator key and ClickHouse account with the same project and container
+identities. The Collector ingest-only row is checked before the transaction
+and is preserved.
