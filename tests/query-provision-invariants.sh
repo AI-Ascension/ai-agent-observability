@@ -15,6 +15,7 @@ for required in \
   'openssl dgst -sha3-256' \
   'is_ingest_only = true' \
   'is_ingest_only, user_id, expires_at, value' \
+  'id, name, project_id, shorthand, hash, is_ingest_only, user_id, expires_at, value, created_at' \
   'readonly = 1' \
   'read-only user must be distinct from the writer user' \
   'GRANT SELECT ON default.spans' \

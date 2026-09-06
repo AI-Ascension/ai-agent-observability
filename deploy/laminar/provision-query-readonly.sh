@@ -307,8 +307,8 @@ PY
 # before replacing it. An absent row is recorded as an empty backup.
 cat >"$db_backup_sql" <<SQL
 SELECT format(
-  'INSERT INTO project_api_keys (name, project_id, shorthand, hash, is_ingest_only, user_id, expires_at, value) VALUES (%L, %L, %L, %L, %L, %L, %L, %L);',
-  name, project_id, shorthand, hash, is_ingest_only, user_id, expires_at, value)
+  'INSERT INTO project_api_keys (id, name, project_id, shorthand, hash, is_ingest_only, user_id, expires_at, value, created_at) VALUES (%L, %L, %L, %L, %L, %L, %L, %L, %L, %L);',
+  id, name, project_id, shorthand, hash, is_ingest_only, user_id, expires_at, value, created_at)
 FROM project_api_keys
 WHERE project_id = '$project_id'::uuid
   AND name = '$operator_key_name';
