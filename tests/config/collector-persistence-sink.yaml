@@ -1,0 +1,22 @@
+# Test-only sink configuration. The debug exporter output is the receipt used
+# by tests/collector-persistence.sh; it does not write to any deployment store.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  debug:
+    verbosity: detailed
+
+service:
+  telemetry:
+    # The debug exporter emits synthetic receipts at info level; keep this
+    # fixture's output visible so the persistence test can assert the span.
+    logs:
+      level: info
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [debug]

@@ -19,6 +19,7 @@ revalidated before an upgrade or redistribution.
 | RabbitMQ | `4.3.5-management` | Laminar queue transport |
 | Quickwit | `v0.8.2` | Laminar search/index store |
 | AWS CLI | `2.33.25` | Idempotent RustFS bucket initializer |
+| Alpine | `3.22.1` | One-shot Collector queue-volume ownership initializer and backup/restore helper |
 
 ## Supported runtime boundary
 
@@ -29,7 +30,8 @@ revalidated before an upgrade or redistribution.
   from the static CI checks). Other architectures depend on the upstream
   images publishing a compatible manifest and are `unverified` until tested.
 - Host ports must be free or explicitly overridden in `.env`.
-- A persistent filesystem is required for all six named volumes.
+- A persistent filesystem is required for all eight named volumes, including
+  the Collector queue volume and RabbitMQ data volume.
 
 ## Upgrade rules
 

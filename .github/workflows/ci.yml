@@ -39,6 +39,8 @@ jobs:
         run: |
           bash tests/bootstrap.sh
           bash tests/validation-regressions.sh
+          COLLECTOR_RUNTIME_VALIDATE=required bash tests/collector-invariants.sh
+          COLLECTOR_PERSISTENCE_RUNTIME=required bash tests/collector-persistence.sh
 
       - name: Check text and secret hygiene
         run: |

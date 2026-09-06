@@ -28,6 +28,10 @@ Laminar app-server :8000/:8001/:8002 ---- PostgreSQL + ClickHouse + RabbitMQ + Q
         ^
         |
 Laminar frontend :5667
+
+Collector health :13133 and bounded metrics :8888/:8889 are local read-only
+diagnostic endpoints. The :8888 endpoint exposes Collector queue/drop
+telemetry; :8889 exposes filesystem usage for the queue volume.
 ```
 
 The host-facing bindings are loopback-only by default. Internal service names
@@ -39,7 +43,8 @@ change the internal protocol contract.
 | Boundary | Owner | Stored or served data |
 | --- | --- | --- |
 | Agent/harness | Calling repository | Run/episode identity and agent-produced spans |
-| Collector | This repository | Bounded buffering and authenticated fan-out |
+| Collector | This repository | Durable bounded buffering and authenticated fan-out |
+| Collector queue volume | This repository | Persistent exporter queues and compaction state |
 | MLflow | Upstream MLflow | Experiments, runs, metrics, parameters, artifacts |
 | Laminar | Upstream Laminar | Traces, spans, evaluation/debugging records |
 | MLflow PostgreSQL | MLflow deployment | Tracking metadata |
@@ -51,16 +56,21 @@ change the internal protocol contract.
 
 ## Startup ordering
 
-1. MLflow PostgreSQL and RustFS become healthy.
-2. The bucket initializer creates the configured MLflow artifact bucket.
-3. MLflow starts with its PostgreSQL backend and RustFS artifact destination.
-4. Laminar PostgreSQL, RabbitMQ, ClickHouse, and Quickwit become healthy.
-5. Laminar app-server and frontend start; the frontend applies its migrations.
-6. The bootstrap service creates a fixed local workspace/project, a 64-character
+1. The Collector storage initializer creates the exact queue and compaction
+   directories with UID/GID `10001:10001`.
+2. The Collector starts with its local health endpoint and persistent queues;
+   MLflow, Laminar, and their dashboards are not startup prerequisites.
+3. MLflow PostgreSQL and RustFS become healthy.
+4. The bucket initializer creates the configured MLflow artifact bucket.
+5. MLflow starts with its PostgreSQL backend and RustFS artifact destination.
+6. Laminar PostgreSQL, RabbitMQ, ClickHouse, and Quickwit become healthy.
+7. Laminar app-server and frontend start; the frontend applies its migrations.
+8. The bootstrap service creates a fixed local workspace/project, a 64-character
    ingest-only project key hash, and a pending invitation for the configured
    local operator email. It exits successfully and does not persist the
    plaintext key in PostgreSQL.
-7. The Collector starts and fans out accepted traces to both backends.
+9. The Collector retries queued exports and fans out accepted traces to both
+   backends as each downstream becomes available.
 
 The one-shot initializers are idempotent for the generated deployment identity;
 Laminar's database changes are committed together or rolled back together.

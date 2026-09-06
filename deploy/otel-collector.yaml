@@ -1,3 +1,42 @@
+extensions:
+  # The Collector image runs as UID/GID 10001. The Compose storage-init
+  # service creates these directories with matching ownership before this
+  # process starts; create_directory also handles an empty initialized volume.
+  health_check:
+    endpoint: 0.0.0.0:13133
+  file_storage/mlflow:
+    directory: /var/lib/otelcol/storage/mlflow
+    timeout: 10s
+    max_size: 134217728
+    fsync: true
+    create_directory: true
+    directory_permissions: "0750"
+    compaction:
+      on_start: true
+      on_rebound: true
+      directory: /var/lib/otelcol/compaction/mlflow
+      max_transaction_size: 65536
+      check_interval: 5m
+      cleanup_on_start: true
+      rebound_needed_threshold_mib: 96
+      rebound_trigger_threshold_mib: 64
+  file_storage/laminar:
+    directory: /var/lib/otelcol/storage/laminar
+    timeout: 10s
+    max_size: 134217728
+    fsync: true
+    create_directory: true
+    directory_permissions: "0750"
+    compaction:
+      on_start: true
+      on_rebound: true
+      directory: /var/lib/otelcol/compaction/laminar
+      max_transaction_size: 65536
+      check_interval: 5m
+      cleanup_on_start: true
+      rebound_needed_threshold_mib: 96
+      rebound_trigger_threshold_mib: 64
+
 receivers:
   otlp:
     protocols:
@@ -5,6 +44,18 @@ receivers:
         endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
+
+  # This receiver is deliberately limited to the Collector queue volume. It
+  # makes disk headroom visible without mounting the host filesystem.
+  hostmetrics/storage:
+    collection_interval: 15s
+    root_path: /
+    scrapers:
+      filesystem:
+        include_mount_points:
+          match_type: strict
+          mount_points:
+            - /var/lib/otelcol
 
 processors:
   memory_limiter:
@@ -26,11 +77,16 @@ exporters:
       enabled: true
       initial_interval: 1s
       max_interval: 30s
-      max_elapsed_time: 300s
+      # Retry until the bounded queue is full; queue exhaustion is surfaced
+      # through otelcol_exporter_enqueue_failed_spans.
+      max_elapsed_time: 0s
     sending_queue:
       enabled: true
       num_consumers: 2
       queue_size: 1024
+      sizer: requests
+      block_on_overflow: false
+      storage: file_storage/mlflow
 
   otlp_http/laminar:
     endpoint: http://laminar-app-server:8000
@@ -42,18 +98,51 @@ exporters:
       enabled: true
       initial_interval: 1s
       max_interval: 30s
-      max_elapsed_time: 300s
+      max_elapsed_time: 0s
     sending_queue:
       enabled: true
       num_consumers: 2
       queue_size: 1024
+      sizer: requests
+      block_on_overflow: false
+      storage: file_storage/laminar
+
+  # A separate endpoint carries filesystem usage for the queue volume. The
+  # Collector's own endpoint below carries queue depth/capacity and drop
+  # counters; neither endpoint accepts telemetry input.
+  prometheus/storage:
+    endpoint: 0.0.0.0:8889
+    namespace: ai_agent_observability
+    send_timestamps: true
+    metric_expiration: 5m
+    without_scope_info: true
+    resource_constant_labels:
+      included: []
 
 service:
   telemetry:
     logs:
       level: warn
+    metrics:
+      # Normal retains queue depth/capacity and enqueue/send failure counters
+      # while suppressing detailed error dimensions that can grow with backend
+      # responses.
+      level: normal
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+                without_scope_info: true
+                without_type_suffix: true
+                without_units: true
   pipelines:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
       exporters: [otlp_http/mlflow, otlp_http/laminar]
+    metrics/storage:
+      receivers: [hostmetrics/storage]
+      exporters: [prometheus/storage]
+  extensions: [health_check, file_storage/mlflow, file_storage/laminar]

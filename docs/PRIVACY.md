@@ -14,6 +14,9 @@ with access to the host or tunnel can potentially inspect the configured UIs.
   uploaded by a researcher.
 - Laminar stores spans, inputs/outputs included in spans, project metadata,
   evaluation records, and search indexes.
+- The Collector queue volume may temporarily retain accepted spans while either
+  downstream is unavailable, subject to each queue's 1,024-request and 128 MiB
+  limits; it is included in the project's backup and restore set.
 - PostgreSQL, ClickHouse, RabbitMQ, and Quickwit retain the supporting records
   required by the two products.
 

@@ -39,6 +39,9 @@ Useful local endpoints after startup:
 | Laminar gRPC | `127.0.0.1:18001` | Direct OTLP/gRPC access |
 | OTLP Collector HTTP | `http://127.0.0.1:14318` | Recommended agent endpoint |
 | OTLP Collector gRPC | `127.0.0.1:14317` | Recommended agent endpoint |
+| Collector health | `http://127.0.0.1:13133` | Collector process readiness only |
+| Collector metrics | `http://127.0.0.1:14319/metrics` | Queue depth/capacity and drop accounting |
+| Collector storage metrics | `http://127.0.0.1:14320/metrics` | Queue-volume filesystem headroom |
 
 The operator should use an SSH tunnel or an approved private reverse proxy for
 browser access. The initial deployment intentionally does not modify shared
@@ -60,6 +63,8 @@ Caddy routes.
   upgrade procedures.
 - [`docs/PRIVACY.md`](docs/PRIVACY.md) — retention, redaction, and egress
   boundaries.
+- [`docs/RECOVERY.md`](docs/RECOVERY.md) — persistent queues, volume inventory,
+  metrics, and quiesced backup/restore procedures.
 - [`prompts/AI_AGENT_OBSERVABILITY_ORCHESTRATION_PROMPT.md`](prompts/AI_AGENT_OBSERVABILITY_ORCHESTRATION_PROMPT.md)
   — the reusable orchestration prompt requested for multi-agent completion.
 

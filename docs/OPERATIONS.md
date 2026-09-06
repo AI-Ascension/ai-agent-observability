@@ -73,11 +73,17 @@ Health probes are intentionally bounded to loopback:
 curl -fsS http://127.0.0.1:15000/health
 curl -fsS http://127.0.0.1:18000/health
 curl -fsS http://127.0.0.1:15667/ >/dev/null
+curl -fsS http://127.0.0.1:13133/
+curl -fsS http://127.0.0.1:14319/metrics \
+  | grep -E 'otelcol_exporter_(queue_(capacity|size)|enqueue_failed_spans|send_failed_spans)'
+curl -fsS http://127.0.0.1:14320/metrics \
+  | grep -E 'ai_agent_observability_.*filesystem'
 ```
 
-The Collector has no HTTP health endpoint in this minimal configuration; its
-container state and logs should be checked together with the downstream smoke
-test. Do not treat a running Collector process as proof of accepted traces.
+The Collector health endpoint reports only Collector process/configuration
+readiness. Its queue/drop metrics are separate from filesystem headroom and
+from MLflow/Laminar backend health. Do not treat a running Collector process or
+health response as proof of accepted traces or backend persistence.
 
 ## Browser access
 
@@ -99,10 +105,11 @@ before first initialization if a different operator identity is required.
 
 ## Backups and upgrades
 
-Back up the six named volumes with a host-approved, quiesced procedure before
-upgrading. At minimum, preserve Laminar PostgreSQL, ClickHouse, Quickwit, and
-MLflow PostgreSQL/RustFS data. Record the image tags and Compose commit with
-each backup. Never use `down -v` as a backup or rollback mechanism.
+Back up all eight named volumes with the host-approved, quiesced procedure in
+[`RECOVERY.md`](RECOVERY.md) before upgrading. At minimum, preserve Collector
+queues, RabbitMQ, Laminar PostgreSQL/ClickHouse/Quickwit, and MLflow
+PostgreSQL/RustFS data. Record the image tags and Compose commit with each
+backup. Never use `down -v` as a backup or rollback mechanism.
 
 For an upgrade, change one pinned version, run the static CI gates, pull/build
 only the affected image, and use `docker compose up -d` for this project. Check
@@ -112,15 +119,14 @@ delete live volumes to force a migration.
 
 ## Failure boundaries
 
-The Collector's sending queues are in memory; its acknowledgement is not proof
-that both backends have durably stored a trace. Export retries can duplicate
-delivery, and queue overflow, retry exhaustion, or process replacement can lose
-pending spans. RabbitMQ has no named persistent volume in this initial stack;
-container recreation can lose queued ingest work. The six named volumes preserve
-the configured databases, artifacts, search data, and ClickHouse logs, not all
-in-flight telemetry. Quiesce producers and verify both downstream records before
-using restart survival as experimental evidence. Durable ingestion across
-outages requires a separately validated queue/storage design.
+The Collector's sending queues are persistent but bounded; its acknowledgement
+is not proof that both backends have durably stored a trace. Export retries can
+duplicate delivery, and queue overflow, storage exhaustion, or process
+replacement before a durable write can still lose pending spans. RabbitMQ now
+has a named persistent volume, but its queue semantics and downstream receipt
+still require verification. Quiesce producers and verify both downstream
+records before using restart survival as experimental evidence. See
+[`RECOVERY.md`](RECOVERY.md) for capacity, metrics, and backup/restore steps.
 
 The Laminar bootstrap applies workspace/project creation, collector-key
 replacement, and invitation creation in one PostgreSQL transaction. A failed
@@ -132,8 +138,9 @@ services using the approved rotation procedure and verify ingestion afterwards.
   services are not changed by the failed build.
 - Database or search failure: health and end-to-end evidence are unavailable;
   inspect only this project's named containers and volumes.
-- Collector export failure: inspect downstream health and Collector logs; the
-  queue is bounded and retries are finite.
+- Collector export failure: inspect downstream health, queue depth, failed-send
+  counters, failed-enqueue counters, and queue-volume headroom. Retries remain
+  bounded by the persistent queue and file-storage limits.
 - Authentication failure: rotate the project key in the deployment `.env` by
   an approved procedure and recreate only this project's bootstrap/Collector
   path. Never place the key in a command-line transcript.

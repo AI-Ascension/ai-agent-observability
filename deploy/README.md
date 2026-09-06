@@ -41,6 +41,14 @@ connection is needed, use the local `.env` value for `LAMINAR_PROJECT_API_KEY`
 through the operator's approved secret-reading method; never paste it into a
 shell history, issue, log, or repository.
 
+The Collector accepts input as soon as its own queue volume is writable. Its
+health endpoint is `http://127.0.0.1:13133/`; this reports Collector readiness,
+not dashboard or backend health. Queue/drop metrics are exposed at
+`http://127.0.0.1:14319/metrics`, and queue-volume filesystem metrics are at
+`http://127.0.0.1:14320/metrics`. The two exporter queues retain at most 1,024
+requests each and reject/account new data when queue or storage capacity is
+exhausted.
+
 ## Safe lifecycle commands
 
 ```bash
@@ -50,4 +58,5 @@ docker compose -p ai-agent-observability -f compose.yaml up -d
 ```
 
 Do not use `down -v` or prune commands. Use [`../docs/OPERATIONS.md`](../docs/OPERATIONS.md)
-for backups, upgrades, systemd, and evidence capture.
+and [`../docs/RECOVERY.md`](../docs/RECOVERY.md) for backups, restores,
+upgrades, systemd, and evidence capture.

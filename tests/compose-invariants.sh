@@ -27,6 +27,7 @@ required_services=(
   ai-agent-observability-laminar-app-server
   ai-agent-observability-laminar-frontend
   ai-agent-observability-laminar-bootstrap
+  ai-agent-observability-otel-collector-storage-init
   ai-agent-observability-otel-collector
 )
 
@@ -48,12 +49,45 @@ if ! awk '
   exit 1
 fi
 
-for published_port in 15000 15667 14317 14318; do
+for published_port in 15000 15667 14317 14318 13133 14319 14320; do
   if ! grep -Fq "published: \"$published_port\"" <<<"$compose_output"; then
     printf 'missing published loopback port: %s\n' "$published_port" >&2
     exit 1
   fi
 done
+
+# Collector queues and all stateful backend stores must remain named volumes;
+# a restart policy alone is not a durability mechanism. The storage initializer
+# is the only explicitly root-configured service and the Collector itself stays
+# non-root/read-only.
+for volume_name in \
+  ai-agent-observability-mlflow-postgres-data \
+  ai-agent-observability-mlflow-storage-data \
+  ai-agent-observability-laminar-postgres-data \
+  ai-agent-observability-laminar-clickhouse-data \
+  ai-agent-observability-laminar-clickhouse-logs \
+  ai-agent-observability-laminar-quickwit-data \
+  ai-agent-observability-laminar-rabbitmq-data \
+  ai-agent-observability-otel-collector-data; do
+  grep -Fq "name: $volume_name" <<<"$compose_output"
+done
+
+grep -Fq 'storage: file_storage/mlflow' deploy/otel-collector.yaml
+grep -Fq 'storage: file_storage/laminar' deploy/otel-collector.yaml
+grep -Fq 'fsync: true' deploy/otel-collector.yaml
+grep -Fq 'level: normal' deploy/otel-collector.yaml
+grep -Fq 'hostmetrics/storage' deploy/otel-collector.yaml
+grep -Fq 'prometheus/storage' deploy/otel-collector.yaml
+grep -Fq 'endpoint: 0.0.0.0:13133' deploy/otel-collector.yaml
+grep -Fq 'user: "10001:10001"' deploy/compose.yaml
+grep -Fq 'cap_drop:' deploy/compose.yaml
+
+# The Compose service owns container restart policy. The systemd oneshot unit
+# intentionally has no competing Restart= directive.
+if grep -Eq '^Restart=' systemd/ai-agent-observability.service; then
+  printf '%s\n' 'systemd must not compete with Compose restart policy' >&2
+  exit 1
+fi
 
 if ! grep -Fq 'external: true' <<<"$compose_output"; then
   printf '%s\n' 'the runtime network is not declared external' >&2
