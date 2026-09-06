@@ -74,11 +74,12 @@ stores the new Laminar operator key at
 restart or recreate any service. Inspect the protected `.env` diff and use the
 reviewed Compose command for the query consumer afterwards.
 
-The helper retains a root-only pre-change `.env` backup under
-`/run/ai-agent-observability/` and prints only its path and non-secret
-container identity. Preserve that backup until the query path has been
-verified. If a later step fails, do not rerun blindly: inspect the helper's
-sanitized status, restore the saved `.env` if needed, and reconcile the
-operator key and ClickHouse account with the same project and container
-identities. The Collector ingest-only row is checked before the transaction
-and is preserved.
+The helper retains root-only backups of the pre-change `.env`, local operator
+key, and scoped PostgreSQL operator row under `/run/ai-agent-observability/`.
+It checks the live ClickHouse account before migrating a legacy writer alias,
+refuses a target-account collision, and runs deterministic compensation for a
+failure after the key, PostgreSQL, or ClickHouse write. Preserve the printed
+backup paths until the query path has been verified. If compensation reports
+an incomplete rollback, stop and reconcile the exact project and container
+identities from those backups. The Collector ingest-only row is checked before
+the transaction and is preserved.

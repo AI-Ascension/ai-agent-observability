@@ -148,19 +148,22 @@ and a ClickHouse user with `readonly = 1`, bounded execution time, memory,
 rows, bytes, and threads. It grants `SELECT` only on `default.spans` and
 `default.spans_v0`, verifies those grants and both queries, writes the new
 operator key to a mode-0600 root-owned file, and updates only the two
-read-only ClickHouse values in `.env`. Credentials stay in protected files or
-stdin; they are not passed as command-line values. The helper does not restart
-the stack.
+read-only ClickHouse values in `.env`. A legacy `CLICKHOUSE_RO_USER=lmnr`
+writer alias is admitted through live preflight and migrated to
+`lmnr_query_ro`; an already existing target account is refused. Credentials
+stay in protected files or stdin; they are not passed as command-line values.
+The helper does not restart the stack.
 
-The helper prints a sanitized container identity and image ID plus a root-only
-`.env` backup path under `/run/ai-agent-observability/`. Keep that backup until
-the query consumer has been checked. The PostgreSQL key update and ClickHouse
-account update are separate service operations, so a failure after one has
-committed can leave an account or key that needs operator reconciliation. Use
-the printed backup to restore local configuration only after checking which
-remote operation committed; do not remove the Collector key or rotate the
-entire `.env`. Record the exact container and image identity with any live
-evidence, and classify a failed query or backend check as unverified.
+Before any persistent write, the helper backs up `.env`, the existing operator
+key file, and the scoped PostgreSQL operator row. It installs the new key before
+the database commit, then compensates the PostgreSQL row, ClickHouse account,
+key file, and `.env` in a fixed order if a later step fails. The helper prints
+the sanitized container identity and image ID plus root-only backup paths.
+Keep those backups until the query consumer has been checked; if compensation
+reports an incomplete rollback, stop and reconcile using the printed paths and
+the same project/container identities. Record the exact container and image
+identity with any live evidence, and classify a failed query or backend check
+as unverified.
 
 - Image pull/build failure: build evidence is unavailable; existing running
   services are not changed by the failed build.

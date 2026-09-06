@@ -18,9 +18,20 @@ for required in \
   'readonly = 1' \
   'read-only user must be distinct from the writer user' \
   'GRANT SELECT ON default.spans' \
-  'GRANT SELECT ON default.spans_v0'; do
+  'GRANT SELECT ON default.spans_v0' \
+  'legacy_clickhouse_ro_user=' \
+  'migration_target=' \
+  'deterministic compensation' \
+  'DROP USER IF EXISTS' \
+  'protected key before the database commit' \
+  'no-align --tuples-only'; do
   grep -Fq -- "$required" "$script"
 done
+
+if grep -Fq -- 'CREATE USER IF NOT EXISTS' "$script"; then
+  printf '%s\n' 'query provisioning must refuse an existing account or reset it exactly' >&2
+  exit 1
+fi
 
 grep -Fq 'CLICKHOUSE_RO_USER=lmnr_query_ro' "$repo_root/deploy/.env.example"
 grep -Fq 'clickhouse_ro_password=' "$repo_root/deploy/init.sh"
