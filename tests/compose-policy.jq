@@ -16,30 +16,47 @@ def normalized_build($value):
   else {invalid: true}
   end;
 
+def normalized_port:
+  . as $port |
+  if ($port | type) != "object" or
+     (((($port | keys) - ["host_ip", "published", "target", "protocol", "mode", "name", "app_protocol"]) | length) != 0) or
+     ($port.name != null) or ($port.app_protocol != null) then
+    {invalid: true}
+  else
+    {
+      host_ip: $port.host_ip,
+      published: ($port.published | tostring),
+      target: $port.target,
+      protocol: ($port.protocol // "tcp"),
+      mode: ($port.mode // "ingress")
+    }
+  end;
+
 def normalized_ports($value):
   if $value == null then []
-  elif ($value | type) == "array" then
-    [$value[] |
-      {
-        host_ip: .host_ip,
-        published: (.published | tostring),
-        target: .target,
-        protocol: (.protocol // "tcp"),
-        mode: (.mode // "ingress")
-      }]
+  elif ($value | type) == "array" then [$value[] | normalized_port]
   else [{invalid: true}]
+  end;
+
+def normalized_mount:
+  . as $mount |
+  if ($mount | type) != "object" or
+     (((($mount | keys) - ["type", "source", "target", "read_only", "bind", "volume"]) | length) != 0) then
+    {invalid: true}
+  else
+    {
+      type: $mount.type,
+      source: $mount.source,
+      target: $mount.target,
+      read_only: ($mount.read_only // false),
+      bind: ($mount.bind // null),
+      volume: ($mount.volume // null)
+    }
   end;
 
 def normalized_mounts($value):
   if $value == null then []
-  elif ($value | type) == "array" then
-    [$value[] |
-      {
-        type: .type,
-        source: .source,
-        target: .target,
-        read_only: (.read_only // false)
-      }]
+  elif ($value | type) == "array" then [$value[] | normalized_mount]
   else [{invalid: true}]
   end;
 
@@ -50,7 +67,9 @@ def expected_mounts($value):
         type: .type,
         source: (if .type == "bind" then ($project_dir + "/" + .source) else .source end),
         target: .target,
-        read_only: (.read_only // false)
+        read_only: (.read_only // false),
+        bind: (if .type == "bind" then {create_host_path: true} else null end),
+        volume: (if .type == "volume" then {} else null end)
       }]
   else [{invalid: true}]
   end;
@@ -131,6 +150,12 @@ def valid_model:
     (environment_keys($actual.environment) == $expected.environment_keys) and
     (all(($expected.environment_values // {}) | to_entries[];
       $actual.environment[.key] == .value)) and
+    ($actual.container_name == $expected.container_name) and
+    ($actual.entrypoint == $expected.entrypoint) and
+    ($actual.restart == $expected.restart) and
+    ($actual.pull_policy == $expected.pull_policy) and
+    ($actual.healthcheck == $expected.healthcheck) and
+    (($actual.ulimits // {}) == ($expected.ulimits // {})) and
     (($actual.networks // {}) == {default: null}) and
     (($actual.command // null) == $expected.command) and
     (normalized_depends($actual.depends_on) == expected_depends($expected.depends_on)) and

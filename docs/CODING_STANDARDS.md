@@ -8,9 +8,10 @@ and protected-check activation remain separate owner actions. AGENTS.md and the
 architecture, privacy and compatibility documents retain boundary authority.
 
 Use Bash for the existing scripts, ShellCheck 0.10.0 for shell analysis, and the
-Compose parser plus jq for structured deployment checks. ShellCheck's Linux
-archive is pinned by SHA-256 in CI. The canonical structured gate checks Docker
-Compose 2.39.4 and jq 1.8.1 before rendering. These are development checks, not
+Compose parser plus jq for structured deployment checks. The Linux archives for
+ShellCheck, Docker Compose 2.39.4 and jq 1.8.1 are pinned by SHA-256 in CI and
+provisioned only in the runner's temporary directory. The canonical structured
+gate checks those versions before rendering. These are development checks, not
 new image dependencies. Keep UTF-8/LF and existing EditorConfig indentation.
 Use no formatter on frozen image pins, evidence or external data.
 

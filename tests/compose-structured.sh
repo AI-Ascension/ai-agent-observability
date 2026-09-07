@@ -15,7 +15,7 @@ fi
 # Keep shell variables, Docker context settings and credentials out of Compose
 # interpolation. The only interpolation source for this canonical render is
 # the checked-in example file named below.
-isolated_env=(env -i PATH="$PATH" HOME=/tmp)
+isolated_env=(env -i PATH="$PATH")
 compose_version="$("${isolated_env[@]}" "${compose[@]}" version --short)"
 [[ $compose_version == "$expected_compose_version" ]] || {
   printf 'Expected Compose %s, got %s\n' "$expected_compose_version" "$compose_version" >&2

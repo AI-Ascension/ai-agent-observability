@@ -27,12 +27,20 @@ jq -n --arg project_dir "$test_root" --slurpfile contract_file "$repo_root/tests
       . as $mount |
       {type: $mount.type,
        source: (if $mount.type == "bind" then ($project_dir + "/" + $mount.source) else $mount.source end),
-       target: $mount.target, read_only: ($mount.read_only // false)}];
+       target: $mount.target, read_only: ($mount.read_only // false),
+       bind: (if $mount.type == "bind" then {create_host_path: true} else null end),
+       volume: (if $mount.type == "volume" then {} else null end)}];
   ($contract.services | to_entries | map({
     key: .key,
     value: {
       image: .value.image,
       build: build(.value.build),
+      container_name: .value.container_name,
+      entrypoint: .value.entrypoint,
+      restart: .value.restart,
+      pull_policy: .value.pull_policy,
+      healthcheck: .value.healthcheck,
+      ulimits: .value.ulimits,
       environment: env(.value),
       command: .value.command,
       depends_on: depends(.value.depends_on),
@@ -85,6 +93,16 @@ mutations=(
   '.services["otel-collector"].ports = []'
   '.services.mlflow.ports[0].host_ip = "0.0.0.0"'
   '.services.mlflow.ports[0].protocol = "udp"'
+  '.services.mlflow.entrypoint = ["sh", "-c", "exit 0"]'
+  '.services.mlflow.healthcheck = {test:["CMD", "sh", "-c", "exit 0"]}'
+  '.services.mlflow.restart = "no"'
+  '.services.mlflow.pull_policy = "always"'
+  '.services.mlflow.container_name = "unapproved-mlflow"'
+  '.services["laminar-clickhouse"].ulimits = {nofile:{soft:1,hard:1}}'
+  '.services["laminar-clickhouse"].volumes[0].volume = {nocopy:true}'
+  '.services["laminar-clickhouse"].volumes[2].bind = {create_host_path:true,propagation:"shared"}'
+  '.services.mlflow.ports[0].name = "unapproved"'
+  '.services.mlflow.ports[0].app_protocol = "http"'
   # Namespace, device, capability and security confinement.
   '.services.mlflow.pid = "host"'
   '.services.mlflow.ipc = "host"'

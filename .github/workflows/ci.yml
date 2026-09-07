@@ -33,19 +33,43 @@ jobs:
           tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/shellcheck-v0.10.0" >> "$GITHUB_PATH"
 
-      - name: Verify pinned Compose and jq
+      - name: Prepare pinned Compose and jq
         env:
-          EXPECTED_COMPOSE_VERSION: 2.39.4
-          EXPECTED_JQ_VERSION: 1.8.1
+          COMPOSE_VERSION: 2.39.4
+          # From https://github.com/docker/compose/releases/download/v2.39.4/checksums.txt
+          COMPOSE_SHA256: 7af95166a730b87e172d4fc9aefea8725d3c6c7327d59149267b452114ddb7d4
+          JQ_VERSION: 1.8.1
+          # From https://github.com/jqlang/jq/releases/download/jq-1.8.1/sha256sum.txt
+          JQ_SHA256: 020468de7539ce70ef1bceaf7cde2e8c4f2ca6c3afb84642aabc5c97d9fc2a0d
         run: |
+          compose_path="$RUNNER_TEMP/docker-compose"
+          jq_path="$RUNNER_TEMP/jq"
+          docker_config="$RUNNER_TEMP/docker-config"
+          mkdir -p "$docker_config/cli-plugins"
+          curl --fail --location --max-time 90 --output "$compose_path" \
+            "https://github.com/docker/compose/releases/download/v${COMPOSE_VERSION}/docker-compose-linux-x86_64"
+          printf '%s  %s\n' "$COMPOSE_SHA256" "$compose_path" | sha256sum --check
+          chmod 0755 "$compose_path"
+          install -m 0755 "$compose_path" "$docker_config/cli-plugins/docker-compose"
+          curl --fail --location --max-time 90 --output "$jq_path" \
+            "https://github.com/jqlang/jq/releases/download/jq-${JQ_VERSION}/jq-linux-amd64"
+          printf '%s  %s\n' "$JQ_SHA256" "$jq_path" | sha256sum --check
+          chmod 0755 "$jq_path"
+          {
+            printf 'DOCKER_CONFIG=%s\n' "$docker_config"
+            printf 'COMPOSE_BINARY=%s\n' "$compose_path"
+          } >> "$GITHUB_ENV"
+          printf '%s\n' "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          export DOCKER_CONFIG="$docker_config"
+          export PATH="$RUNNER_TEMP:$PATH"
           compose_version="$(docker compose version --short)"
           jq_version="$(jq --version)"
-          [[ "$compose_version" == "$EXPECTED_COMPOSE_VERSION" ]] || {
-            printf 'Expected Docker Compose %s, got %s\n' "$EXPECTED_COMPOSE_VERSION" "$compose_version" >&2
+          [[ "$compose_version" == "$COMPOSE_VERSION" ]] || {
+            printf 'Expected Docker Compose %s, got %s\n' "$COMPOSE_VERSION" "$compose_version" >&2
             exit 1
           }
-          [[ "$jq_version" == "jq-$EXPECTED_JQ_VERSION" ]] || {
-            printf 'Expected jq %s, got %s\n' "$EXPECTED_JQ_VERSION" "$jq_version" >&2
+          [[ "$jq_version" == "jq-$JQ_VERSION" ]] || {
+            printf 'Expected jq %s, got %s\n' "$JQ_VERSION" "$jq_version" >&2
             exit 1
           }
           printf 'Using Docker Compose %s and %s.\n' "$compose_version" "$jq_version"
