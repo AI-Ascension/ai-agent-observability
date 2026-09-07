@@ -68,9 +68,7 @@ docker run --rm --user 0:0 --network none \
   docker.io/library/alpine:3.22.1 chown 10001:10001 /var/lib/otelcol
 docker network create --internal "$network_name" >/dev/null
 
-docker run -d --name "$source_name" --network "$network_name" \
-  --publish 127.0.0.1::4318 \
-  --publish 127.0.0.1::8888 \
+docker run -d --name "$source_name" --network "$network_name" --network-alias source \
   --mount "type=bind,source=$source_config,target=/etc/otelcol-contrib/config.yaml,readonly" \
   --mount "type=volume,source=$storage_volume,target=/var/lib/otelcol" \
   "$collector_image" --config=/etc/otelcol-contrib/config.yaml >/dev/null
@@ -90,21 +88,13 @@ fi
 # OTLP JSON ExportTraceServiceRequest, sent while the sink is absent.
 # Keep the readable fixture validated above rather than hand-encoding protobuf
 # field lengths; malformed payloads must not masquerade as a queue test.
-source_port="$(docker port "$source_name" 4318/tcp 2>/dev/null | awk -F: 'NR == 1 { print $NF }')"
-if [[ -z "$source_port" ]]; then
-  printf '%s\n' 'source Collector port was not published' >&2
-  exit 1
-fi
-source_metrics_port="$(docker port "$source_name" 8888/tcp 2>/dev/null | awk -F: 'NR == 1 { print $NF }')"
-if [[ -z "$source_metrics_port" ]]; then
-  printf '%s\n' 'source Collector metrics port was not published' >&2
-  exit 1
-fi
-# Running state is not listener readiness. Poll without sending telemetry.
+# Keep probes inside the internal test network. Internal bridge behavior must
+# not depend on host port publication or expose the synthetic receiver outside
+# this disposable network. Running state is not listener readiness.
 listener_ready=0
 for _ in {1..30}; do
-  if curl --silent --output /dev/null --connect-timeout 1 --max-time 2 \
-      "http://127.0.0.1:$source_port/v1/traces"; then
+  if docker run --rm --network "$network_name" docker.io/library/alpine:3.22.1 \
+      wget -q -O /dev/null -T 2 http://source:8888/metrics; then
     listener_ready=1
     break
   fi
@@ -114,16 +104,19 @@ if [[ "$listener_ready" != 1 ]]; then
   printf '%s\n' 'source Collector listener never became available' >&2
   exit 1
 fi
-curl --fail --silent --show-error --connect-timeout 2 --max-time 5 \
-  -H 'Content-Type: application/json' \
-  --data-binary "@$payload" "http://127.0.0.1:$source_port/v1/traces" >/dev/null
+docker run --rm --network "$network_name" \
+  --mount "type=bind,source=$payload,target=/trace.json,readonly" \
+  docker.io/library/alpine:3.22.1 wget -q -O - -T 5 \
+  --header 'Content-Type: application/json' --post-file /trace.json \
+  http://source:4318/v1/traces >/dev/null
 
 # The queue file is created during Collector startup. Require the queue-depth
 # metric to reach one so this assertion covers the submitted span, not just
 # storage initialization.
 queue_depth=0
 for _ in {1..30}; do
-  if curl --fail --silent --connect-timeout 2 --max-time 5 "http://127.0.0.1:$source_metrics_port/metrics" \
+  if docker run --rm --network "$network_name" docker.io/library/alpine:3.22.1 \
+      wget -q -O - -T 5 http://source:8888/metrics \
       | grep -Eq 'otelcol_exporter_queue_size\{[^}]*\} [1-9]'; then
     queue_depth=1
     break
@@ -141,8 +134,7 @@ docker rm "$source_name" >/dev/null
 
 # Reopen the same storage directory before starting the sink. A receipt from
 # the sink proves that the span was read from disk after process replacement.
-docker run -d --name "$source_name" --network "$network_name" \
-  --publish 127.0.0.1::8888 \
+docker run -d --name "$source_name" --network "$network_name" --network-alias source \
   --mount "type=bind,source=$source_config,target=/etc/otelcol-contrib/config.yaml,readonly" \
   --mount "type=volume,source=$storage_volume,target=/var/lib/otelcol" \
   "$collector_image" --config=/etc/otelcol-contrib/config.yaml >/dev/null
