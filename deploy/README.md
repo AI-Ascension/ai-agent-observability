@@ -81,13 +81,16 @@ reviewed Compose command for the query consumer afterwards.
 
 The helper retains root-only backups of the pre-change `.env`, local operator
 key, and scoped PostgreSQL operator row under `/run/ai-agent-observability/`.
-The PostgreSQL backup is one locked transaction that emits both the SQL restore
-statement and the exact row ID/digest from the same snapshot. The replacement
-preassigns its row UUID and compares the locked snapshot before deleting it.
+The PostgreSQL backup is one repeatable-read, locked transaction that emits both
+the SQL restore statement and the exact row ID/digest from the same snapshot.
+The replacement preassigns its row UUID and compares the locked snapshot before
+deleting it.
 If a PostgreSQL client error leaves the commit outcome unknown, compensation
-reconciles that UUID and the complete expected row: an absent candidate is
-treated as not committed, an exact match is restored, and a mismatch stops with
-manual review instead of deleting a changed row. It checks the live ClickHouse
+reconciles that UUID and the complete expected row: an absent candidate leaves
+the overall outcome unknown and skips exact row compensation, an exact match is
+restored, and a mismatch stops with manual review instead of deleting a changed
+row. If reconciliation or compensation cannot complete, the candidate key and
+owner-only reconciliation evidence are retained. It checks the live ClickHouse
 account before migrating a legacy writer alias, refuses a target-account
 collision, and runs deterministic compensation for a failure after the key,
 PostgreSQL, or ClickHouse write. Preserve the printed backup paths until the

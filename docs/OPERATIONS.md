@@ -158,13 +158,17 @@ The helper does not restart the stack.
 Before any persistent write, the helper backs up `.env`, the existing operator
 key file, and the scoped PostgreSQL operator row. It installs the new key before
 the database commit. The PostgreSQL backup reads the restore SQL and the exact
-row ID/digest in one transaction while locking the project and scoped operator
-row. The replacement preassigns its row UUID and takes the same project-first
-lock order, so a changed row fails the compare-and-swap check without being
-deleted. If the PostgreSQL client fails after sending the transaction, the
-outcome is marked unknown and rollback reconciles the preassigned candidate by
-its exact ID and expected fields: absent means no committed row, an exact match
-is restored, and a mismatch retains the row and exits 70 for manual review.
+row ID/digest in one repeatable-read transaction while locking the project and
+scoped operator row. The replacement preassigns its row UUID and takes the same
+project-first lock order, so a changed row fails the compare-and-swap check
+without being deleted. If the PostgreSQL client fails after sending the
+transaction, the outcome is marked unknown and rollback reconciles the
+preassigned candidate by its exact ID and expected fields: an absent candidate
+skips exact row compensation while the overall commit outcome remains unknown,
+an exact match is restored, and a mismatch retains the row and exits 70 for
+manual review. If reconciliation or compensation cannot complete, the
+candidate key and owner-only reconciliation evidence remain on disk with the
+printed paths.
 Rollback then compensates the PostgreSQL row, ClickHouse account, key file, and
 `.env` in a fixed order when the outcome is known or has been reconciled. The
 helper prints the sanitized container identity and image ID plus root-only

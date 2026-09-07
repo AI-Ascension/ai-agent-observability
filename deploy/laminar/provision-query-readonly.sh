@@ -135,6 +135,8 @@ db_backup_meta_sql="$private_dir/.query-backup-meta-input.$nonce.sql"
 db_backup_meta="$private_dir/.query-backup-meta.$nonce"
 db_reconcile_sql="$private_dir/.query-reconcile.$nonce.sql"
 db_restore_sql="$private_dir/.query-restore.$nonce.sql"
+candidate_key_evidence="$private_dir/.laminar-query-key.candidate.$nonce"
+pg_reconciliation_evidence="$private_dir/.postgres-query-reconciliation.$nonce"
 ch_config="$private_dir/.clickhouse-config.$nonce.xml"
 ch_ro_config="$private_dir/.clickhouse-ro-config.$nonce.xml"
 ch_sql="$private_dir/.clickhouse-query.$nonce.sql"
@@ -152,13 +154,18 @@ pgpass_path="/run/.sts2-postgres-pass-$nonce"
 key_backup="$private_dir/.laminar-query-key.before-query-provision.$nonce"
 key_backup_state="$private_dir/.laminar-query-key.before-query-provision.$nonce.state"
 retain_ch_ownership_evidence=false
+retain_pg_reconciliation_evidence=false
 
 cleanup() {
   rm -f "$sql_file" "$sql_output" "$sql_error" "$db_preflight_sql" \
-    "$db_preflight_output" "$db_backup_meta_sql" "$db_reconcile_sql" \
+    "$db_preflight_output" "$db_backup_meta_sql" \
     "$ch_config" "$ch_sql" \
     "$ch_grant_sql" "$ch_output" "$ch_error" "$env_fragment" \
     "$new_key_file" "$pgpass_file"
+  if [[ "$retain_pg_reconciliation_evidence" != true ]]; then
+    rm -f "$db_reconcile_sql" "$candidate_key_evidence" \
+      "$pg_reconciliation_evidence"
+  fi
   if [[ "$retain_ch_ownership_evidence" != true ]]; then
     rm -f "$ch_ro_config" "$ch_ownership_evidence"
   fi
@@ -169,7 +176,8 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ -e "$env_backup" || -e "$key_backup" || -e "$key_backup_state" \
-  || -e "$ch_ownership_evidence" || -e "$ch_ro_config" ]]; then
+  || -e "$ch_ownership_evidence" || -e "$ch_ro_config" \
+  || -e "$candidate_key_evidence" || -e "$pg_reconciliation_evidence" ]]; then
   die 69 'private backup path collision'
 fi
 
@@ -340,7 +348,7 @@ PY
 # recorded as an empty backup. Hex encoding keeps the SQL result to one safe
 # line even when a stored text value contains a delimiter or newline.
 cat >"$db_backup_meta_sql" <<SQL
-BEGIN;
+BEGIN ISOLATION LEVEL REPEATABLE READ;
 DO \$\$
 DECLARE
   operator_rows integer;
@@ -406,6 +414,8 @@ try:
 except ValueError as error:
     raise SystemExit("operator backup SQL encoding was malformed") from error
 metadata = markers["backup_meta"]
+if bool(encoded) != bool(metadata):
+    raise SystemExit("operator backup transaction returned an inconsistent row snapshot")
 if metadata:
     fields = metadata.split("\t")
     if len(fields) != 2 or not re.fullmatch(
@@ -463,6 +473,21 @@ if [[ "$query_key_length" -ne 64 || "$query_hash_length" -ne 64 || "$ro_password
 fi
 printf '%s\n' "$query_key" >"$new_key_file"
 chmod 600 "$new_key_file"
+cp -p "$new_key_file" "$candidate_key_evidence"
+chmod 600 "$candidate_key_evidence"
+cat >"$pg_reconciliation_evidence" <<EOF
+project_id=$project_id
+candidate_id=$operator_insert_id
+candidate_key=$candidate_key_evidence
+operator_name=$operator_key_name
+expected_shorthand=$query_shorthand
+expected_hash=$query_key_hash
+expected_is_ingest_only=false
+expected_user_id=NULL
+expected_expires_at=NULL
+expected_value_empty=true
+EOF
+chmod 600 "$pg_reconciliation_evidence"
 
 cat >"$ch_sql" <<SQL
 CREATE USER \`$ro_user\`
@@ -500,8 +525,15 @@ pg_mutation_attempted=false
 pg_mutation_committed=false
 pg_inserted_id="$operator_insert_id"
 pg_inserted_row_hash=''
+pg_reconciliation_result=none
 key_mutation_attempted=false
 env_mutation_attempted=false
+
+retain_pg_reconciliation_artifacts() {
+  local reason="$1"
+  retain_pg_reconciliation_evidence=true
+  printf 'retention_reason=%s\n' "$reason" >>"$pg_reconciliation_evidence" 2>/dev/null || true
+}
 
 reconcile_unknown_postgres_commit() {
   # A client-side PostgreSQL failure after COMMIT leaves the commit outcome
@@ -560,7 +592,8 @@ SQL
   case "$candidate_kind" in
     candidate=absent)
       [[ -z "$candidate_hash" ]] || return 1
-      pg_mutation_committed=false
+      pg_mutation_committed=unknown
+      pg_reconciliation_result=absent
       return 0
       ;;
     candidate=match)
@@ -569,9 +602,11 @@ SQL
       fi
       pg_inserted_row_hash="$candidate_hash"
       pg_mutation_committed=true
+      pg_reconciliation_result=match
       return 0
       ;;
     candidate=mismatch)
+      pg_reconciliation_result=mismatch
       return 1
       ;;
     *)
@@ -686,17 +721,19 @@ rollback() {
     if [[ "$pg_mutation_attempted" == true ]]; then
       if [[ "$pg_mutation_committed" == unknown ]]; then
         if ! reconcile_unknown_postgres_commit; then
+          retain_pg_reconciliation_artifacts 'PostgreSQL transaction outcome could not be reconciled'
           rollback_failed=true
           printf '%s\n' 'PostgreSQL transaction outcome is unknown and the exact candidate row could not be reconciled; manual review is required' >&2
         fi
       fi
       if [[ "$pg_mutation_committed" == true ]]; then
         if ! restore_postgres_operator_row; then
+          retain_pg_reconciliation_artifacts 'PostgreSQL candidate row could not be restored exactly'
           rollback_failed=true
           printf '%s\n' 'rollback failed while restoring the prior PostgreSQL operator key' >&2
         fi
-      elif [[ "$pg_mutation_committed" == false ]]; then
-        printf '%s\n' 'PostgreSQL transaction outcome was reconciled as not committed; no row compensation was attempted' >&2
+      elif [[ "$pg_reconciliation_result" == absent ]]; then
+        printf '%s\n' 'PostgreSQL exact candidate row is absent; commit outcome remains unknown and no exact row compensation was attempted' >&2
       fi
     fi
     if [[ "$ch_mutation_attempted" == true ]]; then
@@ -716,9 +753,18 @@ rollback() {
         printf '%s\n' 'refusing to drop a ClickHouse user after an ambiguous CREATE failure; reconcile it manually' >&2
       fi
     fi
+    if [[ "$rollback_failed" == true && "$pg_mutation_committed" == unknown ]]; then
+      retain_pg_reconciliation_artifacts 'another compensation step failed while PostgreSQL outcome remained unknown'
+    fi
     printf 'rollback_env_backup=%s\n' "$env_backup" >&2
     printf 'rollback_key_backup=%s\n' "$key_backup" >&2
     printf 'rollback_db_backup=%s\n' "$db_backup_sql" >&2
+    if [[ "$retain_pg_reconciliation_evidence" == true ]]; then
+      printf 'rollback_pg_candidate_key=%s\n' "$candidate_key_evidence" >&2
+      printf 'rollback_pg_reconciliation_evidence=%s\n' \
+        "$pg_reconciliation_evidence" >&2
+      printf 'rollback_pg_reconciliation_sql=%s\n' "$db_reconcile_sql" >&2
+    fi
     if [[ "$rollback_failed" == true ]]; then
       printf '%s\n' 'automatic compensation was incomplete; keep the backups and reconcile by exact project/container identity' >&2
       cleanup
@@ -853,6 +899,7 @@ PY
 )" || die 69 'operator transaction marker was unavailable; manual reconciliation is required'
 IFS=$'\t' read -r pg_inserted_id pg_inserted_row_hash <<<"$inserted_meta"
 pg_mutation_committed=true
+pg_reconciliation_result=match
 printf '%s\n' 'operator query key transaction=committed collector_key=preserved'
 
 # The target account was proved absent, so CREATE USER cannot overwrite a

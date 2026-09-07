@@ -33,9 +33,14 @@ for required in \
   'refusing to drop a ClickHouse user after an ambiguous CREATE failure' \
   'protected key before the database commit' \
   'no-align --tuples-only' \
+  'BEGIN ISOLATION LEVEL REPEATABLE READ' \
   'backup_sql_hex=' \
   'operator_insert_id=' \
   'candidate=match' \
+  'pg_mutation_committed=unknown' \
+  'candidate_key_evidence=' \
+  'retain_pg_reconciliation_artifacts' \
+  'commit outcome remains unknown' \
   'commit reconciliation' \
   'operator key changed since its exact backup'; do
   grep -Fq -- "$required" "$script"
