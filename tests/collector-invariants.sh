@@ -79,18 +79,21 @@ case "$runtime_validate" in
       printf '%s\n' 'Collector static invariants passed; runtime config validation unavailable.'
       exit 0
     fi
-    runtime_root="$(mktemp -d)"
     container_name="ai-agent-observability-config-check-$$"
+    storage_volume="${container_name}-storage"
     cleanup() {
       docker rm -f "$container_name" >/dev/null 2>&1 || true
-      rm -r -- "$runtime_root"
+      docker volume rm "$storage_volume" >/dev/null 2>&1 || true
     }
     trap cleanup EXIT
-    chmod 0777 "$runtime_root"
+    docker volume create "$storage_volume" >/dev/null
+    docker run --rm --user 0:0 --network none \
+      --mount "type=volume,source=$storage_volume,target=/var/lib/otelcol" \
+      docker.io/library/alpine:3.22.1 chown 10001:10001 /var/lib/otelcol
     docker run --rm --name "$container_name" \
       --user 10001:10001 \
       --mount "type=bind,source=$repo_root/$collector_config,target=/etc/otelcol-contrib/config.yaml,readonly" \
-      --mount "type=bind,source=$runtime_root,target=/var/lib/otelcol" \
+      --mount "type=volume,source=$storage_volume,target=/var/lib/otelcol" \
       --env MLFLOW_EXPERIMENT_ID=0 \
       --env LAMINAR_PROJECT_API_KEY=0000000000000000000000000000000000000000000000000000000000000000 \
       docker.io/otel/opentelemetry-collector-contrib:0.160.0 \

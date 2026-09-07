@@ -63,6 +63,9 @@ trap cleanup EXIT
 # This uniquely named volume contains synthetic fixture data only. Keeping it
 # in the container runtime avoids leaving UID-10001 files in a host temp tree.
 docker volume create "$storage_volume" >/dev/null
+docker run --rm --user 0:0 --network none \
+  --mount "type=volume,source=$storage_volume,target=/var/lib/otelcol" \
+  docker.io/library/alpine:3.22.1 chown 10001:10001 /var/lib/otelcol
 docker network create --internal "$network_name" >/dev/null
 
 docker run -d --name "$source_name" --network "$network_name" \
