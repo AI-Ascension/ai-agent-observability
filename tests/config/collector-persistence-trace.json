@@ -1,0 +1,14 @@
+{
+  "resourceSpans": [{
+    "scopeSpans": [{
+      "spans": [{
+        "traceId": "01010101010101010101010101010101",
+        "spanId": "0202020202020202",
+        "name": "synthetic-persistent-queue",
+        "kind": 1,
+        "startTimeUnixNano": "1000000000",
+        "endTimeUnixNano": "1000000001"
+      }]
+    }]
+  }]
+}

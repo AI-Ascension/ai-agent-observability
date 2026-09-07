@@ -26,7 +26,7 @@ jobs:
       - name: Install shellcheck
         run: |
           sudo apt-get update
-          sudo apt-get install --yes shellcheck
+          sudo apt-get install --yes shellcheck jq
 
       - name: Check shell syntax and style
         run: |

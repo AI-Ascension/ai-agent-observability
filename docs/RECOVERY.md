@@ -76,13 +76,23 @@ consistent backup.
 
 Set `BACKUP_ROOT` to an operator-approved filesystem with enough free space.
 The following procedure stops only this Compose project's containers, writes
-one archive per named volume, records hashes, and starts the same checked-in
-release again. It never uses `down -v`.
+one archive per named volume, records hashes, and restarts only containers that
+were running before quiescence. It never uses `down -v` or `compose up` as a
+backup recovery step. Require a preloaded, digest-pinned backup image containing
+GNU tar (including ACL/xattr support); Alpine's default BusyBox tar does not
+provide the archive flags below. Stage that image during approved installation,
+not during recovery.
 
 ```bash
 cd /opt/ai-agent-observability/deploy
 backup_root="${BACKUP_ROOT:?set BACKUP_ROOT to an approved backup directory}/$(date -u +%Y%m%dT%H%M%SZ)"
 install -d -m 0700 "$backup_root"
+backup_image="${BACKUP_HELPER_IMAGE:?set a preloaded GNU tar image by sha256 digest}"
+[[ "$backup_image" =~ @sha256:[0-9a-f]{64}$ ]] || exit 1
+docker image inspect "$backup_image" >/dev/null
+docker run --rm --pull=never --network none "$backup_image" tar --version
+docker compose -p ai-agent-observability -f compose.yaml ps --status running --quiet \
+  >"$backup_root/running-container-ids"
 
 docker compose -p ai-agent-observability -f compose.yaml stop
 
@@ -95,16 +105,20 @@ for volume in \
   ai-agent-observability-laminar-quickwit-data \
   ai-agent-observability-laminar-rabbitmq-data \
   ai-agent-observability-otel-collector-data; do
-  docker run --rm \
+  docker volume inspect "$volume" >/dev/null
+  docker run --rm --pull=never --network none \
     --mount "type=volume,source=$volume,target=/source,readonly" \
     --mount "type=bind,source=$backup_root,target=/backup" \
-    docker.io/library/alpine:3.22.1 \
+    "$backup_image" \
     tar --create --gzip --file "/backup/$volume.tar.gz" \
       --numeric-owner --xattrs --acls --directory /source .
 done
 
-sha256sum "$backup_root"/*.tar.gz >"$backup_root/SHA256SUMS"
-docker compose -p ai-agent-observability -f compose.yaml up -d --no-build
+(cd "$backup_root" && sha256sum ./*.tar.gz >SHA256SUMS)
+mapfile -t previously_running <"$backup_root/running-container-ids"
+if ((${#previously_running[@]})); then
+  docker start "${previously_running[@]}"
+fi
 ```
 
 Record the backup timestamp, the checked-in Compose commit, image tags, and
@@ -121,9 +135,20 @@ after hash verification; preserve the current volumes with the backup above
 before proceeding. It does not delete or recreate volumes and it never touches
 an unrelated volume.
 
+Restore requires an operator-approved current start plan. It deliberately leaves
+all containers stopped; restoring a historical snapshot must not revive a
+container intentionally stopped since that snapshot. Do not use the backup's
+old running-container list as current start authorization. Validate archives as
+trusted operator-generated data before extraction, including paths, ownership,
+links, and available disk space. An untrusted archive is not accepted input.
+
 ```bash
 cd /opt/ai-agent-observability/deploy
 backup_root="${BACKUP_ROOT:?set BACKUP_ROOT to the verified backup directory}"
+backup_image="${BACKUP_HELPER_IMAGE:?set a preloaded GNU tar image by sha256 digest}"
+[[ "$backup_image" =~ @sha256:[0-9a-f]{64}$ ]] || exit 1
+docker image inspect "$backup_image" >/dev/null
+docker run --rm --pull=never --network none "$backup_image" tar --version
 (cd "$backup_root" && sha256sum -c SHA256SUMS)
 docker compose -p ai-agent-observability -f compose.yaml stop
 
@@ -137,15 +162,15 @@ for volume in \
   ai-agent-observability-laminar-rabbitmq-data \
   ai-agent-observability-otel-collector-data; do
   docker volume inspect "$volume" >/dev/null
-  docker run --rm \
+  docker run --rm --pull=never --network none \
     --mount "type=volume,source=$volume,target=/source" \
     --mount "type=bind,source=$backup_root,target=/backup,readonly" \
-    docker.io/library/alpine:3.22.1 sh -ec \
+    "$backup_image" sh -ec \
     "find /source -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; tar --extract --gzip --file /backup/$volume.tar.gz --numeric-owner --xattrs --acls --directory /source"
 done
 
 docker compose -p ai-agent-observability -f compose.yaml config --quiet
-docker compose -p ai-agent-observability -f compose.yaml up -d --no-build
+# Remain stopped. Start only exact containers from the current approved plan.
 ```
 
 After restore, inspect service health, the Collector health endpoint, queue
