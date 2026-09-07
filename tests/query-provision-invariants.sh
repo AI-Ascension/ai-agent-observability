@@ -32,7 +32,12 @@ for required in \
   'not an atomic ClickHouse primitive' \
   'refusing to drop a ClickHouse user after an ambiguous CREATE failure' \
   'protected key before the database commit' \
-  'no-align --tuples-only'; do
+  'no-align --tuples-only' \
+  'backup_sql_hex=' \
+  'operator_insert_id=' \
+  'candidate=match' \
+  'commit reconciliation' \
+  'operator key changed since its exact backup'; do
   grep -Fq -- "$required" "$script"
 done
 

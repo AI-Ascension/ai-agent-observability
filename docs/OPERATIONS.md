@@ -157,19 +157,27 @@ The helper does not restart the stack.
 
 Before any persistent write, the helper backs up `.env`, the existing operator
 key file, and the scoped PostgreSQL operator row. It installs the new key before
-the database commit, then compensates the PostgreSQL row, ClickHouse account,
-key file, and `.env` in a fixed order if a later step fails. The helper prints
-the sanitized container identity and image ID plus root-only backup paths.
-Keep those backups until the query consumer has been checked; if compensation
-reports an incomplete rollback, stop and reconcile using the printed paths and
-the same project/container identities. When ClickHouse ownership cannot be
-verified by the staged user UUID and password, the helper preserves a mode-0600
-ownership record and read-only password config and exits 70; it never removes
-the possibly foreign account. Authorized root operators must serialize this
-procedure with other ClickHouse account administration. The UUID check and
-name-based DROP are not an atomic ClickHouse primitive. Record the exact
-container and image identity with any live evidence, and classify a failed
-query or backend check as unverified.
+the database commit. The PostgreSQL backup reads the restore SQL and the exact
+row ID/digest in one transaction while locking the project and scoped operator
+row. The replacement preassigns its row UUID and takes the same project-first
+lock order, so a changed row fails the compare-and-swap check without being
+deleted. If the PostgreSQL client fails after sending the transaction, the
+outcome is marked unknown and rollback reconciles the preassigned candidate by
+its exact ID and expected fields: absent means no committed row, an exact match
+is restored, and a mismatch retains the row and exits 70 for manual review.
+Rollback then compensates the PostgreSQL row, ClickHouse account, key file, and
+`.env` in a fixed order when the outcome is known or has been reconciled. The
+helper prints the sanitized container identity and image ID plus root-only
+backup paths. Keep those backups until the query consumer has been checked; if
+compensation reports an incomplete rollback, stop and reconcile using the
+printed paths and the same project/container identities. When ClickHouse
+ownership cannot be verified by the staged user UUID and password, the helper
+preserves a mode-0600 ownership record and read-only password config and exits
+70; it never removes the possibly foreign account. Authorized root operators
+must serialize this procedure with other ClickHouse account administration.
+The UUID check and name-based DROP are not an atomic ClickHouse primitive.
+Record the exact container and image identity with any live evidence, and
+classify a failed query or backend check as unverified.
 
 - Image pull/build failure: build evidence is unavailable; existing running
   services are not changed by the failed build.
