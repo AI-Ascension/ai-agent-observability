@@ -15,6 +15,12 @@ endpoint. The Collector fans out accepted spans to MLflow and Laminar with its
 own credentials; gameplay code must never receive or handle either backend's
 credentials.
 
+The versioned runtime wire profile is `otlp-http-json-v1`: requests use the
+OTLP/HTTP JSON envelope and `Content-Type: application/json` (optional media
+type parameters are accepted on responses). Generic Collector support for
+OTLP/gRPC and OTLP/HTTP protobuf remains a deployment capability for other
+producers and does not change this runtime-v3 input contract.
+
 The exporter owns a bounded queue and a bounded shutdown flush. Export failure
 is observable in a local status/result record, but must not retry a gameplay
 mutation or change a host settlement result. The process must flush completed
@@ -35,24 +41,26 @@ gameplay root span carries the following allowlisted attributes when available:
 | `sts2.trace_id` | harness trace identity | bounded identifier only; do not replace OTLP trace ID |
 | `sts2.instance_id` | allocated game instance | bounded identifier only |
 | `sts2.session_id` | gateway session identity | bounded identifier only |
-| `sts2.operation_id` | idempotent action operation | bounded identifier only |
-| `sts2.action_id` | host catalog action identity | bounded identifier only |
+| `sts2.operation_id` | idempotent action operation | domain-separated digest; `sts2.id_encoding=digest` |
+| `sts2.action_id` | host catalog action identity | domain-separated digest; `sts2.id_encoding=digest` |
 | `sts2.generation` | host observation generation | unsigned integer |
-| `sts2.model_execution_id` | provider decision identity | bounded identifier only |
+| `sts2.model_execution_id` | provider decision identity | bounded integer identity |
 | `sts2.status` | accepted/settled/rejected/unknown/terminal outcome | enum only |
 | `sts2.error_code` | bounded failure class | enum/code only |
 | `sts2.effect_kind` | settlement witness class | enum only |
-| `sts2.recovery` | whether a recovery/reconciliation path ran | boolean/enum only |
+| `sts2.recovery` | recovery/reconciliation kind | enum only |
+| `sts2.id_encoding` | encoding used for identity attributes | `digest` only for this runtime |
+| `sts2.export_status` | post-flush export result | `delivered`, `partial`, or `timeout` |
 
 The exporter emits these typed spans/events:
 
 1. `sts2.run_started` is the OTLP root span. `sts2.run_finished` records the
    terminal outcome (`success`, `failure`, or `unavailable`) only after the
    harness has completed cleanup and the exporter has flushed child spans.
-2. `sts2.model_decision` records the selected host action ID and model
-   execution identity. It may record only a finite decision category such as
-   `action`, `catalog_choice`, or `reobserve`; it must not record a prompt,
-   model output, chain of thought, or raw rationale.
+2. `sts2.model_decision` records the digest of the selected host action and
+   model execution identity. It may record only a finite decision category such
+   as `action`, `plan`, or `reobserve`; it must not record a prompt, model
+   output, chain of thought, or raw rationale.
 3. `sts2.action_dispatch` records the host catalog generation, operation
    identity, action ID, and boundary status. `accepted` is not a settlement.
 4. `sts2.settlement_observation` is emitted only after a fresh successor
@@ -63,6 +71,9 @@ The exporter emits these typed spans/events:
    rejection, unknown-effect, cleanup, recovery, and observation classes. They
    must not include raw HTTP bodies, host text, file paths, or provider
    responses.
+6. `sts2.export_status` is emitted by the worker after the FIFO has drained and
+   reports the result of exporting the preceding spans. It is not queued onto
+   the gameplay admission path and never changes a gameplay outcome.
 
 The parent/child relationship must make it possible to find every action and
 settlement by the same OTLP trace ID and by `sts2.run_id`/`sts2.episode_id`.

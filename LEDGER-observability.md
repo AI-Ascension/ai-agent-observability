@@ -1,6 +1,23 @@
 # Workstream 4 observability ledger
 
-Last updated: 2026-09-06 (America/New_York)
+Last updated: 2026-09-07 (America/New_York)
+
+## OBS-005 — runtime-v3 telemetry contract correction
+
+- Date: 2026-09-07 (UTC)
+- Status: `source-derived`; live O1/O2 acceptance remains pending root reservation and an independent integrated verifier
+- Owner: `/root/obs_recovery` for the harness source handoff; this repository owns the deployment contract and query helper
+- Canonical event vocabulary: `sts2.run_started`, `sts2.model_decision`, `sts2.action_dispatch`, `sts2.settlement_observation`, `sts2.recovery`, `sts2.failure`, `sts2.terminal_observed`, `sts2.run_finished`, and post-flush `sts2.export_status`
+- Canonical identity attributes: `sts2.operation_id` and `sts2.action_id` contain domain-separated digests and every runtime span carries `sts2.id_encoding=digest`; OTLP `traceId` remains separate from `sts2.trace_id`
+- Wire profile: `otlp-http-json-v1`, bounded OTLP/HTTP JSON to `127.0.0.1:14318/v1/traces` with `Content-Type: application/json`; response validation requires one JSON content type, complete length-delimited framing, zero rejected spans, and an empty `partialSuccess.errorMessage`
+- Lifecycle: one bounded FIFO preserves enqueue sequence, the run-finished span follows all accepted child events, and the exporter status span is sent after the flush drain; a replay prefix or nonterminal error emits no `sts2.run_finished`
+- Privacy: exporter and process output retain only bounded categories, generations, provider execution identities, and digests; prompts, rationale, raw provider output, full observations, credentials, and paths are excluded
+- Query helper correction: the PostgreSQL replacement locks the configured project and exact backed-up operator row, compares its ID and `md5(row_to_json(...))`, records the inserted row ID/digest, and rollback locks the project and compensates only that exact unchanged row before restoring the backup
+- Evidence: harness source handoff at `coordination/telemetry-gameplay-integration-handoff-20260907.md`; exact integrated component result at `coordination/verifier-results/integrated-harness-l3-result-20260907.md`; fresh live query and restart evidence are unverified
+
+OBS-005 supersedes the older OBS-002 proposal's protobuf and raw-ID wording while
+preserving its requirement for distinct identity namespaces and independent
+verification.
 
 ## OBS-001 — source and live deployment audit
 
@@ -25,8 +42,8 @@ Last updated: 2026-09-06 (America/New_York)
 - Status: `pending dependency`
 - Repository/path proposal: dedicated harness files under the root-assigned harness worktree, e.g. `crates/harness/src/telemetry.rs` plus `crates/harness/src/bin/runtime_support/runtime_v3_telemetry.rs`; no edits made from this worktree.
 - Required identity fields: `run_id`, `episode_id`, `trajectory_id`, `trace_id`, `instance_id`, `session_id`, `operation_id`, `action_id`, `generation`, and model execution identity where applicable. Keep namespaces distinct and correlate with common OTLP trace/span IDs without replacing harness identities.
-- Required spans/events: root `sts2.gameplay.run` with terminal `success`/`failure`; `sts2.model.decision` with action ID and bounded redacted rationale classification (never raw prompt/model output); `sts2.game.action` with state/generation/action kind and host response status; `sts2.game.settlement` only after fresh successor observation/effect witness; `sts2.game.failure` with bounded error code and recovery/unknown markers.
-- Export contract: OTLP/HTTP protobuf to the Collector endpoint from `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http://127.0.0.1:14318`); bounded non-blocking queue; explicit flush/shutdown before process exit; export failures recorded as telemetry status and must not mutate gameplay outcomes.
+- Required spans/events: canonical runtime-v3 `sts2.run_started`/`sts2.run_finished`, `sts2.model_decision` with an action digest and model execution identity, `sts2.action_dispatch`, `sts2.settlement_observation` only after a fresh successor/effect witness, and bounded `sts2.failure`/`sts2.recovery` records.
+- Export contract: versioned OTLP/HTTP JSON to the Collector endpoint from `OTEL_EXPORTER_OTLP_ENDPOINT` (default `http://127.0.0.1:14318`); one bounded FIFO queue; explicit flush/shutdown before process exit; export failures recorded in post-flush telemetry status and never used to mutate gameplay outcomes.
 - Privacy contract: allowlist attributes, hash or omit host/profile/path/provider identifiers, omit prompts, model outputs, credentials, cookies, saves, proprietary text, and full observations; tests inject sentinel secret/private markers and assert they never enter serialized spans/logs.
 - Required root action: assign a shared harness path and integrate the exporter around the final runtime-v3 episode recorder. Return exact commit and runtime artifact identity before live testing.
 - Verifier: independent harness verifier required; observability verifier will query both backends after the author handoff.

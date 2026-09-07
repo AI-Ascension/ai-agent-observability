@@ -177,8 +177,13 @@ The normal agent contract is:
 
 ```text
 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:<collector-http-port>
-OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 ```
+
+The STS2 runtime's versioned wire profile is `otlp-http-json-v1`: send the
+bounded OTLP/HTTP JSON envelope to `/v1/traces` with
+`Content-Type: application/json`. Other producers may use the Collector's
+protobuf or gRPC receivers independently.
 
 Agents should not need to know either downstream API key. Direct downstream
 SDK use is a diagnostic path and must remain documented as such.

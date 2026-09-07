@@ -131,6 +131,8 @@ sql_error="$private_dir/.query-provision.$nonce.err"
 db_preflight_sql="$private_dir/.query-preflight.$nonce.sql"
 db_preflight_output="$private_dir/.query-preflight.$nonce.out"
 db_backup_sql="$private_dir/.query-backup.$nonce.sql"
+db_backup_meta_sql="$private_dir/.query-backup-meta-input.$nonce.sql"
+db_backup_meta="$private_dir/.query-backup-meta.$nonce"
 db_restore_sql="$private_dir/.query-restore.$nonce.sql"
 ch_config="$private_dir/.clickhouse-config.$nonce.xml"
 ch_ro_config="$private_dir/.clickhouse-ro-config.$nonce.xml"
@@ -152,7 +154,7 @@ retain_ch_ownership_evidence=false
 
 cleanup() {
   rm -f "$sql_file" "$sql_output" "$sql_error" "$db_preflight_sql" \
-    "$db_preflight_output" "$ch_config" "$ch_sql" \
+    "$db_preflight_output" "$db_backup_meta_sql" "$ch_config" "$ch_sql" \
     "$ch_grant_sql" "$ch_output" "$ch_error" "$env_fragment" \
     "$new_key_file" "$pgpass_file"
   if [[ "$retain_ch_ownership_evidence" != true ]]; then
@@ -331,8 +333,10 @@ if values.get("operator", 0) > 1:
     raise SystemExit("operator query key has duplicate rows")
 PY
 
-# Capture a SQL-safe restoration statement for the existing operator row
-# before replacing it. An absent row is recorded as an empty backup.
+# Capture a SQL-safe restoration statement and exact row metadata for the
+# existing operator row before replacing it. An absent row is recorded as an
+# empty backup. The mutation transaction takes the project and row locks again
+# and compares this metadata before it deletes anything.
 cat >"$db_backup_sql" <<SQL
 SELECT format(
   'INSERT INTO project_api_keys (id, name, project_id, shorthand, hash, is_ingest_only, user_id, expires_at, value, created_at) VALUES (%L, %L, %L, %L, %L, %L, %L, %L, %L, %L);',
@@ -353,6 +357,31 @@ if [[ "$operator_backup_lines" -gt 1 ]]; then
 fi
 if [[ "$operator_backup_lines" -eq 1 && ! -s "$db_backup_sql" ]]; then
   die 69 'operator key backup was empty unexpectedly'
+fi
+
+cat >"$db_backup_meta_sql" <<SQL
+SELECT id::text || E'\t' || md5(row_to_json(pak)::text)
+FROM project_api_keys AS pak
+WHERE project_id = '$project_id'::uuid
+  AND name = '$operator_key_name';
+SQL
+chmod 600 "$db_backup_meta_sql"
+if ! run_psql_file "$db_backup_meta_sql"; then
+  die 1 'could not capture exact operator key metadata'
+fi
+cp "$sql_output" "$db_backup_meta"
+chmod 600 "$db_backup_meta"
+operator_meta_lines="$(wc -l <"$db_backup_meta")"
+if [[ "$operator_meta_lines" -gt 1 ]]; then
+  die 69 'operator key metadata returned duplicate rows'
+fi
+operator_backup_id=''
+operator_backup_row_hash=''
+if [[ "$operator_meta_lines" -eq 1 ]]; then
+  IFS=$'\t' read -r operator_backup_id operator_backup_row_hash <"$db_backup_meta"
+  if [[ ! "$operator_backup_id" =~ $uuid_pattern || ! "$operator_backup_row_hash" =~ ^[[:xdigit:]]{32}$ ]]; then
+    die 69 'operator key metadata was malformed'
+  fi
 fi
 
 # Protect the existing local key and .env before any persistent mutation.
@@ -422,6 +451,9 @@ ch_user_created=false
 ch_user_id=''
 retain_ch_ownership_evidence=false
 pg_mutation_attempted=false
+pg_mutation_committed=false
+pg_inserted_id=''
+pg_inserted_row_hash=''
 key_mutation_attempted=false
 env_mutation_attempted=false
 
@@ -448,26 +480,93 @@ rollback() {
         printf '%s\n' 'rollback failed while removing the staged query key' >&2
       fi
     fi
-    if [[ "$pg_mutation_attempted" == true ]]; then
-      {
-        cat <<SQL
+    if [[ "$pg_mutation_attempted" == true && "$pg_mutation_committed" == true ]]; then
+      if [[ -z "$pg_inserted_id" || -z "$pg_inserted_row_hash" ]]; then
+        rollback_failed=true
+        printf '%s\n' 'rollback cannot identify the committed PostgreSQL operator row; manual reconciliation is required' >&2
+      else
+        {
+          cat <<SQL
 BEGIN;
-DELETE FROM project_api_keys
- WHERE project_id = '$project_id'::uuid
-   AND name = '$operator_key_name';
+DO \$\$
+DECLARE
+  current_row_hash text;
+BEGIN
+  PERFORM id FROM projects
+   WHERE id = '$project_id'::uuid
+   FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'configured Laminar project disappeared during rollback';
+  END IF;
+  SELECT md5(row_to_json(pak)::text)
+    INTO current_row_hash
+    FROM project_api_keys AS pak
+   WHERE pak.id = '$pg_inserted_id'::uuid
+     AND pak.project_id = '$project_id'::uuid
+     AND pak.name = '$operator_key_name'
+   FOR UPDATE;
+  IF current_row_hash IS DISTINCT FROM '$pg_inserted_row_hash' THEN
+    RAISE EXCEPTION 'helper PostgreSQL operator row changed before rollback';
+  END IF;
+END
+\$\$;
+DELETE FROM project_api_keys AS pak
+ WHERE pak.id = '$pg_inserted_id'::uuid
+   AND pak.project_id = '$project_id'::uuid
+   AND pak.name = '$operator_key_name'
+   AND md5(row_to_json(pak)::text) = '$pg_inserted_row_hash';
 SQL
-        if [[ -s "$db_backup_sql" ]]; then
-          cat "$db_backup_sql"
-        fi
-        cat <<SQL
+          if [[ -s "$db_backup_sql" ]]; then
+            cat "$db_backup_sql"
+          fi
+          if [[ -n "$operator_backup_id" ]]; then
+            cat <<SQL
+DO \$\$
+DECLARE
+  restored_row_hash text;
+BEGIN
+  SELECT md5(row_to_json(pak)::text)
+    INTO restored_row_hash
+    FROM project_api_keys AS pak
+   WHERE pak.id = '$operator_backup_id'::uuid
+     AND pak.project_id = '$project_id'::uuid
+     AND pak.name = '$operator_key_name';
+  IF restored_row_hash IS DISTINCT FROM '$operator_backup_row_hash' THEN
+    RAISE EXCEPTION 'prior PostgreSQL operator row was not restored exactly';
+  END IF;
+END
+\$\$;
+SQL
+          else
+            cat <<SQL
+DO \$\$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM project_api_keys
+     WHERE project_id = '$project_id'::uuid
+       AND name = '$operator_key_name'
+  ) THEN
+    RAISE EXCEPTION 'PostgreSQL operator row should be absent after rollback';
+  END IF;
+END
+\$\$;
+SQL
+          fi
+          cat <<SQL
 COMMIT;
 SQL
-      } >"$db_restore_sql"
-      chmod 600 "$db_restore_sql"
-      if ! run_psql_file "$db_restore_sql"; then
-        rollback_failed=true
-        printf '%s\n' 'rollback failed while restoring the prior PostgreSQL operator key' >&2
+        } >"$db_restore_sql"
+        chmod 600 "$db_restore_sql"
+        if ! run_psql_file "$db_restore_sql"; then
+          rollback_failed=true
+          printf '%s\n' 'rollback failed while restoring the prior PostgreSQL operator key' >&2
+        fi
       fi
+    elif [[ "$pg_mutation_attempted" == true && "$pg_mutation_committed" != true ]]; then
+      # A failed PostgreSQL transaction rolls itself back. Do not issue a
+      # name-based compensation query when no committed helper row identity is
+      # available.
+      printf '%s\n' 'PostgreSQL transaction did not commit; no row compensation was attempted' >&2
     fi
     if [[ "$ch_mutation_attempted" == true ]]; then
       if [[ "$ch_user_created" == true ]]; then
@@ -508,16 +607,22 @@ mv -f "$new_key_file" "$query_key_file"
 chmod 600 "$query_key_file"
 chown root:root "$query_key_file"
 
-# The query-key transaction preserves the Collector row and replaces only the
-# scoped operator row. It has no CREATE USER side effects.
-cat >"$sql_file" <<SQL
+# The query-key transaction locks the project first, then locks and compares
+# the exact backed-up operator row before replacing it. It has no CREATE USER
+# side effects. The final SELECT records the helper's inserted row ID and
+# complete-row digest for exact rollback compensation.
+{
+  cat <<SQL
 BEGIN;
 DO \$\$
+DECLARE
+  current_id uuid;
+  current_row_hash text;
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM projects
-    WHERE id = '$project_id'::uuid
-  ) THEN
+  PERFORM id FROM projects
+   WHERE id = '$project_id'::uuid
+   FOR UPDATE;
+  IF NOT FOUND THEN
     RAISE EXCEPTION 'configured Laminar project does not exist';
   END IF;
   IF NOT EXISTS (
@@ -527,16 +632,48 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'Collector ingest-only key row is missing';
   END IF;
+  SELECT pak.id, md5(row_to_json(pak)::text)
+    INTO current_id, current_row_hash
+    FROM project_api_keys AS pak
+   WHERE pak.project_id = '$project_id'::uuid
+     AND pak.name = '$operator_key_name'
+   FOR UPDATE;
+SQL
+  if [[ -n "$operator_backup_id" ]]; then
+    cat <<SQL
+  IF NOT FOUND
+     OR current_id IS DISTINCT FROM '$operator_backup_id'::uuid
+     OR current_row_hash IS DISTINCT FROM '$operator_backup_row_hash' THEN
+    RAISE EXCEPTION 'operator key changed since its exact backup';
+  END IF;
 END
 \$\$;
-DELETE FROM project_api_keys
-WHERE project_id = '$project_id'::uuid
-  AND name = '$operator_key_name';
-INSERT INTO project_api_keys
-  (name, project_id, shorthand, hash, is_ingest_only, user_id, expires_at, value)
-VALUES
-  ('$operator_key_name', '$project_id'::uuid, '$query_shorthand',
-   '$query_key_hash', false, NULL, NULL, '');
+DELETE FROM project_api_keys AS pak
+ WHERE pak.id = '$operator_backup_id'::uuid
+   AND pak.project_id = '$project_id'::uuid
+   AND pak.name = '$operator_key_name'
+   AND md5(row_to_json(pak)::text) = '$operator_backup_row_hash';
+SQL
+  else
+    cat <<SQL
+  IF FOUND THEN
+    RAISE EXCEPTION 'operator key appeared since the exact backup';
+  END IF;
+END
+\$\$;
+SQL
+  fi
+  cat <<SQL
+WITH inserted AS (
+  INSERT INTO project_api_keys
+    (name, project_id, shorthand, hash, is_ingest_only, user_id, expires_at, value)
+  VALUES
+    ('$operator_key_name', '$project_id'::uuid, '$query_shorthand',
+     '$query_key_hash', false, NULL, NULL, '')
+  RETURNING *
+)
+SELECT 'inserted=' || inserted.id::text || E'\t' || md5(row_to_json(inserted)::text)
+FROM inserted;
 DO \$\$
 BEGIN
   IF (SELECT count(*) FROM project_api_keys
@@ -552,12 +689,34 @@ END
 \$\$;
 COMMIT;
 SQL
+} >"$sql_file"
 chmod 600 "$sql_file"
 
 pg_mutation_attempted=true
 if ! run_psql_file "$sql_file"; then
   die 1 'Laminar operator key transaction failed; raw database output remains root-private'
 fi
+pg_mutation_committed=true
+inserted_meta="$(python3 - "$sql_output" <<'PY'
+import pathlib
+import re
+import sys
+
+lines = [line for line in pathlib.Path(sys.argv[1]).read_text().splitlines() if line]
+if len(lines) != 1:
+    raise SystemExit("operator transaction did not return exactly one inserted-row marker")
+prefix, separator, row_hash = lines[0].partition("\t")
+if not prefix.startswith("inserted=") or not separator:
+    raise SystemExit("operator transaction returned an invalid inserted-row marker")
+row_id = prefix.removeprefix("inserted=")
+if not re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", row_id):
+    raise SystemExit("inserted operator row ID is not a canonical UUID")
+if not re.fullmatch(r"[0-9a-fA-F]{32}", row_hash):
+    raise SystemExit("inserted operator row digest is malformed")
+print(f"{row_id}\t{row_hash}")
+PY
+)" || die 69 'operator transaction marker was unavailable; manual reconciliation is required'
+IFS=$'\t' read -r pg_inserted_id pg_inserted_row_hash <<<"$inserted_meta"
 printf '%s\n' 'operator query key transaction=committed collector_key=preserved'
 
 # The target account was proved absent, so CREATE USER cannot overwrite a

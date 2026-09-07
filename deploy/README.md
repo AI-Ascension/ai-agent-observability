@@ -33,8 +33,13 @@ Prefer the collector for normal agent traces:
 
 ```text
 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:14318
-OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 ```
+
+The STS2 runtime uses the versioned `otlp-http-json-v1` profile: bounded
+OTLP/HTTP JSON requests to `/v1/traces` with `Content-Type: application/json`.
+The Collector can accept protobuf and gRPC from other producers, which does
+not alter the STS2 runtime input contract.
 
 The collector handles downstream authentication. If a direct Laminar SDK
 connection is needed, use the local `.env` value for `LAMINAR_PROJECT_API_KEY`
