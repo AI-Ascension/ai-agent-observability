@@ -26,7 +26,7 @@ jobs:
       - name: Install shellcheck
         run: |
           sudo apt-get update
-          sudo apt-get install --yes shellcheck
+          sudo apt-get install --yes shellcheck jq
 
       - name: Check shell syntax and style
         run: |
@@ -39,6 +39,8 @@ jobs:
         run: |
           bash tests/bootstrap.sh
           bash tests/validation-regressions.sh
+          COLLECTOR_RUNTIME_VALIDATE=required bash tests/collector-invariants.sh
+          COLLECTOR_PERSISTENCE_RUNTIME=required bash tests/collector-persistence.sh
 
       - name: Check text and secret hygiene
         run: |

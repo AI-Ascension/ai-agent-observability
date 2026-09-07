@@ -16,6 +16,7 @@ before redistribution.
 | RabbitMQ | `rabbitmq:4.3.5-management` | [RabbitMQ](https://github.com/rabbitmq/rabbitmq-server), MPL-2.0 project license (some OCF files Apache-2.0) |
 | Quickwit | `quickwit/quickwit:v0.8.2` | [Quickwit](https://github.com/quickwit-oss/quickwit), AGPL-3.0 project license; review before redistributing an assembled image set |
 | AWS CLI | `amazon/aws-cli:2.33.25` | [AWS CLI](https://github.com/aws/aws-cli), Apache-2.0 project license |
+| Alpine | `docker.io/library/alpine:3.22.1` | [Alpine Linux](https://www.alpinelinux.org/), MIT license; used only for the Collector volume ownership initializer |
 | MLflow image additions | `boto3==1.43.88`, `psycopg2-binary==2.9.12` (pip, `deploy/Dockerfile.mlflow`) | [boto3](https://github.com/boto/boto3), Apache-2.0; [psycopg2](https://github.com/psycopg/psycopg2), LGPL-3.0 with linking exception |
 | Wrapper image packages | `curl` (Debian and Alpine), `openssl`, `ca-certificates` (`deploy/Dockerfile.laminar`) | Distribution packages of the upstream base images; governed by their distribution licenses |
 

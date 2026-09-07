@@ -118,6 +118,8 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+    volumes:
+      - laminar-rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
       interval: 10s
@@ -328,27 +330,56 @@ services:
       LAMINAR_ADMIN_EMAIL: ${LAMINAR_ADMIN_EMAIL}
     restart: "no"
 
+  # The upstream Collector image is intentionally non-root (10001:10001),
+  # while a new named volume is root-owned by most runtimes. This narrow,
+  # idempotent initializer grants ownership without giving the Collector a
+  # writable root filesystem or extra capabilities. It never removes data.
+  otel-collector-storage-init:
+    image: docker.io/library/alpine:3.22.1
+    container_name: ai-agent-observability-otel-collector-storage-init
+    pull_policy: missing
+    user: "0:0"
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        install -d -m 0750 -o 10001 -g 10001 /var/lib/otelcol
+        install -d -m 0750 -o 10001 -g 10001 /var/lib/otelcol/storage
+        install -d -m 0750 -o 10001 -g 10001 /var/lib/otelcol/storage/mlflow
+        install -d -m 0750 -o 10001 -g 10001 /var/lib/otelcol/storage/laminar
+        install -d -m 0750 -o 10001 -g 10001 /var/lib/otelcol/compaction
+        install -d -m 0750 -o 10001 -g 10001 /var/lib/otelcol/compaction/mlflow
+        install -d -m 0750 -o 10001 -g 10001 /var/lib/otelcol/compaction/laminar
+    volumes:
+      - otel-collector-data:/var/lib/otelcol
+    restart: "no"
+
   otel-collector:
     image: docker.io/otel/opentelemetry-collector-contrib:0.160.0
     container_name: ai-agent-observability-otel-collector
     pull_policy: missing
     depends_on:
-      mlflow:
-        condition: service_healthy
-      laminar-bootstrap:
+      otel-collector-storage-init:
         condition: service_completed_successfully
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    user: "10001:10001"
     environment:
       MLFLOW_EXPERIMENT_ID: ${MLFLOW_EXPERIMENT_ID}
       LAMINAR_PROJECT_API_KEY: ${LAMINAR_PROJECT_API_KEY}
     ports:
       - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${OTEL_GRPC_PORT:?OTEL_GRPC_PORT is required}:4317"
       - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${OTEL_HTTP_PORT:?OTEL_HTTP_PORT is required}:4318"
+      - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${OTEL_HEALTH_PORT:?OTEL_HEALTH_PORT is required}:13133"
+      - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${OTEL_METRICS_PORT:?OTEL_METRICS_PORT is required}:8888"
+      - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${OTEL_STORAGE_METRICS_PORT:?OTEL_STORAGE_METRICS_PORT is required}:8889"
     volumes:
       - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - otel-collector-data:/var/lib/otelcol:rw
     read_only: true
     tmpfs:
       - /tmp
+    cap_drop:
+      - ALL
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
@@ -366,6 +397,10 @@ volumes:
     name: ai-agent-observability-laminar-postgres-data
   laminar-quickwit-data:
     name: ai-agent-observability-laminar-quickwit-data
+  laminar-rabbitmq-data:
+    name: ai-agent-observability-laminar-rabbitmq-data
+  otel-collector-data:
+    name: ai-agent-observability-otel-collector-data
 
 networks:
   default:

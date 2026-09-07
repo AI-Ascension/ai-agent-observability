@@ -4,10 +4,10 @@ set -euo pipefail
 printf 'allowed_hosts: localhost:%s,127.0.0.1:%s\n' "${MLFLOW_PORT:-15000}" "${MLFLOW_PORT:-15000}"
 for service in mlflow-postgres mlflow-storage mlflow laminar-postgres \
   laminar-clickhouse laminar-rabbitmq laminar-quickwit laminar-app-server \
-  laminar-frontend laminar-bootstrap otel-collector; do
+  laminar-frontend laminar-bootstrap otel-collector-storage-init otel-collector; do
   printf 'container_name: ai-agent-observability-%s\n' "$service"
 done
-for port in 15000 15667 14317 14318; do
+for port in 15000 15667 14317 14318 13133 14319 14320; do
   if [[ $port != 14318 || ${TEST_BINDING:-loopback} == loopback ]]; then
     printf 'host_ip: 127.0.0.1\n'
   elif [[ $TEST_BINDING != omitted ]]; then
@@ -16,3 +16,9 @@ for port in 15000 15667 14317 14318; do
   printf 'published: "%s"\n' "$port"
 done
 printf 'external: true\n'
+for volume in \
+  mlflow-postgres-data mlflow-storage-data laminar-clickhouse-data \
+  laminar-clickhouse-logs laminar-postgres-data laminar-quickwit-data \
+  laminar-rabbitmq-data otel-collector-data; do
+  printf 'name: ai-agent-observability-%s\n' "$volume"
+done
