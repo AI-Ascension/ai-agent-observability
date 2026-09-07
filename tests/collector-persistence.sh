@@ -7,6 +7,7 @@ cd "$repo_root"
 source_config="$repo_root/tests/config/collector-persistence-source.yaml"
 sink_config="$repo_root/tests/config/collector-persistence-sink.yaml"
 payload="$repo_root/tests/config/collector-persistence-trace.json"
+overflow_payload="$repo_root/tests/config/collector-overflow-trace.json"
 collector_image=docker.io/otel/opentelemetry-collector-contrib:0.160.0
 runtime_test="${COLLECTOR_PERSISTENCE_RUNTIME:-skip}"
 
@@ -20,6 +21,8 @@ jq -e '.resourceSpans[0].scopeSpans[0].spans[0] |
   (.spanId | test("^[0-9a-f]{16}$")) and
   (.startTimeUnixNano | test("^[0-9]+$")) and
   (.endTimeUnixNano | test("^[0-9]+$"))' "$payload" >/dev/null
+jq -e '.resourceSpans[0].scopeSpans[0].spans[0].name == "synthetic-overflow-probe"' \
+  "$overflow_payload" >/dev/null
 
 case "$runtime_test" in
   skip)
@@ -128,6 +131,36 @@ if [[ "$queue_depth" != 1 ]]; then
   printf '%s\n' 'source Collector queue depth did not reflect the submitted span' >&2
   exit 1
 fi
+
+# Exceed the configured eight-request queue while the sink is still absent.
+# These are distinct from the original marker so a later sink receipt must
+# prove that overflow did not evict the already-retained marker. HTTP rejection
+# is allowed here; the authoritative assertion is the Collector drop counter.
+docker run --rm --network "$network_name" \
+  --mount "type=bind,source=$overflow_payload,target=/trace.json,readonly" \
+  docker.io/library/alpine:3.22.1 sh -ec '
+    remaining=32
+    while [ "$remaining" -gt 0 ]; do
+      wget -q -O /dev/null -T 2 --header "Content-Type: application/json" \
+        --post-file /trace.json http://source:4318/v1/traces 2>/dev/null || true
+      remaining=$((remaining - 1))
+    done
+  '
+overflow_accounted=0
+for _ in {1..30}; do
+  if docker run --rm --network "$network_name" docker.io/library/alpine:3.22.1 \
+      wget -q -O - -T 5 http://source:8888/metrics \
+      | grep -Eq 'otelcol_exporter_enqueue_failed_spans(_total)?\{[^}]*\} [1-9]'; then
+    overflow_accounted=1
+    break
+  fi
+  sleep 1
+done
+if [[ "$overflow_accounted" != 1 ]]; then
+  printf '%s\n' 'queue saturation did not produce the required failed-enqueue counter' >&2
+  exit 1
+fi
+printf '%s\n' 'Collector queue overflow produced an explicit failed-enqueue counter.'
 
 docker kill "$source_name" >/dev/null
 docker rm "$source_name" >/dev/null
