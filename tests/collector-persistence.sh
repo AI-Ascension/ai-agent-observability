@@ -42,29 +42,34 @@ case "$runtime_test" in
     ;;
 esac
 
-test_root="$(mktemp -d)"
 network_name="ai-agent-observability-pq-${PPID}-${BASHPID:-$$}"
 source_name="${network_name}-source"
 sink_name="${network_name}-sink"
+storage_volume="${network_name}-storage"
 cleanup() {
+  local original_status=$?
+  if ((original_status != 0)); then
+    docker logs --tail=80 "$source_name" >&2 || true
+    docker logs --tail=80 "$sink_name" >&2 || true
+  fi
   docker rm -f "$source_name" >/dev/null 2>&1 || true
   docker rm -f "$sink_name" >/dev/null 2>&1 || true
   docker network rm "$network_name" >/dev/null 2>&1 || true
-  rm -r -- "$test_root"
+  docker volume rm "$storage_volume" >/dev/null 2>&1 || true
+  return "$original_status"
 }
 trap cleanup EXIT
 
-mkdir "$test_root/storage"
-# This bind mount is test-only. Production Compose uses the root-owned named
-# volume and its one-shot ownership initializer instead.
-chmod 0777 "$test_root/storage"
+# This uniquely named volume contains synthetic fixture data only. Keeping it
+# in the container runtime avoids leaving UID-10001 files in a host temp tree.
+docker volume create "$storage_volume" >/dev/null
 docker network create --internal "$network_name" >/dev/null
 
 docker run -d --name "$source_name" --network "$network_name" \
   --publish 127.0.0.1::4318 \
   --publish 127.0.0.1::8888 \
   --mount "type=bind,source=$source_config,target=/etc/otelcol-contrib/config.yaml,readonly" \
-  --mount "type=bind,source=$test_root/storage,target=/var/lib/otelcol" \
+  --mount "type=volume,source=$storage_volume,target=/var/lib/otelcol" \
   "$collector_image" --config=/etc/otelcol-contrib/config.yaml >/dev/null
 
 for _ in {1..30}; do
@@ -128,20 +133,6 @@ if [[ "$queue_depth" != 1 ]]; then
   exit 1
 fi
 
-queue_file=
-for _ in {1..30}; do
-  queue_file="$(find "$test_root/storage" -type f -size +0c -print -quit)"
-  if [[ -n "$queue_file" ]]; then
-    break
-  fi
-  sleep 1
-done
-if [[ -z "$queue_file" ]]; then
-  docker logs --tail=80 "$source_name" >&2 || true
-  printf '%s\n' 'source Collector did not persist a queue record before restart' >&2
-  exit 1
-fi
-
 docker kill "$source_name" >/dev/null
 docker rm "$source_name" >/dev/null
 
@@ -150,7 +141,7 @@ docker rm "$source_name" >/dev/null
 docker run -d --name "$source_name" --network "$network_name" \
   --publish 127.0.0.1::8888 \
   --mount "type=bind,source=$source_config,target=/etc/otelcol-contrib/config.yaml,readonly" \
-  --mount "type=bind,source=$test_root/storage,target=/var/lib/otelcol" \
+  --mount "type=volume,source=$storage_volume,target=/var/lib/otelcol" \
   "$collector_image" --config=/etc/otelcol-contrib/config.yaml >/dev/null
 docker run -d --name "$sink_name" --network "$network_name" --network-alias sink \
   --mount "type=bind,source=$sink_config,target=/etc/otelcol-contrib/config.yaml,readonly" \
