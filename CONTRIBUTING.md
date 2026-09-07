@@ -43,6 +43,7 @@ git diff --check
 bash tests/validation-regressions.sh
 bash tests/compose-invariants.sh
 bash tests/bootstrap.sh
+bash tests/compose-policy-regressions.sh
 ```
 
 `tests/bootstrap.sh` asserts the generated `.env` mode is `0600`; on filesystems
@@ -54,6 +55,7 @@ With Docker Compose available:
 ```bash
 docker compose --env-file deploy/.env.example -f deploy/compose.yaml config --quiet
 bash tests/compose-required-settings.sh
+bash tests/compose-structured.sh
 docker buildx build --check -f deploy/Dockerfile.mlflow deploy
 docker buildx build --check -f deploy/Dockerfile.laminar deploy
 ```

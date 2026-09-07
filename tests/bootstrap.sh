@@ -32,6 +32,16 @@ for variant in 8 9 a b; do
   [[ $(sha256sum "$generated_env") == "$before" ]]
 done
 
+# Existing dotenv data must never become shell code in the initializer.
+mkdir "$test_root/dotenv-data"
+cp "$repo_root/deploy/init.sh" "$test_root/dotenv-data/init.sh"
+printf 'UNTRUSTED=$(touch %s)\n' "$test_root/executed" > "$test_root/dotenv-data/.env"
+chmod 600 "$test_root/dotenv-data/.env"
+before="$(sha256sum "$test_root/dotenv-data/.env")"
+bash "$test_root/dotenv-data/init.sh" >/dev/null
+[[ ! -e "$test_root/executed" ]]
+[[ $(sha256sum "$test_root/dotenv-data/.env") == "$before" ]]
+
 export POSTGRES_USER=test POSTGRES_PASSWORD=test POSTGRES_DB=test
 export LAMINAR_PROJECT_API_KEY
 LAMINAR_PROJECT_API_KEY="$(printf '%064d' 0)"
@@ -50,4 +60,4 @@ for identity_name in LAMINAR_PROJECT_ID LAMINAR_WORKSPACE_ID; do
     exit 1
   fi
 done
-printf '%s\n' 'Bootstrap UUID variants, environment preservation, and invalid identities passed.'
+printf '%s\n' 'Bootstrap UUID variants, dotenv non-execution, environment preservation, and invalid identities passed.'
