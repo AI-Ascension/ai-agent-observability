@@ -8,3 +8,6 @@ deploy/.env.*
 .DS_Store
 .idea/
 .vscode/
+
+# Generated output of the pinned standards tool only.
+standards/tools/standards-sync/target/

@@ -25,6 +25,12 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Install pinned policy toolchain
+        run: rustup toolchain install 1.97.1 --profile minimal
+
+      - name: Validate local pinned standards
+        run: cargo +1.97.1 run --locked --manifest-path standards/tools/standards-sync/Cargo.toml -- validate --root .
+
       - name: Prepare pinned ShellCheck
         run: |
           curl --fail --location --max-time 90 --output "$RUNNER_TEMP/shellcheck.tar.xz" \

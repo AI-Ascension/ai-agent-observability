@@ -1,0 +1,105 @@
+schema_version = 1
+profile_id = "operations"
+repository = "AI-Ascension/ai-agent-observability"
+owner = "ORG"
+source_bundle = "AI-Ascension/.github"
+source_commit = "44b403033f9c19a3e7b119bd32433f1cb1b1cc1f"
+source_digest = "sha256:30022718c9bbff2ff6deae7a42c2d7fae74b045a1c999aa62d84090afd037e84"
+distribution = "local"
+scopes = [
+    "shell",
+    "yaml",
+    "dockerfile",
+    "systemd",
+]
+
+[checks]
+fast = [
+    "git-diff-check",
+    "standards-validate",
+    "shell-syntax-init",
+    "shell-syntax-key-bootstrap",
+    "shellcheck",
+]
+required = [
+    "bootstrap-tests",
+    "validation-regressions",
+    "compose-policy-regressions",
+    "compose-source-regressions",
+    "compose-invariants",
+    "compose-config",
+    "compose-required-settings",
+    "compose-structured",
+    "dockerfile-mlflow",
+    "dockerfile-laminar",
+]
+extended = []
+
+[checks.commands.bootstrap-tests]
+command = "bash tests/bootstrap.sh"
+target = "."
+
+[checks.commands.compose-config]
+command = "docker compose --env-file deploy/.env.example -f deploy/compose.yaml config --quiet"
+target = "."
+
+[checks.commands.compose-invariants]
+command = "bash tests/compose-invariants.sh"
+target = "."
+
+[checks.commands.compose-policy-regressions]
+command = "bash tests/compose-policy-regressions.sh"
+target = "."
+
+[checks.commands.compose-required-settings]
+command = "bash tests/compose-required-settings.sh"
+target = "."
+
+[checks.commands.compose-source-regressions]
+command = "bash tests/compose-source-regressions.sh"
+target = "."
+
+[checks.commands.compose-structured]
+command = "bash tests/compose-structured.sh"
+target = "."
+
+[checks.commands.dockerfile-laminar]
+command = "docker buildx build --check --file deploy/Dockerfile.laminar deploy"
+target = "."
+
+[checks.commands.dockerfile-mlflow]
+command = "docker buildx build --check --file deploy/Dockerfile.mlflow deploy"
+target = "."
+
+[checks.commands.git-diff-check]
+command = "git diff --check"
+target = "."
+
+[checks.commands.shell-syntax-init]
+command = "bash -n deploy/init.sh"
+target = "."
+
+[checks.commands.shell-syntax-key-bootstrap]
+command = "bash -n deploy/laminar/bootstrap-project-key.sh"
+target = "."
+
+[checks.commands.shellcheck]
+command = "shellcheck --severity=warning deploy/init.sh deploy/laminar/bootstrap-project-key.sh tests/*.sh tests/fixtures/*"
+target = "."
+
+[checks.commands.standards-validate]
+command = "cargo +1.97.1 run --locked --manifest-path standards/tools/standards-sync/Cargo.toml -- validate --root ."
+target = "."
+
+[checks.commands.validation-regressions]
+command = "bash tests/validation-regressions.sh"
+target = "."
+
+[evidence]
+runtime = "unverified"
+deployment = "unverified"
+provider = "unverified"
+
+[exceptions]
+file = ""
+status = "none"
