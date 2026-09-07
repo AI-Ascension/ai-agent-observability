@@ -1,6 +1,11 @@
-# ai-agent-observability
+# Ascension Observability
 
 Self-hosted AI-agent observability and experiment tracking for AI-Ascension.
+
+This is an operations companion to [Ascension](https://github.com/AI-Ascension/sts2-harness),
+the AI Ascension flagship toolkit. **The Climb — by AI Ascension** may link to
+approved run context, while this repository keeps its private telemetry and
+deployment boundaries intact.
 
 This repository provides an isolated Docker Compose deployment that runs on
 Docker or rootful Podman:
