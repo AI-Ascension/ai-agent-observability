@@ -55,6 +55,7 @@ With Docker Compose available:
 ```bash
 docker compose --env-file deploy/.env.example -f deploy/compose.yaml config --quiet
 bash tests/compose-required-settings.sh
+bash tests/compose-source-regressions.sh
 bash tests/compose-structured.sh
 docker buildx build --check -f deploy/Dockerfile.mlflow deploy
 docker buildx build --check -f deploy/Dockerfile.laminar deploy

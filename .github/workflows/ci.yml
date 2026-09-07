@@ -23,6 +23,7 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Prepare pinned ShellCheck
         run: |
@@ -31,7 +32,23 @@ jobs:
           echo "6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87  $RUNNER_TEMP/shellcheck.tar.xz" | sha256sum --check
           tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/shellcheck-v0.10.0" >> "$GITHUB_PATH"
-          jq --version
+
+      - name: Verify pinned Compose and jq
+        env:
+          EXPECTED_COMPOSE_VERSION: 2.39.4
+          EXPECTED_JQ_VERSION: 1.8.1
+        run: |
+          compose_version="$(docker compose version --short)"
+          jq_version="$(jq --version)"
+          [[ "$compose_version" == "$EXPECTED_COMPOSE_VERSION" ]] || {
+            printf 'Expected Docker Compose %s, got %s\n' "$EXPECTED_COMPOSE_VERSION" "$compose_version" >&2
+            exit 1
+          }
+          [[ "$jq_version" == "jq-$EXPECTED_JQ_VERSION" ]] || {
+            printf 'Expected jq %s, got %s\n' "$EXPECTED_JQ_VERSION" "$jq_version" >&2
+            exit 1
+          }
+          printf 'Using Docker Compose %s and %s.\n' "$compose_version" "$jq_version"
 
       - name: Check shell syntax and style
         run: |
@@ -49,13 +66,20 @@ jobs:
 
       - name: Check text and secret hygiene
         run: |
-          git diff --check
+          if [[ "${{ github.event_name }}" == pull_request && -n "${{ github.event.pull_request.base.sha }}" ]]; then
+            git diff --check "${{ github.event.pull_request.base.sha }}...$GITHUB_SHA"
+          elif [[ "${{ github.event_name }}" == push && "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]]; then
+            git diff --check "${{ github.event.before }}" "$GITHUB_SHA"
+          else
+            git diff --check HEAD^ HEAD
+          fi
           tests/compose-invariants.sh
 
       - name: Validate Compose model
         run: |
           docker compose --env-file deploy/.env.example -f deploy/compose.yaml config --quiet
           bash tests/compose-required-settings.sh
+          bash tests/compose-source-regressions.sh
           bash tests/compose-structured.sh
 
       - name: Lint Dockerfile syntax

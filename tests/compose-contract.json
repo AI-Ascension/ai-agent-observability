@@ -1,0 +1,220 @@
+{
+  "project_name": "ai-agent-observability",
+  "network": {
+    "name": "ai-agent-observability-net",
+    "external": true
+  },
+  "service_fields": [
+    "build",
+    "cap_add",
+    "command",
+    "container_name",
+    "depends_on",
+    "entrypoint",
+    "environment",
+    "healthcheck",
+    "image",
+    "networks",
+    "ports",
+    "pull_policy",
+    "read_only",
+    "restart",
+    "security_opt",
+    "tmpfs",
+    "ulimits",
+    "volumes"
+  ],
+  "services": {
+    "laminar-app-server": {
+      "image": "localhost/ai-ascension/ai-agent-observability/laminar-app-server:v0.2.3",
+      "build": {
+        "context": "deploy",
+        "dockerfile": "Dockerfile.laminar",
+        "target": "app-server",
+        "args": {"LAMINAR_VERSION": "v0.2.3"}
+      },
+      "environment_keys": [
+        "AEAD_SECRET_KEY", "CLICKHOUSE_PASSWORD", "CLICKHOUSE_RO_PASSWORD",
+        "CLICKHOUSE_RO_USER", "CLICKHOUSE_URL", "CLICKHOUSE_USER", "CONSUMER_PORT",
+        "DATABASE_URL", "ENVIRONMENT", "GRPC_PORT", "LAMINAR_TELEMETRY_DISABLED",
+        "PORT", "QUICKWIT_INGEST_URL", "QUICKWIT_SEARCH_URL", "QUICKWIT_SPANS_INDEX_ID",
+        "RABBITMQ_URL", "RUST_LOG", "SHARED_SECRET_TOKEN", "SLACK_ENCRYPTION_KEY"
+      ],
+      "environment_values": {"LAMINAR_TELEMETRY_DISABLED": "true"},
+      "command": null,
+      "depends_on": {
+        "laminar-clickhouse": "service_healthy",
+        "laminar-postgres": "service_healthy",
+        "laminar-quickwit": "service_healthy",
+        "laminar-rabbitmq": "service_healthy"
+      },
+      "ports": [
+        {"host_ip": "127.0.0.1", "published": "18000", "target": 8000, "protocol": "tcp", "mode": "ingress"},
+        {"host_ip": "127.0.0.1", "published": "18001", "target": 8001, "protocol": "tcp", "mode": "ingress"},
+        {"host_ip": "127.0.0.1", "published": "18002", "target": 8002, "protocol": "tcp", "mode": "ingress"}
+      ],
+      "volumes": [],
+      "cap_add": [],
+      "security_opt": [],
+      "read_only": false,
+      "tmpfs": []
+    },
+    "laminar-bootstrap": {
+      "image": "localhost/ai-ascension/ai-agent-observability/laminar-bootstrap:v0.2.3",
+      "build": {
+        "context": "deploy",
+        "dockerfile": "Dockerfile.laminar",
+        "target": "bootstrap",
+        "args": {"LAMINAR_VERSION": "v0.2.3"}
+      },
+      "environment_keys": [
+        "LAMINAR_ADMIN_EMAIL", "LAMINAR_PROJECT_API_KEY", "LAMINAR_PROJECT_ID",
+        "LAMINAR_PROJECT_NAME", "LAMINAR_WORKSPACE_ID", "LAMINAR_WORKSPACE_NAME",
+        "POSTGRES_DB", "POSTGRES_PASSWORD", "POSTGRES_USER"
+      ],
+      "command": null,
+      "depends_on": {"laminar-frontend": "service_healthy"},
+      "ports": [], "volumes": [], "cap_add": [], "security_opt": [],
+      "read_only": false, "tmpfs": []
+    },
+    "laminar-clickhouse": {
+      "image": "docker.io/clickhouse/clickhouse-server:26.5",
+      "build": null,
+      "environment_keys": ["CLICKHOUSE_PASSWORD", "CLICKHOUSE_USER"],
+      "command": null,
+      "depends_on": {},
+      "ports": [],
+      "volumes": [
+        {"type": "volume", "source": "laminar-clickhouse-data", "target": "/var/lib/clickhouse", "read_only": false},
+        {"type": "volume", "source": "laminar-clickhouse-logs", "target": "/var/log/clickhouse-server", "read_only": false},
+        {"type": "bind", "source": "deploy/laminar/clickhouse-profiles-config.xml", "target": "/etc/clickhouse-server/users.d/ai-agent-observability.xml", "read_only": true},
+        {"type": "bind", "source": "deploy/laminar/clickhouse-server-config.xml", "target": "/etc/clickhouse-server/config.d/ai-agent-observability.xml", "read_only": true}
+      ],
+      "cap_add": ["SYS_NICE", "IPC_LOCK"],
+      "security_opt": [], "read_only": false, "tmpfs": []
+    },
+    "laminar-frontend": {
+      "image": "localhost/ai-ascension/ai-agent-observability/laminar-frontend:v0.2.3",
+      "build": {
+        "context": "deploy",
+        "dockerfile": "Dockerfile.laminar",
+        "target": "frontend",
+        "args": {"LAMINAR_VERSION": "v0.2.3"}
+      },
+      "environment_keys": [
+        "AGENT_CHAT_ENABLED", "AWS_ACCESS_KEY_ID", "AWS_REGION", "AWS_SECRET_ACCESS_KEY",
+        "BACKEND_RT_URL", "BACKEND_URL", "BETTER_AUTH_SECRET", "BETTER_AUTH_URL",
+        "CLICKHOUSE_PASSWORD", "CLICKHOUSE_URL", "CLICKHOUSE_USER", "CLUSTERING_ENABLED",
+        "DATABASE_URL", "ENVIRONMENT", "FORCE_EMAIL_AUTH", "FORCE_RUN_MIGRATIONS",
+        "LAMINAR_CLOUD", "LAMINAR_TELEMETRY_DISABLED", "LLM_API_KEY", "LLM_BASE_URL",
+        "LLM_MODEL_LARGE", "LLM_MODEL_MEDIUM", "LLM_MODEL_SMALL", "LLM_PROVIDER",
+        "NEXTAUTH_SECRET", "NEXTAUTH_URL", "NEXT_PUBLIC_APP_VERSION", "NEXT_PUBLIC_BASE_PATH",
+        "NEXT_PUBLIC_URL", "NODE_ENV", "OPENAI_API_KEY", "PORT", "POSTGRES_CREATE_SCHEMA",
+        "POSTHOG_TELEMETRY", "SHARED_SECRET_TOKEN", "SIGNALS_ENABLED"
+      ],
+      "environment_values": {
+        "AGENT_CHAT_ENABLED": "false", "CLUSTERING_ENABLED": "false",
+        "LAMINAR_CLOUD": "false", "LAMINAR_TELEMETRY_DISABLED": "true",
+        "POSTHOG_TELEMETRY": "false", "SIGNALS_ENABLED": "false"
+      },
+      "command": null,
+      "depends_on": {
+        "laminar-app-server": "service_healthy",
+        "laminar-clickhouse": "service_healthy",
+        "laminar-postgres": "service_healthy",
+        "laminar-quickwit": "service_healthy"
+      },
+      "ports": [{"host_ip": "127.0.0.1", "published": "15667", "target": 5667, "protocol": "tcp", "mode": "ingress"}],
+      "volumes": [], "cap_add": [], "security_opt": [], "read_only": false, "tmpfs": []
+    },
+    "laminar-postgres": {
+      "image": "docker.io/library/postgres:16",
+      "build": null,
+      "environment_keys": ["POSTGRES_DB", "POSTGRES_PASSWORD", "POSTGRES_USER"],
+      "command": null, "depends_on": {}, "ports": [],
+      "volumes": [{"type": "volume", "source": "laminar-postgres-data", "target": "/var/lib/postgresql/data", "read_only": false}],
+      "cap_add": [], "security_opt": [], "read_only": false, "tmpfs": []
+    },
+    "laminar-quickwit": {
+      "image": "docker.io/quickwit/quickwit:v0.8.2",
+      "build": null,
+      "environment_keys": ["QW_DATA_DIR"],
+      "command": ["run"], "depends_on": {},
+      "ports": [
+        {"host_ip": "127.0.0.1", "published": "17280", "target": 7280, "protocol": "tcp", "mode": "ingress"},
+        {"host_ip": "127.0.0.1", "published": "17281", "target": 7281, "protocol": "tcp", "mode": "ingress"}
+      ],
+      "volumes": [{"type": "volume", "source": "laminar-quickwit-data", "target": "/quickwit/qwdata", "read_only": false}],
+      "cap_add": [], "security_opt": [], "read_only": false, "tmpfs": []
+    },
+    "laminar-rabbitmq": {
+      "image": "docker.io/library/rabbitmq:4.3.5-management",
+      "build": null,
+      "environment_keys": ["RABBITMQ_DEFAULT_PASS", "RABBITMQ_DEFAULT_USER"],
+      "command": null, "depends_on": {}, "ports": [], "volumes": [],
+      "cap_add": [], "security_opt": [], "read_only": false, "tmpfs": []
+    },
+    "mlflow": {
+      "image": "localhost/ai-ascension/ai-agent-observability/mlflow:v3.16.0",
+      "build": {"context": "deploy", "dockerfile": "Dockerfile.mlflow", "target": null, "args": {"MLFLOW_VERSION": "v3.16.0"}},
+      "environment_keys": ["AWS_ACCESS_KEY_ID", "AWS_DEFAULT_REGION", "AWS_S3_ADDRESSING_STYLE", "AWS_SECRET_ACCESS_KEY", "MLFLOW_BACKEND_STORE_URI", "MLFLOW_S3_ENDPOINT_URL", "MLFLOW_S3_IGNORE_TLS"],
+      "command": ["server", "--artifacts-destination", "s3://mlflow", "--serve-artifacts", "--host", "0.0.0.0", "--port", "5000", "--allowed-hosts", "localhost,127.0.0.1,mlflow,localhost:5000,127.0.0.1:5000,mlflow:5000,localhost:15000,127.0.0.1:15000,127.0.0.1,127.0.0.1:15000"],
+      "depends_on": {
+        "mlflow-create-bucket": "service_completed_successfully",
+        "mlflow-postgres": "service_healthy",
+        "mlflow-storage": "service_healthy"
+      },
+      "ports": [{"host_ip": "127.0.0.1", "published": "15000", "target": 5000, "protocol": "tcp", "mode": "ingress"}],
+      "volumes": [], "cap_add": [], "security_opt": [], "read_only": false, "tmpfs": []
+    },
+    "mlflow-create-bucket": {
+      "image": "docker.io/amazon/aws-cli:2.33.25",
+      "build": null,
+      "environment_keys": ["AWS_ACCESS_KEY_ID", "AWS_DEFAULT_REGION", "AWS_S3_ADDRESSING_STYLE", "AWS_SECRET_ACCESS_KEY", "MLFLOW_S3_BUCKET", "MLFLOW_S3_ENDPOINT_URL"],
+      "command": ["if aws --endpoint-url \"$${MLFLOW_S3_ENDPOINT_URL}\" s3api head-bucket --bucket \"$${MLFLOW_S3_BUCKET}\" >/dev/null 2>&1; then\n  echo 'MLflow artifact bucket already exists.'\nelse\n  aws --endpoint-url \"$${MLFLOW_S3_ENDPOINT_URL}\" s3api create-bucket --bucket \"$${MLFLOW_S3_BUCKET}\" --region \"$${AWS_DEFAULT_REGION}\" >/dev/null\n  echo 'MLflow artifact bucket created.'\nfi\n"],
+      "depends_on": {"mlflow-storage": "service_healthy"}, "ports": [], "volumes": [],
+      "cap_add": [], "security_opt": [], "read_only": false, "tmpfs": []
+    },
+    "mlflow-postgres": {
+      "image": "docker.io/library/postgres:15",
+      "build": null,
+      "environment_keys": ["POSTGRES_DB", "POSTGRES_PASSWORD", "POSTGRES_USER"],
+      "command": null, "depends_on": {}, "ports": [],
+      "volumes": [{"type": "volume", "source": "mlflow-postgres-data", "target": "/var/lib/postgresql/data", "read_only": false}],
+      "cap_add": [], "security_opt": [], "read_only": false, "tmpfs": []
+    },
+    "mlflow-storage": {
+      "image": "docker.io/rustfs/rustfs:1.0.0-alpha.83",
+      "build": null,
+      "environment_keys": ["RUSTFS_ACCESS_KEY", "RUSTFS_ADDRESS", "RUSTFS_CONSOLE_ENABLE", "RUSTFS_REGION", "RUSTFS_SECRET_KEY", "RUSTFS_SERVER_DOMAINS"],
+      "command": null, "depends_on": {},
+      "ports": [
+        {"host_ip": "127.0.0.1", "published": "19000", "target": 9000, "protocol": "tcp", "mode": "ingress"},
+        {"host_ip": "127.0.0.1", "published": "19001", "target": 9001, "protocol": "tcp", "mode": "ingress"}
+      ],
+      "volumes": [{"type": "volume", "source": "mlflow-storage-data", "target": "/data", "read_only": false}],
+      "cap_add": [], "security_opt": [], "read_only": false, "tmpfs": []
+    },
+    "otel-collector": {
+      "image": "docker.io/otel/opentelemetry-collector-contrib:0.160.0",
+      "build": null,
+      "environment_keys": ["LAMINAR_PROJECT_API_KEY", "MLFLOW_EXPERIMENT_ID"],
+      "command": ["--config=/etc/otelcol-contrib/config.yaml"],
+      "depends_on": {"laminar-bootstrap": "service_completed_successfully", "mlflow": "service_healthy"},
+      "ports": [
+        {"host_ip": "127.0.0.1", "published": "14317", "target": 4317, "protocol": "tcp", "mode": "ingress"},
+        {"host_ip": "127.0.0.1", "published": "14318", "target": 4318, "protocol": "tcp", "mode": "ingress"}
+      ],
+      "volumes": [{"type": "bind", "source": "deploy/otel-collector.yaml", "target": "/etc/otelcol-contrib/config.yaml", "read_only": true}],
+      "cap_add": [], "security_opt": ["no-new-privileges:true"], "read_only": true, "tmpfs": ["/tmp"]
+    }
+  },
+  "volumes": {
+    "laminar-clickhouse-data": {"name": "ai-agent-observability-laminar-clickhouse-data"},
+    "laminar-clickhouse-logs": {"name": "ai-agent-observability-laminar-clickhouse-logs"},
+    "laminar-postgres-data": {"name": "ai-agent-observability-laminar-postgres-data"},
+    "laminar-quickwit-data": {"name": "ai-agent-observability-laminar-quickwit-data"},
+    "mlflow-postgres-data": {"name": "ai-agent-observability-mlflow-postgres-data"},
+    "mlflow-storage-data": {"name": "ai-agent-observability-mlflow-storage-data"}
+  }
+}
