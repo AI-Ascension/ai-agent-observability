@@ -25,6 +25,11 @@ for required in \
   'deterministic compensation' \
   'DROP USER IF EXISTS' \
   'ch_user_created=false' \
+  'migrated_ro_user_prefix=' \
+  'ch_user_id=' \
+  'drop_owned_clickhouse_user' \
+  'retain_ch_ownership_evidence=true' \
+  'not an atomic ClickHouse primitive' \
   'refusing to drop a ClickHouse user after an ambiguous CREATE failure' \
   'protected key before the database commit' \
   'no-align --tuples-only'; do

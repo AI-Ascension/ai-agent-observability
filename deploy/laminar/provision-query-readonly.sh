@@ -28,7 +28,7 @@ query_key_file="$(printenv QUERY_KEY_FILE 2>/dev/null || printf '%s' '/root/ai-a
 ch_container="$(printenv CLICKHOUSE_CONTAINER 2>/dev/null || printf '%s' 'ai-agent-observability-laminar-clickhouse')"
 pg_container="$(printenv LAMINAR_POSTGRES_CONTAINER 2>/dev/null || printf '%s' 'ai-agent-observability-laminar-postgres')"
 operator_key_name='ai-agent-observability operator query'
-migrated_ro_user='lmnr_query_ro'
+migrated_ro_user_prefix='lmnr_query_ro_'
 
 for command_name in awk chmod chown cp cut dirname install mktemp mv openssl podman printenv python3 rm stat tail wc; do
   command -v "$command_name" >/dev/null 2>&1 || {
@@ -104,8 +104,8 @@ fi
 if [[ -n "$configured_ro_user" && ! "$configured_ro_user" =~ ^[A-Za-z0-9_.-]{1,63}$ ]]; then
   die 64 'configured ClickHouse read-only user identity is invalid'
 fi
-if [[ ! "$clickhouse_user" =~ ^[A-Za-z0-9_.-]{1,63}$ || "$clickhouse_user" == "$migrated_ro_user" ]]; then
-  die 64 'ClickHouse writer identity is invalid or reserved'
+if [[ ! "$clickhouse_user" =~ ^[A-Za-z0-9_.-]{1,63}$ ]]; then
+  die 64 'ClickHouse writer identity is invalid'
 fi
 if [[ ! "$ch_container" =~ ^[A-Za-z0-9_.-]{1,128}$ || ! "$pg_container" =~ ^[A-Za-z0-9_.-]{1,128}$ ]]; then
   die 64 'container identity is invalid'
@@ -121,6 +121,10 @@ fi
 install -d -o root -g root -m 700 "$private_dir"
 install -d -o root -g root -m 700 "$(dirname "$query_key_file")"
 nonce="$(openssl rand -hex 8)"
+migrated_ro_user="${migrated_ro_user_prefix}${nonce}"
+if [[ ! "$migrated_ro_user" =~ ^[A-Za-z0-9_.-]{1,63}$ ]]; then
+  die 69 'generated ClickHouse read-only user identity is invalid'
+fi
 sql_file="$private_dir/.query-provision.$nonce.sql"
 sql_output="$private_dir/.query-provision.$nonce.out"
 sql_error="$private_dir/.query-provision.$nonce.err"
@@ -134,6 +138,7 @@ ch_sql="$private_dir/.clickhouse-query.$nonce.sql"
 ch_grant_sql="$private_dir/.clickhouse-grant.$nonce.sql"
 ch_output="$private_dir/.clickhouse-query.$nonce.out"
 ch_error="$private_dir/.clickhouse-query.$nonce.err"
+ch_ownership_evidence="$private_dir/.clickhouse-query-ownership.$nonce"
 env_backup="$private_dir/.env.before-query-provision.$nonce"
 env_fragment="$private_dir/.env.ro-fragment.$nonce"
 new_key_file="$private_dir/.laminar-query-key.$nonce"
@@ -143,19 +148,24 @@ ch_ro_config_path="/run/.sts2-clickhouse-ro-config-$nonce.xml"
 pgpass_path="/run/.sts2-postgres-pass-$nonce"
 key_backup="$private_dir/.laminar-query-key.before-query-provision.$nonce"
 key_backup_state="$private_dir/.laminar-query-key.before-query-provision.$nonce.state"
+retain_ch_ownership_evidence=false
 
 cleanup() {
   rm -f "$sql_file" "$sql_output" "$sql_error" "$db_preflight_sql" \
-    "$db_preflight_output" "$ch_config" "$ch_ro_config" "$ch_sql" \
+    "$db_preflight_output" "$ch_config" "$ch_sql" \
     "$ch_grant_sql" "$ch_output" "$ch_error" "$env_fragment" \
     "$new_key_file" "$pgpass_file"
+  if [[ "$retain_ch_ownership_evidence" != true ]]; then
+    rm -f "$ch_ro_config" "$ch_ownership_evidence"
+  fi
   podman exec "$ch_container" rm -f "$ch_config_path" "$ch_ro_config_path" \
     >/dev/null 2>&1 || true
   podman exec "$pg_container" rm -f "$pgpass_path" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
-if [[ -e "$env_backup" || -e "$key_backup" || -e "$key_backup_state" ]]; then
+if [[ -e "$env_backup" || -e "$key_backup" || -e "$key_backup_state" \
+  || -e "$ch_ownership_evidence" || -e "$ch_ro_config" ]]; then
   die 69 'private backup path collision'
 fi
 
@@ -193,6 +203,24 @@ run_clickhouse_query() {
     return 1
   fi
   return 0
+}
+
+drop_owned_clickhouse_user() {
+  local current_user_id
+  if ! run_clickhouse_query "$ch_config_path" \
+    "SELECT id FROM system.users WHERE name = '$ro_user' FORMAT TSV"; then
+    return 1
+  fi
+  current_user_id="$(awk 'NF { print $1; exit }' "$ch_output")"
+  if [[ -z "$current_user_id" || "$current_user_id" != "$ch_user_id" ]]; then
+    return 1
+  fi
+  if ! run_clickhouse_query "$ch_ro_config_path" \
+    "SELECT 1 FORMAT TSV"; then
+    return 1
+  fi
+  run_clickhouse_query "$ch_config_path" \
+    "DROP USER IF EXISTS \`$ro_user\`"
 }
 
 # Live preflight first proves the writer is present, discovers the legacy
@@ -391,6 +419,8 @@ chmod 600 "$ch_ro_config"
 # persistent write has a compensation path and a deterministic rollback order.
 ch_mutation_attempted=false
 ch_user_created=false
+ch_user_id=''
+retain_ch_ownership_evidence=false
 pg_mutation_attempted=false
 key_mutation_attempted=false
 env_mutation_attempted=false
@@ -441,10 +471,11 @@ SQL
     fi
     if [[ "$ch_mutation_attempted" == true ]]; then
       if [[ "$ch_user_created" == true ]]; then
-        if ! run_clickhouse_query "$ch_config_path" \
-          "DROP USER IF EXISTS \`$ro_user\`"; then
+        if ! drop_owned_clickhouse_user; then
+          retain_ch_ownership_evidence=true
           rollback_failed=true
-          printf '%s\n' 'rollback failed while removing the staged ClickHouse user' >&2
+          printf 'refusing to drop ClickHouse user after ownership check failed; reconcile user=%s id=%s evidence=%s password_config=%s\n' \
+            "$ro_user" "${ch_user_id:-unknown}" "$ch_ownership_evidence" "$ch_ro_config" >&2
         fi
       elif ! run_clickhouse_query "$ch_config_path" \
         "SELECT name FROM system.users WHERE name = '$ro_user' FORMAT TSV"; then
@@ -460,6 +491,7 @@ SQL
     printf 'rollback_db_backup=%s\n' "$db_backup_sql" >&2
     if [[ "$rollback_failed" == true ]]; then
       printf '%s\n' 'automatic compensation was incomplete; keep the backups and reconcile by exact project/container identity' >&2
+      cleanup
       exit 70
     fi
   fi
@@ -529,9 +561,13 @@ fi
 printf '%s\n' 'operator query key transaction=committed collector_key=preserved'
 
 # The target account was proved absent, so CREATE USER cannot overwrite a
-# pre-existing account. CREATE runs separately from grants so compensation
-# drops the account only after a confirmed successful CREATE. An ambiguous
-# CREATE failure is inspected but never drops a possibly foreign account.
+# pre-existing account. A legacy writer alias gets a fresh nonce-qualified
+# target name for every migration. CREATE runs separately from grants so the
+# compensation path can verify both the ClickHouse UUID and the generated
+# password before a name-based DROP. That check is intentionally conservative:
+# an identity mismatch retains protected reconciliation evidence and exits 70.
+# Authorized root operations must serialize this procedure with other account
+# administration; the check and DROP are not an atomic ClickHouse primitive.
 ch_mutation_attempted=true
 if ! podman exec -i "$ch_container" clickhouse-client \
   --config-file "$ch_config_path" --multiquery <"$ch_sql" \
@@ -539,16 +575,36 @@ if ! podman exec -i "$ch_container" clickhouse-client \
   die 1 'ClickHouse read-only user creation failed; raw output remains root-private'
 fi
 ch_user_created=true
+cat >"$ch_ownership_evidence" <<EOF
+target_user=$ro_user
+target_id=unknown
+password_config=$ch_ro_config
+EOF
+chmod 600 "$ch_ownership_evidence"
+if ! podman exec -i "$ch_container" sh -c 'umask 077; cat > "$1"' sh "$ch_ro_config_path" \
+  <"$ch_ro_config" >/dev/null 2>"$ch_error"; then
+  die 70 'could not install protected ClickHouse ownership config; reconcile the staged account'
+fi
+if ! run_clickhouse_query "$ch_config_path" \
+  "SELECT id FROM system.users WHERE name = '$ro_user' FORMAT TSV"; then
+  die 70 'could not capture the staged ClickHouse user UUID; reconcile the staged account'
+fi
+ch_user_id="$(awk 'NF { print $1; exit }' "$ch_output")"
+if [[ ! "$ch_user_id" =~ $uuid_pattern ]]; then
+  die 70 'staged ClickHouse user UUID is unavailable; reconcile the staged account'
+fi
+cat >"$ch_ownership_evidence" <<EOF
+target_user=$ro_user
+target_id=$ch_user_id
+password_config=$ch_ro_config
+EOF
+chmod 600 "$ch_ownership_evidence"
 if ! podman exec -i "$ch_container" clickhouse-client \
   --config-file "$ch_config_path" --multiquery <"$ch_grant_sql" \
   >"$ch_output" 2>"$ch_error"; then
   die 1 'ClickHouse read-only user grants failed; raw output remains root-private'
 fi
 
-if ! podman exec -i "$ch_container" sh -c 'umask 077; cat > "$1"' sh "$ch_ro_config_path" \
-  <"$ch_ro_config" >/dev/null 2>"$ch_error"; then
-  die 69 'could not install protected ClickHouse read-only config'
-fi
 if ! run_clickhouse_query "$ch_config_path" \
   "SHOW GRANTS FOR \`$ro_user\` FORMAT TSV"; then
   die 1 'could not verify ClickHouse read-only grants'

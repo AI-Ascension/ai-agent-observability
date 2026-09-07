@@ -150,8 +150,9 @@ rows, bytes, and threads. It grants `SELECT` only on `default.spans` and
 operator key to a mode-0600 root-owned file, and updates only the two
 read-only ClickHouse values in `.env`. A legacy `CLICKHOUSE_RO_USER=lmnr`
 writer alias is admitted through live preflight and migrated to
-`lmnr_query_ro`; an already existing target account is refused. Credentials
-stay in protected files or stdin; they are not passed as command-line values.
+`lmnr_query_ro_<nonce>`; an already existing target account is refused.
+Credentials stay in protected files or stdin; they are not passed as
+command-line values.
 The helper does not restart the stack.
 
 Before any persistent write, the helper backs up `.env`, the existing operator
@@ -161,9 +162,14 @@ key file, and `.env` in a fixed order if a later step fails. The helper prints
 the sanitized container identity and image ID plus root-only backup paths.
 Keep those backups until the query consumer has been checked; if compensation
 reports an incomplete rollback, stop and reconcile using the printed paths and
-the same project/container identities. Record the exact container and image
-identity with any live evidence, and classify a failed query or backend check
-as unverified.
+the same project/container identities. When ClickHouse ownership cannot be
+verified by the staged user UUID and password, the helper preserves a mode-0600
+ownership record and read-only password config and exits 70; it never removes
+the possibly foreign account. Authorized root operators must serialize this
+procedure with other ClickHouse account administration. The UUID check and
+name-based DROP are not an atomic ClickHouse primitive. Record the exact
+container and image identity with any live evidence, and classify a failed
+query or backend check as unverified.
 
 - Image pull/build failure: build evidence is unavailable; existing running
   services are not changed by the failed build.
