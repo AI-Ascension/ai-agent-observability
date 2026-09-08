@@ -33,6 +33,7 @@ required = (
     "OTEL_QUIESCE_PROOF",
     "OTEL_ROLLBACK_TIMEOUT_SECONDS",
     "OTEL_METRICS_URL",
+    "configured loopback metrics endpoint",
     "otelcol_exporter_queue_size",
     "healthcheck_contract_matches",
     "restore_backups_if_unchanged",

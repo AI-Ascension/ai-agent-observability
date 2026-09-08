@@ -59,9 +59,10 @@ and image identity hashes, a clean probe build input set,
 approval records intent and binds the target to the current Collector
 container; it does not claim that producers have already drained. The installer
 then observes the running Collector's Prometheus endpoint at
-`OTEL_METRICS_URL` (by default the loopback-published
-`http://127.0.0.1:${OTEL_METRICS_PORT}/metrics`) for the configured
+`OTEL_METRICS_URL` (the configured loopback-published
+`http://127.0.0.1:${OTEL_METRICS_PORT}/metrics` endpoint) for the configured
 `OTEL_QUIESCE_OBSERVATION_SECONDS` interval, which defaults to five seconds.
+An override is accepted only when it is that exact loopback URL.
 It requires queue and in-flight request series, requires their values to remain
 zero, and requires `otelcol_receiver_accepted_spans` to remain unchanged over
 the complete interval. It performs this live observation before the build and

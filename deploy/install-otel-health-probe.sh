@@ -401,7 +401,8 @@ metrics_port="$(dotenv_value OTEL_METRICS_PORT)"
   fail 'BIND_ADDRESS must remain 127.0.0.1 while the Collector metrics observer is enabled'
 require_positive_integer OTEL_METRICS_PORT "$metrics_port"
 metrics_url="${OTEL_METRICS_URL:-http://${metrics_bind_address}:${metrics_port}/metrics}"
-[[ "$metrics_url" == http://* ]] || fail 'OTEL_METRICS_URL must use plain HTTP on the protected loopback endpoint'
+[[ "$metrics_url" == "http://127.0.0.1:${metrics_port}/metrics" ]] || \
+  fail 'OTEL_METRICS_URL must be the configured loopback metrics endpoint'
 
 active_image_id="$(bounded_capture 'active Collector image inspect' "$inspect_timeout_seconds" \
   "${engine[@]}" inspect --format '{{.Image}}' "$container_name")"
