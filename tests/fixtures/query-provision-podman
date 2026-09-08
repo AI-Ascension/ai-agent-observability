@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$*" >>"${FAKE_PODMAN_LOG:?}"
+if [[ ${1:-} == inspect ]]; then
+  if [[ ${FAKE_PODMAN_MODE:-stopped} == error ]]; then
+    exit 125
+  fi
+  printf '%s\n' false
+  exit 0
+fi
+printf '%s\n' 'unexpected synthetic Podman operation' >&2
+exit 97

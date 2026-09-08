@@ -92,6 +92,7 @@ jobs:
           bash tests/bootstrap.sh
           bash tests/validation-regressions.sh
           bash tests/query-provision-invariants.sh
+          bash tests/query-provision-regressions.sh
           bash tests/compose-policy-regressions.sh
 
       - name: Check text and secret hygiene
