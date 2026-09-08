@@ -55,13 +55,17 @@ and image identity hashes, a clean probe build input set,
 through `OTEL_QUIESCE_APPROVED=true`. It compares the exact active traces
 exporter set, rendered Compose image reference, bind source/destination/RO
 mode, mounted config hash, and intended Collector environment before making a
-fresh verified backup. It then builds and verifies the wrapper image,
-recreates only `otel-collector`, waits for its health state, and verifies the
-same identities afterward. If the guarded operation fails it retags the prior
-image and recreates the same service only when every bounded rollback step can
-be checked; otherwise it reports rollback as unknown and requires manual
-reconciliation. It never uses project-wide down, volume deletion, or image
-pruning.
+fresh verified backup. The complete pre-update environment is retained only as
+a digest and is required to match after recreation; the inspect backup removes
+environment values and command arguments. It then builds and verifies the
+wrapper image, recreates only `otel-collector`, waits for its health state, and
+verifies the same identities afterward under one aggregate installation
+deadline (`OTEL_INSTALL_TIMEOUT_SECONDS`, 1200 seconds by default). If the
+guarded operation fails it retags the prior image and recreates the same
+service only when every bounded rollback step can be checked. Each rollback
+phase records a status in a mode-0600 private log; otherwise it reports
+rollback as unknown and requires manual reconciliation. It never uses
+project-wide down, volume deletion, or image pruning.
 
 The image and Compose healthcheck use a 30-second interval, five-second engine
 timeout, 30-second startup grace, and three retries. Podman 4.9.3 cannot add a

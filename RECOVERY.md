@@ -29,10 +29,10 @@ image build, service recreation, publication, or live health claim is made by th
 Refresh these values after any further source edit:
 
 ```text
-deploy/otel-health-probe.c  512f0925017385be01d9ae341b1ee8e58a6120ea80ffde591285d4eac0aba4f2
-tests/otel-health-probe.sh  b9c8a02b587e4af8dd2c1937cff5d22223ffc04128dde97af7f5325edfd00c38
-deploy/install-otel-health-probe.sh  6121567016966e29cbf6ef9721e5fcf4403ca36f6fd173af1576854908f5609c
-docs/OTEL_HEALTH_PROBE.md  6a572465dc70ef7bc4d9fe4130f2173b111581b14d60fd8827cbc634a06933aa
+deploy/otel-health-probe.c  bbf0f19860233b2bee2e64dfab5a2e4c5a44a9d61eb1a1cbd01d83c3c7be55ea
+tests/otel-health-probe.sh  63f25a03b0423d767566dabe6d379277a8f1da1b77ad716d23475c68d32e33fc
+deploy/install-otel-health-probe.sh  e57cd64cdece66d7096270a5e05cf1c924db9315f7eeb01ef3546ab3bcda26ef
+docs/OTEL_HEALTH_PROBE.md  2e4cd0460453bfc0626c89f129051108e63ee938472ee694a7cb5f59fd441d36
 deploy/compose.yaml  d0054cecb13316b30fc45acced195f097566e6fbfd94518baa0ed37dc6931c67
 deploy/otel-collector.yaml  bfb0615bfab74b6ed39bbd3b073f90325a657145297cc9149af5d8fa48e94f80
 deploy/Dockerfile.otel  354985e65f590a9602768b6469d526129effe3b85e4ea8cd9a4ebd718403b991
