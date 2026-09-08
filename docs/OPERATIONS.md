@@ -75,9 +75,18 @@ curl -fsS http://127.0.0.1:18000/health
 curl -fsS http://127.0.0.1:15667/ >/dev/null
 ```
 
-The Collector has no HTTP health endpoint in this minimal configuration; its
-container state and logs should be checked together with the downstream smoke
-test. Do not treat a running Collector process as proof of accepted traces.
+The Collector's component-status endpoint is intentionally private to the
+container at `127.0.0.1:13133/status`; it is not a host listener. Inspect its
+native result together with the container lifecycle and downstream smoke test:
+
+```bash
+sudo podman healthcheck run ai-agent-observability-otel-collector
+sudo podman inspect --format '{{.State.Health.Status}}' ai-agent-observability-otel-collector
+```
+
+The healthcheck requires the traces pipeline to report `healthy: true` and
+`StatusOK`. Do not treat a running Collector process, an open OTLP socket, or
+an HTTP response from a different service as Collector readiness.
 
 ## Browser access
 

@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1
+
+ARG OTEL_COLLECTOR_VERSION=0.160.0
+
+# The runtime image is distroless and does not provide curl or a shell. Build a
+# static probe in a disposable builder stage so the runtime keeps its existing
+# user, filesystem, and dependency footprint.
+FROM docker.io/library/gcc:14-bookworm AS probe-builder
+WORKDIR /src
+COPY otel-health-probe.c .
+RUN gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -static -s \
+    -o /otel-health-probe otel-health-probe.c
+
+FROM docker.io/otel/opentelemetry-collector-contrib:${OTEL_COLLECTOR_VERSION}
+COPY --from=probe-builder /otel-health-probe /usr/local/bin/otel-health-probe
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD ["/usr/local/bin/otel-health-probe"]

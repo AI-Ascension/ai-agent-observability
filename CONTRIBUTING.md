@@ -56,6 +56,7 @@ docker compose --env-file deploy/.env.example -f deploy/compose.yaml config --qu
 bash tests/compose-required-settings.sh
 docker buildx build --check -f deploy/Dockerfile.mlflow deploy
 docker buildx build --check -f deploy/Dockerfile.laminar deploy
+docker buildx build --check -f deploy/Dockerfile.otel deploy
 ```
 
 CI is authoritative for the complete repository gate. A passing static gate

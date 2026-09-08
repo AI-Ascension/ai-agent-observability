@@ -2,7 +2,7 @@
 
 ## Pinned inputs
 
-The following tags are explicit inputs in `deploy/compose.yaml` and the two
+The following tags are explicit inputs in `deploy/compose.yaml` and the three
 Dockerfiles. They are source-derived from the upstream release/configuration
 surfaces used for this implementation; a tag is not a digest and should be
 revalidated before an upgrade or redistribution.
@@ -12,7 +12,8 @@ revalidated before an upgrade or redistribution.
 | MLflow | `v3.16.0` | Tracking server image |
 | MLflow Python integrations | `boto3==1.43.88`, `psycopg2-binary==2.9.12` | RustFS and PostgreSQL support |
 | Laminar | `v0.2.3` | App-server and frontend release images |
-| OpenTelemetry Collector Contrib | `0.160.0` | OTLP receiver and HTTP exporters |
+| OpenTelemetry Collector Contrib | `0.160.0` | OTLP receiver, HTTP exporters, and component-status health extension |
+| Collector probe builder | `gcc:14-bookworm` (build stage only) | Static health probe compilation; absent from the runtime image |
 | ClickHouse | `26.5` | Laminar analytics store |
 | PostgreSQL | `15` / `16` | MLflow / Laminar metadata stores |
 | RustFS | `1.0.0-alpha.83` | S3-compatible MLflow artifact store |

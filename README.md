@@ -53,6 +53,8 @@ Caddy routes.
   frontend, and bootstrap image targets.
 - [`deploy/init.sh`](deploy/init.sh) — non-destructive first-run setup.
 - [`deploy/otel-collector.yaml`](deploy/otel-collector.yaml) — OTLP fan-out.
+- [`docs/OTEL_HEALTH_PROBE.md`](docs/OTEL_HEALTH_PROBE.md) — Collector readiness
+  contract and native probe boundary.
 - [`systemd/ai-agent-observability.service`](systemd/ai-agent-observability.service)
   — boot-time service definition for rootful Podman.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — ownership and data flow.
