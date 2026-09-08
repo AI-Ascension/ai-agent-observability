@@ -25,23 +25,11 @@
 #ifndef OTEL_HEALTH_PROBE_DEFAULT_PORT
 #define OTEL_HEALTH_PROBE_DEFAULT_PORT 13133
 #endif
-#ifndef OTEL_HEALTH_PROBE_MLFLOW_PORT
-#define OTEL_HEALTH_PROBE_MLFLOW_PORT 5000
-#endif
-#ifndef OTEL_HEALTH_PROBE_LAMINAR_PORT
-#define OTEL_HEALTH_PROBE_LAMINAR_PORT 8000
-#endif
 #ifndef OTEL_HEALTH_PROBE_DNS_PORT
 #define OTEL_HEALTH_PROBE_DNS_PORT 53
 #endif
 #ifndef OTEL_HEALTH_PROBE_CONFIG_PATH
 #define OTEL_HEALTH_PROBE_CONFIG_PATH "/etc/otelcol-contrib/config.yaml"
-#endif
-#ifndef OTEL_HEALTH_PROBE_MLFLOW_HOST
-#define OTEL_HEALTH_PROBE_MLFLOW_HOST "mlflow"
-#endif
-#ifndef OTEL_HEALTH_PROBE_LAMINAR_HOST
-#define OTEL_HEALTH_PROBE_LAMINAR_HOST "laminar-app-server"
 #endif
 #ifndef OTEL_HEALTH_PROBE_DNS_SERVER
 #define OTEL_HEALTH_PROBE_DNS_SERVER ""
@@ -49,8 +37,6 @@
 
 enum {
     default_port = OTEL_HEALTH_PROBE_DEFAULT_PORT,
-    mlflow_port = OTEL_HEALTH_PROBE_MLFLOW_PORT,
-    laminar_port = OTEL_HEALTH_PROBE_LAMINAR_PORT,
     dns_port = OTEL_HEALTH_PROBE_DNS_PORT,
     timeout_ms = 2000,
     max_response_bytes = 8192,
@@ -61,11 +47,12 @@ enum {
     max_json_depth = 16,
     max_object_members = 128,
     max_array_elements = 128,
+    max_active_exporters = 32,
+    max_exporter_name_bytes = 128,
+    max_exporter_host_bytes = 256,
 };
 
 static const char collector_config_path[] = OTEL_HEALTH_PROBE_CONFIG_PATH;
-static const char mlflow_host[] = OTEL_HEALTH_PROBE_MLFLOW_HOST;
-static const char laminar_host[] = OTEL_HEALTH_PROBE_LAMINAR_HOST;
 static const char dns_server[] = OTEL_HEALTH_PROBE_DNS_SERVER;
 
 static int64_t monotonic_millis(void) {
@@ -704,11 +691,21 @@ static int yaml_key(const char *content, size_t length, const char *key, const c
     return 1;
 }
 
-static int exporter_token(const char *value, size_t length, int *mlflow, int *laminar,
-                          int *unknown) {
+struct active_exporters {
+    char names[max_active_exporters][max_exporter_name_bytes];
+    size_t count;
+};
+
+struct exporter_target {
+    char host[max_exporter_host_bytes];
+    int port;
+};
+
+static int parse_port(const char *value, int *port);
+
+static int exporter_token(const char *value, size_t length, struct active_exporters *active) {
     size_t start = 0;
     size_t end = length;
-    const char *token;
 
     while (start < end && (value[start] == ' ' || value[start] == '\t')) {
         ++start;
@@ -723,29 +720,25 @@ static int exporter_token(const char *value, size_t length, int *mlflow, int *la
         ++start;
         --end;
     }
-    token = value + start;
-    if (end - start == strlen("otlp_http/mlflow") &&
-        memcmp(token, "otlp_http/mlflow", end - start) == 0) {
-        if (*mlflow) {
+    if (start == end || end - start >= max_exporter_name_bytes) {
+        return 0;
+    }
+    for (size_t index = 0; index < active->count; ++index) {
+        if (end - start == strlen(active->names[index]) &&
+            memcmp(value + start, active->names[index], end - start) == 0) {
             return 0;
         }
-        *mlflow = 1;
-        return 1;
     }
-    if (end - start == strlen("otlp_http/laminar") &&
-        memcmp(token, "otlp_http/laminar", end - start) == 0) {
-        if (*laminar) {
-            return 0;
-        }
-        *laminar = 1;
-        return 1;
+    if (active->count >= max_active_exporters) {
+        return 0;
     }
-    *unknown = 1;
+    memcpy(active->names[active->count], value + start, end - start);
+    active->names[active->count][end - start] = '\0';
+    ++active->count;
     return 1;
 }
 
-static int exporter_list(const char *value, size_t length, int *mlflow, int *laminar,
-                         int *unknown) {
+static int exporter_list(const char *value, size_t length, struct active_exporters *active) {
     size_t position;
     size_t token_start;
     int closed = 0;
@@ -767,7 +760,7 @@ static int exporter_list(const char *value, size_t length, int *mlflow, int *lam
             ++position;
         }
         if (position == token_start || !exporter_token(value + token_start, position - token_start,
-                                                        mlflow, laminar, unknown)) {
+                                                        active)) {
             return 0;
         }
         if (position < length - 1) {
@@ -780,8 +773,8 @@ static int exporter_list(const char *value, size_t length, int *mlflow, int *lam
 }
 
 /* Extract only the service.pipelines.traces.exporters list. */
-static int active_trace_exporters(const char *config, size_t length, int *mlflow, int *laminar,
-                                  int *unknown) {
+static int active_trace_exporters(const char *config, size_t length,
+                                  struct active_exporters *active) {
     size_t position = 0;
     size_t service_indent = 0;
     size_t pipelines_indent = 0;
@@ -794,9 +787,7 @@ static int active_trace_exporters(const char *config, size_t length, int *mlflow
     int multiline = 0;
     int found_exporters = 0;
 
-    *mlflow = 0;
-    *laminar = 0;
-    *unknown = 0;
+    active->count = 0;
     while (position < length) {
         const char *content;
         size_t content_length;
@@ -847,7 +838,7 @@ static int active_trace_exporters(const char *config, size_t length, int *mlflow
                 exporters_indent = indent;
                 if (value_length == 0) {
                     multiline = 1;
-                } else if (!exporter_list(value, value_length, mlflow, laminar, unknown)) {
+                } else if (!exporter_list(value, value_length, active)) {
                     return 0;
                 }
             }
@@ -860,31 +851,176 @@ static int active_trace_exporters(const char *config, size_t length, int *mlflow
             break;
         }
         if (content[0] != '-' || content_length < 2 ||
-            !exporter_token(content + 1, content_length - 1, mlflow, laminar, unknown)) {
+            !exporter_token(content + 1, content_length - 1, active)) {
             return 0;
         }
     }
-    return found_exporters && (*mlflow || *laminar || *unknown);
+    return found_exporters && active->count > 0;
+}
+
+static int yaml_mapping_name(const char *content, size_t length, char *name, size_t capacity,
+                             size_t *name_length) {
+    size_t colon = 0;
+    size_t start = 0;
+    size_t end;
+
+    while (colon < length && content[colon] != ':') {
+        ++colon;
+    }
+    if (colon == 0 || colon == length) {
+        return 0;
+    }
+    end = colon;
+    while (start < end && (content[start] == ' ' || content[start] == '\t')) {
+        ++start;
+    }
+    while (end > start && (content[end - 1] == ' ' || content[end - 1] == '\t')) {
+        --end;
+    }
+    if (start == end || end - start >= capacity) {
+        return 0;
+    }
+    if ((content[start] == '"' && content[end - 1] == '"') ||
+        (content[start] == '\'' && content[end - 1] == '\'')) {
+        ++start;
+        --end;
+    }
+    if (start == end || end - start >= capacity) {
+        return 0;
+    }
+    memcpy(name, content + start, end - start);
+    name[end - start] = '\0';
+    if (name_length != NULL) {
+        *name_length = end - start;
+    }
+    return 1;
+}
+
+static int parse_endpoint(const char *value, size_t length, struct exporter_target *target) {
+    size_t start = 0;
+    size_t end = length;
+    size_t authority_end;
+    size_t colon;
+    char port_text[6];
+    int port;
+
+    while (start < end && (value[start] == ' ' || value[start] == '\t')) {
+        ++start;
+    }
+    while (end > start && (value[end - 1] == ' ' || value[end - 1] == '\t')) {
+        --end;
+    }
+    if (end - start >= 2 && ((value[start] == '"' && value[end - 1] == '"') ||
+                             (value[start] == '\'' && value[end - 1] == '\''))) {
+        ++start;
+        --end;
+    }
+    if (end - start < strlen("http://") || memcmp(value + start, "http://", strlen("http://")) != 0) {
+        return 0;
+    }
+    start += strlen("http://");
+    authority_end = start;
+    while (authority_end < end && value[authority_end] != '/') {
+        ++authority_end;
+    }
+    if (authority_end == start || authority_end - start >= max_exporter_host_bytes ||
+        memchr(value + start, '@', authority_end - start) != NULL) {
+        return 0;
+    }
+    colon = authority_end;
+    while (colon > start && value[colon - 1] != ':') {
+        --colon;
+    }
+    if (colon == start) {
+        return 0;
+    }
+    --colon;
+    if (authority_end - colon - 1 == 0 || authority_end - colon - 1 >= sizeof(port_text)) {
+        return 0;
+    }
+    memcpy(target->host, value + start, colon - start);
+    target->host[colon - start] = '\0';
+    memcpy(port_text, value + colon + 1, authority_end - colon - 1);
+    port_text[authority_end - colon - 1] = '\0';
+    if (!parse_port(port_text, &port)) {
+        return 0;
+    }
+    target->port = port;
+    return 1;
+}
+
+/* Read the endpoint from the named top-level exporter definition. */
+static int exporter_endpoint(const char *config, size_t length, const char *name,
+                             struct exporter_target *target) {
+    size_t position = 0;
+    size_t exporters_indent = 0;
+    size_t target_indent = 0;
+    int in_exporters = 0;
+    int in_target = 0;
+    int endpoint_seen = 0;
+
+    while (position < length) {
+        const char *content;
+        size_t content_length;
+        size_t indent;
+        const char *value;
+        size_t value_length;
+        char mapping_name[max_exporter_name_bytes];
+
+        if (!yaml_line(config, length, &position, &indent, &content, &content_length)) {
+            return 0;
+        }
+        if (content_length == 0 || content[0] == '#') {
+            continue;
+        }
+        if (!in_exporters) {
+            if (indent == 0 && yaml_key(content, content_length, "exporters", &value, &value_length)) {
+                in_exporters = 1;
+                exporters_indent = indent;
+            }
+            continue;
+        }
+        if (indent <= exporters_indent) {
+            break;
+        }
+        if (yaml_mapping_name(content, content_length, mapping_name, sizeof(mapping_name), NULL) &&
+            indent == exporters_indent + 2) {
+            in_target = strcmp(mapping_name, name) == 0;
+            target_indent = indent;
+            endpoint_seen = 0;
+            continue;
+        }
+        if (in_target && indent > target_indent &&
+            yaml_key(content, content_length, "endpoint", &value, &value_length)) {
+            if (endpoint_seen || !parse_endpoint(value, value_length, target)) {
+                return 0;
+            }
+            endpoint_seen = 1;
+        }
+    }
+    return in_exporters && in_target && endpoint_seen;
 }
 
 static int dependencies_are_healthy(int64_t deadline) {
     char config[max_config_bytes];
     size_t length;
-    int mlflow = 0;
-    int laminar = 0;
-    int unknown = 0;
+    struct active_exporters active;
 
     if (!read_collector_config(config, sizeof(config), &length)) {
         return 0;
     }
-    if (!active_trace_exporters(config, length, &mlflow, &laminar, &unknown) || unknown) {
+    if (!active_trace_exporters(config, length, &active)) {
         return 0;
     }
-    if (mlflow && !http_endpoint_is_healthy(mlflow_host, mlflow_port, "/health", deadline)) {
-        return 0;
-    }
-    if (laminar && !http_endpoint_is_healthy(laminar_host, laminar_port, "/health", deadline)) {
-        return 0;
+    for (size_t index = 0; index < active.count; ++index) {
+        struct exporter_target target;
+
+        if (!exporter_endpoint(config, length, active.names[index], &target)) {
+            return 0;
+        }
+        if (!http_endpoint_is_healthy(target.host, target.port, "/health", deadline)) {
+            return 0;
+        }
     }
     return 1;
 }

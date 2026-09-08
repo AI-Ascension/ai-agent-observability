@@ -9,11 +9,25 @@ repo_dir="$(cd -- "$script_dir/.." && pwd)"
 compose_file="$script_dir/compose.yaml"
 collector_config="$script_dir/otel-collector.yaml"
 probe_source="$script_dir/otel-health-probe.c"
+dockerfile="$script_dir/Dockerfile.otel"
+env_file="${OTEL_ENV_FILE:-$script_dir/.env}"
 project_name="${OTEL_COMPOSE_PROJECT:-ai-agent-observability}"
 container_name="${OTEL_CONTAINER_NAME:-ai-agent-observability-otel-collector}"
-image_ref="${OTEL_IMAGE_REF:-localhost/ai-ascension/ai-agent-observability/otel-collector:0.160.0}"
+mount_destination="/etc/otelcol-contrib/config.yaml"
+probe_path="/usr/local/bin/otel-health-probe"
 backup_root="${OTEL_BACKUP_ROOT:-$repo_dir/.otel-health-probe-backups}"
 mode="${1:---install}"
+build_timeout_seconds="${OTEL_BUILD_TIMEOUT_SECONDS:-900}"
+recreate_timeout_seconds="${OTEL_RECREATE_TIMEOUT_SECONDS:-180}"
+inspect_timeout_seconds="${OTEL_INSPECT_TIMEOUT_SECONDS:-15}"
+ready_timeout_seconds="${OTEL_READY_TIMEOUT_SECONDS:-240}"
+install_mutated=false
+backup_dir=""
+previous_image_id=""
+previous_config_sha256=""
+previous_env_sha256=""
+previous_health=""
+image_ref=""
 
 case "$mode" in
   --check|--install) ;;
@@ -49,6 +63,50 @@ require_hash() {
   [[ "$actual" == "$expected" ]] || fail "$path hash does not match $name"
 }
 
+require_positive_integer() {
+  local name="$1"
+  local value="$2"
+  [[ "$value" =~ ^[1-9][0-9]*$ ]] || fail "$name must be a positive integer"
+}
+
+# Keep engine operations bounded and distinguish timeout from a normal command
+# failure. Captured output is stdout only so diagnostics cannot echo secrets.
+bounded_capture() {
+  local label="$1"
+  local seconds="$2"
+  shift 2
+  local output
+  local status
+
+  if output="$(timeout --foreground --kill-after=5s "${seconds}s" "$@" 2>/dev/null)"; then
+    printf '%s' "$output"
+    return 0
+  else
+    status=$?
+  fi
+  if [[ "$status" == 124 || "$status" == 137 ]]; then
+    fail "$label timed out after ${seconds}s"
+  fi
+  fail "$label failed (exit $status)"
+}
+
+bounded_run() {
+  local label="$1"
+  local seconds="$2"
+  shift 2
+  local status
+
+  if timeout --foreground --kill-after=5s "${seconds}s" "$@"; then
+    return 0
+  else
+    status=$?
+  fi
+  if [[ "$status" == 124 || "$status" == 137 ]]; then
+    fail "$label timed out after ${seconds}s"
+  fi
+  fail "$label failed (exit $status)"
+}
+
 case "${OTEL_ENGINE:-podman}" in
   podman)
     command -v podman >/dev/null 2>&1 || fail 'podman is required'
@@ -67,14 +125,28 @@ esac
 
 command -v git >/dev/null 2>&1 || fail 'git is required'
 command -v sha256sum >/dev/null 2>&1 || fail 'sha256sum is required'
-[[ -f "$compose_file" && -f "$collector_config" && -f "$probe_source" ]] || fail 'deployment files are incomplete'
+command -v timeout >/dev/null 2>&1 || fail 'timeout is required'
+command -v awk >/dev/null 2>&1 || fail 'awk is required'
+command -v python3 >/dev/null 2>&1 || fail 'python3 is required'
+command -v readlink >/dev/null 2>&1 || fail 'readlink is required'
+[[ -f "$compose_file" && -f "$collector_config" && -f "$probe_source" && -f "$dockerfile" ]] || \
+  fail 'deployment files are incomplete'
+[[ -f "$env_file" ]] || fail "missing environment file: $env_file"
+require_positive_integer OTEL_BUILD_TIMEOUT_SECONDS "$build_timeout_seconds"
+require_positive_integer OTEL_RECREATE_TIMEOUT_SECONDS "$recreate_timeout_seconds"
+require_positive_integer OTEL_INSPECT_TIMEOUT_SECONDS "$inspect_timeout_seconds"
+require_positive_integer OTEL_READY_TIMEOUT_SECONDS "$ready_timeout_seconds"
 
 need_value OTEL_EXPECTED_GIT_HEAD
 actual_head="$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null || true)"
 [[ "$actual_head" == "$OTEL_EXPECTED_GIT_HEAD" ]] || fail 'source HEAD does not match OTEL_EXPECTED_GIT_HEAD'
+build_input_status="$(git -C "$repo_dir" status --porcelain=v1 --untracked-files=all -- \
+  deploy/Dockerfile.otel deploy/otel-health-probe.c 2>/dev/null || true)"
+[[ -z "$build_input_status" ]] || fail 'Collector build inputs are dirty'
 require_hash OTEL_EXPECTED_PROBE_SHA256 "$probe_source"
 require_hash OTEL_EXPECTED_CONFIG_SHA256 "$collector_config"
 require_hash OTEL_EXPECTED_COMPOSE_SHA256 "$compose_file"
+require_hash OTEL_EXPECTED_DOCKERFILE_SHA256 "$dockerfile"
 
 # Static guards cover the runtime contract before a mutable engine is touched.
 grep -Fq 'service:' "$collector_config" || fail 'collector config has no service section'
@@ -90,34 +162,207 @@ if grep -Eq 'published:.*13133|:13133:' "$compose_file"; then
   fail 'collector health endpoint is published on the host'
 fi
 
-# The expected exporter set is an explicit owner input. This prevents a stale
-# config or a deliberately disabled backend from being silently accepted.
+# The expected exporter set is an explicit owner input. Parse only the active
+# service.pipelines.traces.exporters list; declarations elsewhere are not
+# evidence that an exporter is enabled.
+active_exporters_text="$(python3 - "$collector_config" <<'PY'
+import sys
+
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+state = "root"
+service_indent = pipelines_indent = traces_indent = exporters_indent = -1
+found = False
+values = []
+
+def scalar(value):
+    value = value.strip()
+    if not value:
+        raise ValueError("empty exporter")
+    if value[0] in "'\"" and value[-1:] == value[0]:
+        value = value[1:-1]
+    if not value or any(ch.isspace() for ch in value):
+        raise ValueError("invalid exporter")
+    return value
+
+for raw in lines:
+    if not raw.strip() or raw.lstrip().startswith("#"):
+        continue
+    indent = len(raw) - len(raw.lstrip(" "))
+    text = raw.strip()
+    if state == "root":
+        if indent == 0 and text == "service:":
+            state, service_indent = "service", indent
+        continue
+    if state == "service":
+        if indent <= service_indent:
+            continue
+        if text == "pipelines:":
+            state, pipelines_indent = "pipelines", indent
+        continue
+    if state == "pipelines":
+        if indent <= pipelines_indent:
+            continue
+        if text == "traces:":
+            state, traces_indent = "traces", indent
+        continue
+    if state == "traces":
+        if indent <= traces_indent:
+            continue
+        if text.startswith("exporters:"):
+            rhs = text[len("exporters:"):].strip()
+            found = True
+            exporters_indent = indent
+            if rhs:
+                if not (rhs.startswith("[") and rhs.endswith("]")):
+                    raise ValueError("invalid inline exporter list")
+                values = [scalar(part) for part in rhs[1:-1].split(",") if part.strip()]
+                if not values or len(values) != len(set(values)):
+                    raise ValueError("empty or duplicate exporter")
+                break
+            state = "list"
+        continue
+    if state == "list":
+        if indent <= exporters_indent:
+            break
+        if not text.startswith("-"):
+            raise ValueError("invalid exporter list item")
+        values.append(scalar(text[1:]))
+
+if not found or not values or len(values) != len(set(values)):
+    raise ValueError("missing or duplicate active exporters")
+sys.stdout.write("\n".join(values) + "\n")
+PY
+)" || fail 'unable to parse active traces exporters'
+
 need_value OTEL_EXPECTED_TRACE_EXPORTERS
 IFS=',' read -r -a expected_exporters <<<"$OTEL_EXPECTED_TRACE_EXPORTERS"
 for exporter in "${expected_exporters[@]}"; do
   exporter="${exporter#"${exporter%%[![:space:]]*}"}"
   exporter="${exporter%"${exporter##*[![:space:]]}"}"
   [[ -n "$exporter" ]] || fail 'OTEL_EXPECTED_TRACE_EXPORTERS contains an empty entry'
-  grep -Fq "$exporter" "$collector_config" || fail "expected exporter is absent: $exporter"
 done
+expected_canonical="$(printf '%s\n' "${expected_exporters[@]}" | LC_ALL=C sort)"
+active_canonical="$(printf '%s\n' "$active_exporters_text" | LC_ALL=C sort)"
+[[ "$expected_canonical" == "$active_canonical" ]] || \
+  fail 'active traces exporter set does not match OTEL_EXPECTED_TRACE_EXPORTERS'
 
-"${compose[@]}" -p "$project_name" -f "$compose_file" config --quiet || fail 'Compose model validation failed'
+# Resolve the service image from the rendered model so an override cannot make
+# image verification inspect a tag different from the one Compose builds.
+bounded_run 'Compose model validation' "$inspect_timeout_seconds" \
+  "${compose[@]}" -p "$project_name" -f "$compose_file" config --quiet
+rendered_compose="$(bounded_capture 'Compose model rendering' "$inspect_timeout_seconds" \
+  "${compose[@]}" -p "$project_name" -f "$compose_file" config)"
+image_ref="$(awk '
+  /^  otel-collector:$/ { in_service = 1; next }
+  in_service && /^[^[:space:]]/ { in_service = 0 }
+  in_service && /^[[:space:]]+image:[[:space:]]*/ {
+    value = $0
+    sub(/^[[:space:]]+image:[[:space:]]*/, "", value)
+    count++
+    print value
+  }
+  END { if (count != 1) exit 1 }
+' <<<"$rendered_compose")" || fail 'rendered Compose has no unique otel-collector image'
+if [[ -n "${OTEL_IMAGE_REF:-}" && "$OTEL_IMAGE_REF" != "$image_ref" ]]; then
+  fail 'OTEL_IMAGE_REF does not match the rendered Compose service image'
+fi
 
-inspect_container() {
-  "${engine[@]}" inspect "$container_name" 2>/dev/null
+dotenv_value() {
+  local key="$1"
+  local value
+  value="$(awk -v key="$key" '
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    {
+      line = $0
+      sub(/^[[:space:]]*/, "", line)
+      if (index(line, key "=") == 1) {
+        count++
+        value = substr(line, length(key) + 2)
+      }
+    }
+    END { if (count != 1) exit 2; print value }
+  ' "$env_file")" || fail "environment key $key is missing or duplicated"
+  if [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]] ||
+     [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]]; then
+    value="${value:1:${#value}-2}"
+  fi
+  printf '%s' "$value"
 }
 
-active_image_id="$("${engine[@]}" inspect --format '{{.Image}}' "$container_name" 2>/dev/null || true)"
+expected_env_names=(MLFLOW_EXPERIMENT_ID LAMINAR_PROJECT_API_KEY)
+declare -A expected_env
+for env_name in "${expected_env_names[@]}"; do
+  expected_env["$env_name"]="$(dotenv_value "$env_name")"
+done
+
+verify_env_text() {
+  local env_text="$1"
+  local env_name
+  for env_name in "${expected_env_names[@]}"; do
+    printf '%s\n' "$env_text" | awk -F= -v key="$env_name" -v expected="${expected_env[$env_name]}" \
+      '$1 == key { count++; if ($0 != key "=" expected) bad=1 }
+       END { exit (count == 1 && !bad) ? 0 : 1 }' || return 1
+  done
+}
+
+env_identity() {
+  local env_text="$1"
+  local env_name
+  for env_name in "${expected_env_names[@]}"; do
+    printf '%s\n' "$env_text" | awk -F= -v key="$env_name" -v expected="${expected_env[$env_name]}" \
+      '$1 == key && $0 == key "=" expected { print $0; found++ }
+       END { if (found != 1) exit 1 }' || return 1
+  done | LC_ALL=C sort | sha256sum | awk '{print $1}'
+}
+
+expected_env_lines="$(for env_name in "${expected_env_names[@]}"; do
+  printf '%s=%s\n' "$env_name" "${expected_env[$env_name]}"
+done | LC_ALL=C sort)"
+expected_env_sha256="$(printf '%s\n' "$expected_env_lines" | sha256sum | awk '{print $1}')"
+
+active_image_id="$(bounded_capture 'active Collector image inspect' "$inspect_timeout_seconds" \
+  "${engine[@]}" inspect --format '{{.Image}}' "$container_name")"
 need_value OTEL_EXPECTED_ACTIVE_IMAGE_ID
-[[ -n "$active_image_id" && "$active_image_id" == "$OTEL_EXPECTED_ACTIVE_IMAGE_ID" ]] || \
+[[ "$active_image_id" == "$OTEL_EXPECTED_ACTIVE_IMAGE_ID" ]] || \
   fail 'active Collector image identity does not match OTEL_EXPECTED_ACTIVE_IMAGE_ID'
-container_inspect="$(inspect_container || true)"
-[[ -n "$container_inspect" ]] || fail 'active Collector container is unavailable'
-grep -Fq '/etc/otelcol-contrib/config.yaml' <<<"$container_inspect" || fail 'active config mount is unavailable'
-grep -Fq 'otel-health-probe' <<<"$container_inspect" || fail 'active native probe is unavailable'
+container_inspect="$(bounded_capture 'active Collector container inspect' "$inspect_timeout_seconds" \
+  "${engine[@]}" inspect "$container_name")"
+active_mounts="$(bounded_capture 'active Collector mount inspect' "$inspect_timeout_seconds" \
+  "${engine[@]}" inspect --format '{{range .Mounts}}{{printf "%s\t%s\t%s\t%t\t%s\n" .Type .Source .Destination .RW .Mode}}{{end}}' "$container_name")"
+expected_mount_source="$(readlink -f "$collector_config")"
+mount_matches=0
+while IFS=$'\t' read -r mount_type mount_source mount_target mount_rw mount_mode; do
+  [[ -n "${mount_target:-}" ]] || continue
+  if [[ "$mount_target" == "$mount_destination" ]]; then
+    ((mount_matches += 1))
+    [[ "$mount_type" == bind && "$mount_source" == "$expected_mount_source" && \
+       "$mount_rw" == false ]] || fail 'active Collector config mount source, destination, or RO mode is wrong'
+  fi
+done <<<"$active_mounts"
+[[ "$mount_matches" == 1 ]] || fail 'active Collector config mount is unavailable or duplicated'
+
+mounted_tmp="$(mktemp -d)"
+bounded_run 'active mounted config copy' "$inspect_timeout_seconds" \
+  "${engine[@]}" cp "$container_name:$mount_destination" "$mounted_tmp/config.yaml"
+mounted_config_sha256="$(sha256_file "$mounted_tmp/config.yaml")"
+expected_config_sha256="$(sha256_file "$collector_config")"
+rm -rf -- "$mounted_tmp"
+[[ "$mounted_config_sha256" == "$expected_config_sha256" ]] || \
+  fail 'active mounted Collector config hash does not match the reviewed config'
+active_healthcheck="$(bounded_capture 'active Collector healthcheck inspect' "$inspect_timeout_seconds" \
+  "${engine[@]}" inspect --format '{{json .Config.Healthcheck.Test}}' "$container_name")"
+grep -Fq "$probe_path" <<<"$active_healthcheck" || fail 'active native probe is unavailable'
+active_env_text="$(bounded_capture 'active container environment inspect' "$inspect_timeout_seconds" \
+  "${engine[@]}" inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container_name")"
+verify_env_text "$active_env_text" || fail 'active Collector environment does not match the intended .env'
+active_env_sha256="$(env_identity "$active_env_text")" || fail 'active Collector environment identity is unavailable'
+[[ "$active_env_sha256" == "$expected_env_sha256" ]] || fail 'active Collector environment identity mismatch'
+active_health="$(bounded_capture 'active Collector health inspect' "$inspect_timeout_seconds" \
+  "${engine[@]}" inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$container_name")"
+[[ "$active_health" == healthy ]] || fail "active Collector is not healthy (status=$active_health)"
 
 if [[ "$mode" == --check ]]; then
-  printf '%s\n' 'OTel source, config, Compose, exporter, mount, and active-image guards passed; no mutation performed.'
+  printf '%s\n' 'OTel source, build inputs, active traces exporters, image, mount, environment, and health guards passed; no mutation performed.'
   exit 0
 fi
 
@@ -149,44 +394,131 @@ backup_file() {
 backup_file "$probe_source"
 backup_file "$collector_config"
 backup_file "$compose_file"
-if [[ -f "$script_dir/.env" ]]; then
-  backup_file "$script_dir/.env"
-  chmod 600 "$backup_dir/.env"
-fi
-"${engine[@]}" inspect "$container_name" >"$backup_dir/container-inspect.json"
+backup_file "$dockerfile"
+backup_file "$env_file"
+chmod 600 "$backup_dir/$(basename "$env_file")"
+printf '%s\n' "$container_inspect" >"$backup_dir/container-inspect.json"
 printf '%s\n' "$active_image_id" >"$backup_dir/previous-image-id"
+printf '%s\n' "$expected_config_sha256" >"$backup_dir/previous-config-sha256"
+printf '%s\n' "$active_env_sha256" >"$backup_dir/previous-env-sha256"
+printf '%s\n' "$active_health" >"$backup_dir/previous-health"
+printf '%s\n' "$image_ref" >"$backup_dir/previous-image-ref"
 sha256sum "$backup_dir"/* >"$backup_dir/SHA256SUMS"
-chmod 600 "$backup_dir"/container-inspect.json "$backup_dir"/previous-image-id "$backup_dir"/SHA256SUMS
+chmod 600 "$backup_dir"/container-inspect.json "$backup_dir"/previous-* "$backup_dir"/SHA256SUMS
+
+verify_runtime_state() {
+  local expected_image="$1"
+  local expected_config="$2"
+  local expected_env_digest="$3"
+  local expected_health="$4"
+  local image_id mounts env_text health
+  local mount_count=0
+  local temp
+
+  image_id="$(timeout --foreground --kill-after=5s "${inspect_timeout_seconds}s" \
+    "${engine[@]}" inspect --format '{{.Image}}' "$container_name" 2>/dev/null)" || return 1
+  [[ "$image_id" == "$expected_image" ]] || return 1
+  mounts="$(timeout --foreground --kill-after=5s "${inspect_timeout_seconds}s" \
+    "${engine[@]}" inspect --format '{{range .Mounts}}{{printf "%s\t%s\t%s\t%t\t%s\n" .Type .Source .Destination .RW .Mode}}{{end}}' "$container_name" 2>/dev/null)" || return 1
+  while IFS=$'\t' read -r mount_type mount_source mount_target mount_rw mount_mode; do
+    [[ -n "${mount_target:-}" ]] || continue
+    if [[ "$mount_target" == "$mount_destination" ]]; then
+      ((mount_count += 1))
+      [[ "$mount_count" == 1 && "$mount_type" == bind && "$mount_source" == "$expected_mount_source" && \
+         "$mount_rw" == false ]] || return 1
+    fi
+  done <<<"$mounts"
+  [[ "$mount_count" == 1 ]] || return 1
+  temp="$(mktemp -d)" || return 1
+  if ! timeout --foreground --kill-after=5s "${inspect_timeout_seconds}s" \
+      "${engine[@]}" cp "$container_name:$mount_destination" "$temp/config.yaml" >/dev/null 2>&1; then
+    rm -rf -- "$temp"
+    return 1
+  fi
+  if [[ "$(sha256_file "$temp/config.yaml")" != "$expected_config" ]]; then
+    rm -rf -- "$temp"
+    return 1
+  fi
+  rm -rf -- "$temp"
+  env_text="$(timeout --foreground --kill-after=5s "${inspect_timeout_seconds}s" \
+    "${engine[@]}" inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container_name" 2>/dev/null)" || return 1
+  verify_env_text "$env_text" || return 1
+  [[ "$(env_identity "$env_text")" == "$expected_env_digest" ]] || return 1
+  health="$(timeout --foreground --kill-after=5s "${inspect_timeout_seconds}s" \
+    "${engine[@]}" inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$container_name" 2>/dev/null)" || return 1
+  [[ "$health" == "$expected_health" ]] || return 1
+  return 0
+}
 
 rollback() {
-  local status="$1"
+  local original_status="$1"
+  local rollback_ok=true
+  local restored_image_id
 
+  trap - EXIT RETURN
   set +e
-  if [[ "${OTEL_INSTALL_MUTATED:-false}" == true ]]; then
-    "${engine[@]}" image tag "$active_image_id" "$image_ref" >/dev/null 2>&1 || true
-    "${compose[@]}" -p "$project_name" -f "$compose_file" up -d --no-build --no-deps --force-recreate otel-collector >/dev/null 2>&1 || true
+  if [[ "$install_mutated" == true ]]; then
+    if ! timeout --foreground --kill-after=5s "${recreate_timeout_seconds}s" \
+        "${engine[@]}" image tag "$active_image_id" "$image_ref" >/dev/null 2>&1; then
+      rollback_ok=false
+    fi
+    if [[ "$rollback_ok" == true ]]; then
+      restored_image_id="$(timeout --foreground --kill-after=5s "${inspect_timeout_seconds}s" \
+        "${engine[@]}" image inspect --format '{{.Id}}' "$image_ref" 2>/dev/null)"
+      [[ "$restored_image_id" == "$active_image_id" ]] || rollback_ok=false
+    fi
+    if [[ "$rollback_ok" == true ]] && ! timeout --foreground --kill-after=5s "${recreate_timeout_seconds}s" \
+        "${compose[@]}" -p "$project_name" -f "$compose_file" up -d --no-build --no-deps --force-recreate otel-collector >/dev/null 2>&1; then
+      rollback_ok=false
+    fi
+    if [[ "$rollback_ok" == true ]] && ! verify_runtime_state "$active_image_id" "$expected_config_sha256" \
+        "$active_env_sha256" "$active_health"; then
+      rollback_ok=false
+    fi
   fi
-  printf 'otel installer: failed; rollback attempted from %s\n' "$backup_dir" >&2
-  exit "$status"
+  if [[ "$rollback_ok" == true ]]; then
+    printf 'otel installer: failed; rollback verified from %s\n' "$backup_dir" >&2
+    exit "$original_status"
+  fi
+  printf 'otel installer: rollback UNKNOWN; manual reconciliation required; backup=%s\n' "$backup_dir" >&2
+  exit 70
 }
 trap 'status=$?; if [[ $status -ne 0 ]]; then rollback "$status"; fi' EXIT
 
-"${compose[@]}" -p "$project_name" -f "$compose_file" build otel-collector
-OTEL_INSTALL_MUTATED=true
-built_image_id="$("${engine[@]}" image inspect --format '{{.Id}}' "$image_ref" 2>/dev/null || true)"
+install_mutated=true
+bounded_run 'Collector image build' "$build_timeout_seconds" \
+  "${compose[@]}" -p "$project_name" -f "$compose_file" build otel-collector
+built_image_id="$(bounded_capture 'built Collector image inspect' "$inspect_timeout_seconds" \
+  "${engine[@]}" image inspect --format '{{.Id}}' "$image_ref")"
 [[ "$built_image_id" == "$OTEL_EXPECTED_BUILT_IMAGE_ID" ]] || \
   fail 'built image identity does not match OTEL_EXPECTED_BUILT_IMAGE_ID'
 
 # Recreate exactly one service after the owner has recorded quiescence. No
 # project-wide down, volume deletion, or dependency recreation is allowed.
-"${compose[@]}" -p "$project_name" -f "$compose_file" up -d --no-build --no-deps --force-recreate otel-collector
-for _ in $(seq 1 48); do
-  health="$("${engine[@]}" inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$container_name" 2>/dev/null || true)"
-  [[ "$health" == healthy ]] && {
-    trap - EXIT
-    printf 'OTel Collector installed and healthy; backup=%s image=%s\n' "$backup_dir" "$built_image_id"
-    exit 0
-  }
-  sleep 5
+bounded_run 'Collector service recreation' "$recreate_timeout_seconds" \
+  "${compose[@]}" -p "$project_name" -f "$compose_file" up -d --no-build --no-deps --force-recreate otel-collector
+last_health='missing'
+elapsed=0
+while (( elapsed <= ready_timeout_seconds )); do
+  if health="$(timeout --foreground --kill-after=5s "${inspect_timeout_seconds}s" \
+      "${engine[@]}" inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$container_name" 2>/dev/null)"; then
+    last_health="$health"
+  else
+    status=$?
+    if [[ "$status" == 124 || "$status" == 137 ]]; then
+      fail "Collector health inspect timed out after ${inspect_timeout_seconds}s"
+    fi
+    fail "Collector health inspect failed (exit $status)"
+  fi
+  if [[ "$last_health" == healthy ]]; then
+    if verify_runtime_state "$built_image_id" "$expected_config_sha256" "$expected_env_sha256" healthy; then
+      trap - EXIT
+      printf 'OTel Collector installed and identity-verified healthy; backup=%s image=%s\n' "$backup_dir" "$built_image_id"
+      exit 0
+    fi
+    fail 'post-install identity verification failed'
+  fi
+  (( elapsed += 5 ))
+  (( elapsed <= ready_timeout_seconds )) && sleep 5
 done
-fail 'Collector did not become healthy within 240 seconds'
+fail "Collector remained $last_health for ${ready_timeout_seconds}s"

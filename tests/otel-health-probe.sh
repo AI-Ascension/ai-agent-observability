@@ -42,13 +42,24 @@ fi
 grep -Fq 'FROM docker.io/library/gcc:14-bookworm AS probe-builder' "$dockerfile"
 grep -Fq 'FROM docker.io/otel/opentelemetry-collector-contrib:${OTEL_COLLECTOR_VERSION}' "$dockerfile"
 grep -Fq 'HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3' "$dockerfile"
+if grep -Eq 'OTEL_HEALTH_PROBE_(MLFLOW|LAMINAR)_(HOST|PORT)' "$repo_root/deploy/otel-health-probe.c"; then
+  printf '%s\n' 'the probe must derive active dependency endpoints from the mounted config' >&2
+  exit 1
+fi
 bash -n "$installer"
 grep -Fq 'OTEL_HEALTH_PROBE_INSTALL_APPROVED=true' "$installer"
 grep -Fq 'OTEL_QUIESCE_APPROVED=true' "$installer"
 grep -Fq 'OTEL_EXPECTED_BUILT_IMAGE_ID' "$installer"
 grep -Fq 'OTEL_EXPECTED_ACTIVE_IMAGE_ID' "$installer"
+grep -Fq 'OTEL_EXPECTED_DOCKERFILE_SHA256' "$installer"
+grep -Fq 'active traces exporter set does not match' "$installer"
+grep -Fq 'active mounted Collector config hash' "$installer"
+grep -Fq 'active Collector environment identity' "$installer"
+grep -Fq 'rollback UNKNOWN; manual reconciliation required' "$installer"
+grep -Fq 'Collector image build' "$installer"
+grep -Fq 'Collector service recreation' "$installer"
 grep -Fq 'backup verification failed' "$installer"
-grep -Fq 'rollback attempted' "$installer"
+grep -Fq 'rollback verified' "$installer"
 if grep -Eq 'compose.*down|down.*-v|volume prune|image prune' "$installer"; then
   printf '%s\n' 'the guarded OTel installer contains a destructive cleanup path' >&2
   exit 1
@@ -174,6 +185,9 @@ fi
 
 dependency_config="$test_root/dependency-config.yaml"
 cat >"$dependency_config" <<'YAML'
+exporters:
+  otlp_http/mlflow:
+    endpoint: http://resolver.test:0
 service:
   pipelines:
     traces:
@@ -323,11 +337,10 @@ build_dependency_probe() {
   local target_port="$2"
   local dns_port_value="$3"
 
+  sed -Ei "s#http://resolver\\.test:[0-9]+#http://resolver.test:$target_port#g" "$dependency_config"
   gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -static -s \
     -DOTEL_HEALTH_PROBE_DEFAULT_PORT="$status_port" \
     -DOTEL_HEALTH_PROBE_CONFIG_PATH=\"$dependency_config\" \
-    -DOTEL_HEALTH_PROBE_MLFLOW_HOST=\"resolver.test\" \
-    -DOTEL_HEALTH_PROBE_MLFLOW_PORT="$target_port" \
     -DOTEL_HEALTH_PROBE_DNS_SERVER=\"127.0.0.1\" \
     -DOTEL_HEALTH_PROBE_DNS_PORT="$dns_port_value" \
     -o "$test_root/otel-health-probe-dependencies" "$repo_root/deploy/otel-health-probe.c"
@@ -368,6 +381,9 @@ run_dependency_probe compression-loop failure
 
 cat >"$dependency_config" <<'YAML'
 # exporters: [otlp_http/laminar]
+exporters:
+  otlp_http/mlflow:
+    endpoint: http://resolver.test:0
 service:
   pipelines:
     metrics:
@@ -385,6 +401,9 @@ fi
 stop_dependency_fixture
 
 cat >"$dependency_config" <<'YAML'
+exporters:
+  otlp_http/mlflow:
+    endpoint: http://resolver.test:0
 service:
   pipelines:
     traces:
@@ -399,6 +418,9 @@ fi
 stop_dependency_fixture
 
 cat >"$dependency_config" <<'YAML'
+exporters:
+  otlp_http/mlflow:
+    endpoint: http://resolver.test:0
 service:
   pipelines:
     traces:
