@@ -30,10 +30,31 @@ Accept: application/json
 
 It succeeds only when the endpoint returns HTTP 200 and the top-level JSON
 fields report `healthy: true` and `status: "StatusOK"`. It reads at most 8 KiB
-and has a two-second connection, write, and read deadline. Any connection,
-HTTP, JSON, health, pipeline-status, or deadline failure exits nonzero without
-printing response content. `--port` is a loopback-only test seam; the runtime
-healthcheck does not pass it.
+and has one two-second monotonic deadline shared by connection, write, read,
+DNS, and downstream checks. Any connection, HTTP, JSON, health,
+pipeline-status, or deadline failure exits nonzero without printing response
+content. `--port` is a loopback-only test seam; the runtime healthcheck does
+not pass it.
+
+In production mode the probe also reads the read-only Collector configuration
+and extracts only `service.pipelines.traces.exporters`. Every active exporter
+must be one of the explicitly supported `otlp_http/mlflow` or
+`otlp_http/laminar` targets, and each active target must return HTTP 200 from
+its `/health` endpoint. Unknown exporters, malformed configuration, DNS
+failures, unrelated DNS answers, duplicate A/CNAME records, and unresolved or
+looping CNAME chains fail closed. The native resolver validates the DNS
+transaction ID, responder address, question name/type/class, canonical owner
+names, and bounded answer chain so a valid A record for another name cannot
+satisfy the check.
+
+`deploy/install-otel-health-probe.sh --check` is a read-only owner-side
+preflight. Installation requires explicit source/config/Compose/image identity
+hashes, `OTEL_HEALTH_PROBE_INSTALL_APPROVED=true`, and an operator quiescence
+record through `OTEL_QUIESCE_APPROVED=true`. It makes a fresh verified backup,
+builds and verifies the wrapper image, recreates only `otel-collector`, waits
+for its health state, and attempts to retag the prior image and recreate the
+same service if the guarded operation fails. It never uses project-wide down,
+volume deletion, or image pruning.
 
 The image and Compose healthcheck use a 30-second interval, five-second engine
 timeout, 30-second startup grace, and three retries. Podman 4.9.3 cannot add a

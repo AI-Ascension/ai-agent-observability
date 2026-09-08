@@ -1,0 +1,23 @@
+OTel recovered-source validation
+Date: 2026-09-08
+Checkout: recovery/otel-corrected-health-probe-20260908
+
+Commands:
+  bash -n deploy/install-otel-health-probe.sh
+  bash -n tests/otel-health-probe.sh
+  gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -static -s -o /tmp/otel-probe-final deploy/otel-health-probe.c
+  file /tmp/otel-probe-final
+  bash tests/otel-health-probe.sh
+
+Result:
+  PASS; static ELF, direct health JSON/HTTP/timeout fixtures, direct and
+  compressed DNS A/CNAME fixtures, answer ownership/duplicate/question/loop
+  rejection, active exporter scope/unknown rejection, and one shared deadline.
+
+Additional review:
+  clang AddressSanitizer/UndefinedBehaviorSanitizer build passed 150 generated
+  malformed/deep/random JSON HTTP fixtures without a sanitizer report.
+
+Installer:
+  bash syntax and static destructive-path guards pass. It was not executed;
+  no engine, host, image, volume, service, or publication mutation was made.
