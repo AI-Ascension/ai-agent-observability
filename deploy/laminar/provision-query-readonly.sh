@@ -1,0 +1,1058 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Provision the separate Laminar operator query key and ClickHouse read-only
+# account without putting a secret in process arguments, shell history, or
+# evidence. All live reads and backups complete before the first persistent
+# mutation. A failed mutation compensates the other systems from those
+# backups. This helper is root-only and never restarts Compose.
+
+die() {
+  local status="$1"
+  shift
+  printf '%s\n' "$*" >&2
+  exit "$status"
+}
+
+if [[ $EUID -ne 0 ]]; then
+  die 64 'run this helper as root; it reads protected deployment state'
+fi
+if [[ $(printenv OBSERVABILITY_QUERY_PROVISION_APPROVED 2>/dev/null || true) != true ]]; then
+  die 64 'set OBSERVABILITY_QUERY_PROVISION_APPROVED=true after root review'
+fi
+
+deploy_dir="$(printenv DEPLOY_DIR 2>/dev/null || printf '%s' '/opt/ai-agent-observability/deploy')"
+env_file="$(printenv ENV_FILE 2>/dev/null || printf '%s' "$deploy_dir/.env")"
+private_dir="$(printenv PRIVATE_DIR 2>/dev/null || printf '%s' '/run/ai-agent-observability')"
+query_key_file="$(printenv QUERY_KEY_FILE 2>/dev/null || printf '%s' '/root/ai-agent-observability/laminar-query-key')"
+ch_container="$(printenv CLICKHOUSE_CONTAINER 2>/dev/null || printf '%s' 'ai-agent-observability-laminar-clickhouse')"
+pg_container="$(printenv LAMINAR_POSTGRES_CONTAINER 2>/dev/null || printf '%s' 'ai-agent-observability-laminar-postgres')"
+operator_key_name='ai-agent-observability operator query'
+migrated_ro_user_prefix='lmnr_query_ro_'
+
+for command_name in awk chmod chown cp cut dirname install mktemp mv openssl podman printenv python3 rm stat tail wc; do
+  command -v "$command_name" >/dev/null 2>&1 || {
+    die 69 "required command is unavailable: $command_name"
+  }
+done
+
+if [[ ! -f "$env_file" || ! -r "$env_file" || -L "$env_file" ]]; then
+  die 69 'deployment .env is unavailable'
+fi
+env_mode="$(stat -c '%a' "$env_file")"
+env_owner="$(stat -c '%u' "$env_file")"
+if [[ "$env_mode" != 600 || "$env_owner" != 0 ]]; then
+  die 64 'deployment .env must be root-owned mode 0600'
+fi
+
+read_dotenv_value() {
+  local wanted="$1"
+  local required="$2"
+  if [[ -z "$required" ]]; then
+    required=true
+  fi
+  python3 - "$env_file" "$wanted" "$required" <<'PY'
+import ast
+import sys
+
+path, wanted, required = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    for raw_line in handle:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        name, separator, value = line.partition("=")
+        if separator and name.strip() == wanted:
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+                value = ast.literal_eval(value)
+            print(value)
+            raise SystemExit(0)
+if required == "true":
+    raise SystemExit(69)
+PY
+}
+
+project_id="$(read_dotenv_value LAMINAR_PROJECT_ID true)"
+postgres_user="$(read_dotenv_value POSTGRES_USER true)"
+postgres_password="$(read_dotenv_value POSTGRES_PASSWORD true)"
+postgres_db="$(read_dotenv_value POSTGRES_DB true)"
+clickhouse_user="$(read_dotenv_value CLICKHOUSE_USER true)"
+clickhouse_password="$(read_dotenv_value CLICKHOUSE_PASSWORD true)"
+if configured_ro_user="$(read_dotenv_value CLICKHOUSE_RO_USER false 2>/dev/null)"; then
+  :
+else
+  configured_ro_user=''
+fi
+
+uuid_pattern='^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$'
+if [[ ! "$project_id" =~ $uuid_pattern ]]; then
+  die 64 'LAMINAR_PROJECT_ID is not a canonical UUID'
+fi
+if [[ ! "$postgres_user" =~ ^[A-Za-z0-9_.-]{1,63}$ || ! "$postgres_db" =~ ^[A-Za-z0-9_.-]{1,63}$ ]]; then
+  die 64 'Laminar PostgreSQL identity is invalid'
+fi
+if [[ -z "$postgres_password" || -z "$clickhouse_password" ]]; then
+  die 69 'existing writer credentials are unavailable'
+fi
+secret_pattern='^[[:xdigit:]]{64}$'
+if [[ ! "$postgres_password" =~ $secret_pattern || ! "$clickhouse_password" =~ $secret_pattern ]]; then
+  die 64 'existing writer credentials do not match the generated deployment secret format'
+fi
+if [[ -n "$configured_ro_user" && ! "$configured_ro_user" =~ ^[A-Za-z0-9_.-]{1,63}$ ]]; then
+  die 64 'configured ClickHouse read-only user identity is invalid'
+fi
+if [[ ! "$clickhouse_user" =~ ^[A-Za-z0-9_.-]{1,63}$ ]]; then
+  die 64 'ClickHouse writer identity is invalid'
+fi
+if [[ ! "$ch_container" =~ ^[A-Za-z0-9_.-]{1,128}$ || ! "$pg_container" =~ ^[A-Za-z0-9_.-]{1,128}$ ]]; then
+  die 64 'container identity is invalid'
+fi
+
+if [[ "$(podman inspect --format '{{.State.Running}}' "$ch_container" 2>/dev/null || true)" != true ]]; then
+  die 69 'ClickHouse container is not running'
+fi
+if [[ "$(podman inspect --format '{{.State.Running}}' "$pg_container" 2>/dev/null || true)" != true ]]; then
+  die 69 'Laminar PostgreSQL container is not running'
+fi
+
+install -d -o root -g root -m 700 "$private_dir"
+install -d -o root -g root -m 700 "$(dirname "$query_key_file")"
+nonce="$(openssl rand -hex 8)"
+migrated_ro_user="${migrated_ro_user_prefix}${nonce}"
+if [[ ! "$migrated_ro_user" =~ ^[A-Za-z0-9_.-]{1,63}$ ]]; then
+  die 69 'generated ClickHouse read-only user identity is invalid'
+fi
+sql_file="$private_dir/.query-provision.$nonce.sql"
+sql_output="$private_dir/.query-provision.$nonce.out"
+sql_error="$private_dir/.query-provision.$nonce.err"
+db_preflight_sql="$private_dir/.query-preflight.$nonce.sql"
+db_preflight_output="$private_dir/.query-preflight.$nonce.out"
+db_backup_sql="$private_dir/.query-backup.$nonce.sql"
+db_backup_meta_sql="$private_dir/.query-backup-meta-input.$nonce.sql"
+db_backup_meta="$private_dir/.query-backup-meta.$nonce"
+db_reconcile_sql="$private_dir/.query-reconcile.$nonce.sql"
+db_restore_sql="$private_dir/.query-restore.$nonce.sql"
+candidate_key_evidence="$private_dir/.laminar-query-key.candidate.$nonce"
+pg_reconciliation_evidence="$private_dir/.postgres-query-reconciliation.$nonce"
+ch_config="$private_dir/.clickhouse-config.$nonce.xml"
+ch_ro_config="$private_dir/.clickhouse-ro-config.$nonce.xml"
+ch_sql="$private_dir/.clickhouse-query.$nonce.sql"
+ch_grant_sql="$private_dir/.clickhouse-grant.$nonce.sql"
+ch_output="$private_dir/.clickhouse-query.$nonce.out"
+ch_error="$private_dir/.clickhouse-query.$nonce.err"
+ch_ownership_evidence="$private_dir/.clickhouse-query-ownership.$nonce"
+env_backup="$private_dir/.env.before-query-provision.$nonce"
+env_fragment="$private_dir/.env.ro-fragment.$nonce"
+new_key_file="$private_dir/.laminar-query-key.$nonce"
+pgpass_file="$private_dir/.pgpass.$nonce"
+ch_config_path="/run/.sts2-clickhouse-config-$nonce.xml"
+ch_ro_config_path="/run/.sts2-clickhouse-ro-config-$nonce.xml"
+pgpass_path="/run/.sts2-postgres-pass-$nonce"
+key_backup="$private_dir/.laminar-query-key.before-query-provision.$nonce"
+key_backup_state="$private_dir/.laminar-query-key.before-query-provision.$nonce.state"
+retain_ch_ownership_evidence=false
+retain_pg_reconciliation_evidence=false
+
+cleanup() {
+  rm -f "$sql_file" "$sql_output" "$sql_error" "$db_preflight_sql" \
+    "$db_preflight_output" "$db_backup_meta_sql" \
+    "$ch_config" "$ch_sql" \
+    "$ch_grant_sql" "$ch_output" "$ch_error" "$env_fragment" \
+    "$new_key_file" "$pgpass_file"
+  if [[ "$retain_pg_reconciliation_evidence" != true ]]; then
+    rm -f "$db_reconcile_sql" "$candidate_key_evidence" \
+      "$pg_reconciliation_evidence"
+  fi
+  if [[ "$retain_ch_ownership_evidence" != true ]]; then
+    rm -f "$ch_ro_config" "$ch_ownership_evidence"
+  fi
+  podman exec "$ch_container" rm -f "$ch_config_path" "$ch_ro_config_path" \
+    >/dev/null 2>&1 || true
+  podman exec "$pg_container" rm -f "$pgpass_path" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+if [[ -e "$env_backup" || -e "$key_backup" || -e "$key_backup_state" \
+  || -e "$ch_ownership_evidence" || -e "$ch_ro_config" \
+  || -e "$candidate_key_evidence" || -e "$pg_reconciliation_evidence" ]]; then
+  die 69 'private backup path collision'
+fi
+
+# The legacy image used CLICKHOUSE_RO_USER=lmnr, which aliases the writer.
+# Do not reject that value before contacting the live ClickHouse instance.
+# After the live preflight, migrate it to a distinct reserved account.
+if [[ -z "$configured_ro_user" || "$configured_ro_user" == "$clickhouse_user" ]]; then
+  ro_user="$migrated_ro_user"
+  legacy_migration=true
+else
+  ro_user="$configured_ro_user"
+  legacy_migration=false
+fi
+if [[ "$ro_user" == "$clickhouse_user" || ! "$ro_user" =~ ^[A-Za-z0-9_.-]{1,63}$ ]]; then
+  die 64 'ClickHouse read-only user must be distinct from the writer user'
+fi
+
+cat >"$ch_config" <<XML
+<config><host>127.0.0.1</host><user>$clickhouse_user</user><password>$clickhouse_password</password></config>
+XML
+chmod 600 "$ch_config"
+if ! podman exec -i "$ch_container" sh -c 'umask 077; cat > "$1"' sh "$ch_config_path" \
+  <"$ch_config" >/dev/null 2>"$ch_error"; then
+  die 69 'could not install protected ClickHouse writer config'
+fi
+
+run_clickhouse_query() {
+  local config_path="$1"
+  local query="$2"
+  : >"$ch_output"
+  : >"$ch_error"
+  if ! podman exec -i "$ch_container" clickhouse-client \
+    --config-file "$config_path" --query "$query" \
+    >"$ch_output" 2>"$ch_error"; then
+    return 1
+  fi
+  return 0
+}
+
+drop_owned_clickhouse_user() {
+  local current_user_id
+  if ! run_clickhouse_query "$ch_config_path" \
+    "SELECT id FROM system.users WHERE name = '$ro_user' FORMAT TSV"; then
+    return 1
+  fi
+  current_user_id="$(awk 'NF { print $1; exit }' "$ch_output")"
+  if [[ -z "$current_user_id" || "$current_user_id" != "$ch_user_id" ]]; then
+    return 1
+  fi
+  if ! run_clickhouse_query "$ch_ro_config_path" \
+    "SELECT 1 FORMAT TSV"; then
+    return 1
+  fi
+  run_clickhouse_query "$ch_config_path" \
+    "DROP USER IF EXISTS \`$ro_user\`"
+}
+
+# Live preflight first proves the writer is present, discovers the legacy
+# account situation, and only then admits the migration target.
+if ! run_clickhouse_query "$ch_config_path" \
+  "SELECT name FROM system.users WHERE name = '$clickhouse_user' FORMAT TSV"; then
+  die 1 'ClickHouse user preflight failed'
+fi
+if ! grep -Fxq "$clickhouse_user" "$ch_output"; then
+  die 64 'configured ClickHouse writer user is absent from the live server'
+fi
+if [[ "$legacy_migration" == true ]]; then
+  legacy_ro_display="$configured_ro_user"
+  if [[ -z "$legacy_ro_display" ]]; then
+    legacy_ro_display='<unset>'
+  fi
+  printf 'legacy_clickhouse_ro_user=%s migration_target=%s\n' \
+    "$legacy_ro_display" "$ro_user"
+fi
+if ! run_clickhouse_query "$ch_config_path" \
+  "SELECT name FROM system.users WHERE name = '$ro_user' FORMAT TSV"; then
+  die 1 'ClickHouse read-only user collision preflight failed'
+fi
+if grep -Fxq "$ro_user" "$ch_output"; then
+  die 64 'configured ClickHouse read-only user already exists; refusing an account collision'
+fi
+
+if ! run_clickhouse_query "$ch_config_path" \
+  "SELECT name, engine FROM system.tables WHERE database='default' AND name IN ('spans','spans_v0') ORDER BY name FORMAT TSV"; then
+  die 1 'ClickHouse schema preflight failed'
+fi
+python3 - "$ch_output" <<'PY'
+import pathlib
+import sys
+
+rows = {}
+for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
+    fields = line.split("\t")
+    if len(fields) == 2:
+        rows[fields[0]] = fields[1]
+if rows.get("spans") not in {"MergeTree", "ReplacingMergeTree"}:
+    raise SystemExit("default.spans is not the expected deployed table engine")
+if rows.get("spans_v0") != "View":
+    raise SystemExit("default.spans_v0 is not the expected deployed view engine")
+PY
+if ! run_clickhouse_query "$ch_config_path" \
+  "DESCRIBE TABLE default.spans FORMAT TSV"; then
+  die 1 'ClickHouse spans schema preflight failed'
+fi
+python3 - "$ch_output" <<'PY'
+import pathlib
+import sys
+
+names = {line.split("\t", 1)[0] for line in pathlib.Path(sys.argv[1]).read_text().splitlines() if line}
+required = {"span_id", "trace_id", "status", "start_time", "end_time", "attributes"}
+if not required <= names:
+    raise SystemExit("default.spans is missing a required correlation column")
+PY
+printf '%s\n' 'clickhouse_schema=validated deployed_spans=table deployed_spans_v0=view'
+
+# Install the PostgreSQL client password through a protected container file.
+# The file is temporary and is removed by cleanup, never passed as an argv
+# value. Its presence is part of the preflight boundary, before backups.
+printf '*:*:*:%s:%s\n' "$postgres_user" "$postgres_password" >"$pgpass_file"
+chmod 600 "$pgpass_file"
+if ! podman exec -i "$pg_container" sh -c 'umask 077; cat > "$1"' sh "$pgpass_path" \
+  <"$pgpass_file" >/dev/null 2>"$sql_error"; then
+  die 69 'could not install protected PostgreSQL client credentials'
+fi
+
+run_psql_file() {
+  local input_file="$1"
+  podman exec -i "$pg_container" env PGPASSFILE="$pgpass_path" \
+    psql --no-psqlrc --no-password --quiet --no-align --tuples-only \
+    --set=ON_ERROR_STOP=1 \
+    --host=127.0.0.1 --port=5432 --username="$postgres_user" \
+    --dbname="$postgres_db" --file=- <"$input_file" \
+    >"$sql_output" 2>"$sql_error"
+}
+
+cat >"$db_preflight_sql" <<SQL
+SELECT 'project=' || count(*) FROM projects WHERE id = '$project_id'::uuid;
+SELECT 'collector=' || count(*) FROM project_api_keys
+ WHERE project_id = '$project_id'::uuid AND is_ingest_only = true;
+SELECT 'operator=' || count(*) FROM project_api_keys
+ WHERE project_id = '$project_id'::uuid AND name = '$operator_key_name';
+SQL
+chmod 600 "$db_preflight_sql"
+if ! run_psql_file "$db_preflight_sql"; then
+  die 1 'Laminar PostgreSQL preflight failed'
+fi
+cp "$sql_output" "$db_preflight_output"
+chmod 600 "$db_preflight_output"
+python3 - "$db_preflight_output" <<'PY'
+import pathlib
+import sys
+
+values = {}
+for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
+    name, separator, value = line.partition("=")
+    if separator:
+        values[name] = int(value)
+if values.get("project") != 1:
+    raise SystemExit("configured Laminar project does not exist exactly once")
+if values.get("collector", 0) < 1:
+    raise SystemExit("Collector ingest-only key row is missing")
+if values.get("operator", 0) > 1:
+    raise SystemExit("operator query key has duplicate rows")
+PY
+
+# Capture a SQL-safe restoration statement and exact row metadata for the
+# existing operator row in one locked PostgreSQL transaction. An absent row is
+# recorded as an empty backup. Hex encoding keeps the SQL result to one safe
+# line even when a stored text value contains a delimiter or newline.
+cat >"$db_backup_meta_sql" <<SQL
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+DO \$\$
+DECLARE
+  operator_rows integer;
+BEGIN
+  PERFORM id FROM projects
+   WHERE id = '$project_id'::uuid
+   FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'configured Laminar project does not exist';
+  END IF;
+  PERFORM id FROM project_api_keys
+   WHERE project_id = '$project_id'::uuid
+     AND name = '$operator_key_name'
+   FOR UPDATE;
+  GET DIAGNOSTICS operator_rows = ROW_COUNT;
+  IF operator_rows > 1 THEN
+    RAISE EXCEPTION 'operator query key has duplicate rows';
+  END IF;
+END
+\$\$;
+SELECT 'backup_sql_hex=' || COALESCE((
+  SELECT encode(convert_to(format(
+    'INSERT INTO project_api_keys (id, name, project_id, shorthand, hash, is_ingest_only, user_id, expires_at, value, created_at) VALUES (%L, %L, %L, %L, %L, %L, %L, %L, %L, %L);',
+    id, name, project_id, shorthand, hash, is_ingest_only, user_id, expires_at, value, created_at), 'UTF8'), 'hex')
+  FROM project_api_keys
+  WHERE project_id = '$project_id'::uuid
+    AND name = '$operator_key_name'
+), '');
+SELECT 'backup_meta=' || COALESCE((
+  SELECT id::text || E'\t' || md5(row_to_json(pak)::text)
+  FROM project_api_keys AS pak
+  WHERE project_id = '$project_id'::uuid
+    AND name = '$operator_key_name'
+), '');
+COMMIT;
+SQL
+chmod 600 "$db_backup_meta_sql"
+if ! run_psql_file "$db_backup_meta_sql"; then
+  die 1 'could not capture the existing operator key row and metadata'
+fi
+python3 - "$sql_output" "$db_backup_sql" "$db_backup_meta" <<'PY'
+import pathlib
+import re
+import sys
+
+source, backup_sql, backup_meta = map(pathlib.Path, sys.argv[1:])
+lines = source.read_text().splitlines()
+if len(lines) != 2:
+    raise SystemExit("operator backup transaction returned an unexpected row count")
+markers = {}
+for line in lines:
+    name, separator, value = line.partition("=")
+    if not separator or name in markers:
+        raise SystemExit("operator backup transaction returned malformed markers")
+    markers[name] = value
+if set(markers) != {"backup_sql_hex", "backup_meta"}:
+    raise SystemExit("operator backup transaction returned unexpected markers")
+encoded = markers["backup_sql_hex"]
+if not re.fullmatch(r"[0-9a-fA-F]*", encoded):
+    raise SystemExit("operator backup SQL encoding was malformed")
+try:
+    backup_sql.write_bytes(bytes.fromhex(encoded))
+except ValueError as error:
+    raise SystemExit("operator backup SQL encoding was malformed") from error
+metadata = markers["backup_meta"]
+if bool(encoded) != bool(metadata):
+    raise SystemExit("operator backup transaction returned an inconsistent row snapshot")
+if metadata:
+    fields = metadata.split("\t")
+    if len(fields) != 2 or not re.fullmatch(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+        fields[0],
+    ) or not re.fullmatch(r"[0-9a-fA-F]{32}", fields[1]):
+        raise SystemExit("operator backup metadata was malformed")
+    backup_meta.write_text(metadata + "\n", encoding="utf-8")
+else:
+    backup_meta.write_text("", encoding="utf-8")
+for path in (backup_sql, backup_meta):
+    path.chmod(0o600)
+PY
+operator_backup_id=''
+operator_backup_row_hash=''
+if [[ -s "$db_backup_meta" ]]; then
+  IFS=$'\t' read -r operator_backup_id operator_backup_row_hash <"$db_backup_meta"
+fi
+
+# Protect the existing local key and .env before any persistent mutation.
+cp -p "$env_file" "$env_backup"
+chmod 600 "$env_backup"
+if [[ -e "$query_key_file" ]]; then
+  if [[ ! -f "$query_key_file" || -L "$query_key_file" ]]; then
+    die 64 'existing query key path is not a regular file'
+  fi
+  key_mode="$(stat -c '%a' "$query_key_file")"
+  key_owner="$(stat -c '%u' "$query_key_file")"
+  if [[ "$key_mode" != 600 || "$key_owner" != 0 ]]; then
+    die 64 'existing query key must be root-owned mode 0600'
+  fi
+  cp -p "$query_key_file" "$key_backup"
+  printf '%s\n' present >"$key_backup_state"
+else
+  printf '%s\n' absent >"$key_backup_state"
+fi
+chmod 600 "$key_backup_state"
+
+query_key="$(openssl rand -hex 32)"
+query_key_hash="$(printf '%s' "$query_key" | openssl dgst -sha3-256 -r | awk '{print $1}')"
+query_key_prefix="$(printf '%s' "$query_key" | cut -c1-4)"
+query_key_suffix="$(printf '%s' "$query_key" | tail -c 4)"
+query_shorthand="$(printf '%s...%s' "$query_key_prefix" "$query_key_suffix")"
+operator_insert_hex="$(openssl rand -hex 16)"
+if [[ ! "$operator_insert_hex" =~ ^[[:xdigit:]]{32}$ ]]; then
+  die 69 'generated PostgreSQL operator row identity is invalid'
+fi
+operator_insert_id="${operator_insert_hex:0:8}-${operator_insert_hex:8:4}-${operator_insert_hex:12:4}-${operator_insert_hex:16:4}-${operator_insert_hex:20:12}"
+clickhouse_ro_password="$(openssl rand -hex 32)"
+query_key_length="$(printf '%s' "$query_key" | wc -c)"
+query_hash_length="$(printf '%s' "$query_key_hash" | wc -c)"
+ro_password_length="$(printf '%s' "$clickhouse_ro_password" | wc -c)"
+if [[ "$query_key_length" -ne 64 || "$query_hash_length" -ne 64 || "$ro_password_length" -ne 64 ]]; then
+  die 69 'generated credential did not meet the required bound'
+fi
+printf '%s\n' "$query_key" >"$new_key_file"
+chmod 600 "$new_key_file"
+cp -p "$new_key_file" "$candidate_key_evidence"
+chmod 600 "$candidate_key_evidence"
+cat >"$pg_reconciliation_evidence" <<EOF
+project_id=$project_id
+candidate_id=$operator_insert_id
+candidate_key=$candidate_key_evidence
+operator_name=$operator_key_name
+expected_shorthand=$query_shorthand
+expected_hash=$query_key_hash
+expected_is_ingest_only=false
+expected_user_id=NULL
+expected_expires_at=NULL
+expected_value_empty=true
+EOF
+chmod 600 "$pg_reconciliation_evidence"
+
+cat >"$ch_sql" <<SQL
+CREATE USER \`$ro_user\`
+  IDENTIFIED WITH sha256_password BY '$clickhouse_ro_password';
+SQL
+chmod 600 "$ch_sql"
+
+cat >"$ch_grant_sql" <<SQL
+ALTER USER \`$ro_user\`
+  DEFAULT ROLE NONE
+  SETTINGS
+    readonly = 1,
+    max_execution_time = 30,
+    max_memory_usage = 268435456,
+    max_result_rows = 10000,
+    max_result_bytes = 16777216,
+    max_threads = 2;
+GRANT SELECT ON default.spans TO \`$ro_user\`;
+GRANT SELECT ON default.spans_v0 TO \`$ro_user\`;
+SQL
+chmod 600 "$ch_grant_sql"
+
+cat >"$ch_ro_config" <<XML
+<config><host>127.0.0.1</host><user>$ro_user</user><password>$clickhouse_ro_password</password></config>
+XML
+chmod 600 "$ch_ro_config"
+
+# All preconditions and backups are complete. From this point onward every
+# persistent write has a compensation path and a deterministic rollback order.
+ch_mutation_attempted=false
+ch_user_created=false
+ch_user_id=''
+retain_ch_ownership_evidence=false
+pg_mutation_attempted=false
+pg_mutation_committed=false
+pg_inserted_id="$operator_insert_id"
+pg_inserted_row_hash=''
+pg_reconciliation_result=none
+key_mutation_attempted=false
+env_mutation_attempted=false
+
+retain_pg_reconciliation_artifacts() {
+  local reason="$1"
+  retain_pg_reconciliation_evidence=true
+  printf 'retention_reason=%s\n' "$reason" >>"$pg_reconciliation_evidence" 2>/dev/null || true
+}
+
+reconcile_unknown_postgres_commit() {
+  # A client-side PostgreSQL failure after COMMIT leaves the commit outcome
+  # unknown. Lock the project and candidate row, then classify only the exact
+  # preassigned row. A changed or foreign row is retained for manual review.
+  cat >"$db_reconcile_sql" <<SQL
+BEGIN;
+DO \$\$
+BEGIN
+  PERFORM id FROM projects
+   WHERE id = '$project_id'::uuid
+   FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'configured Laminar project disappeared during commit reconciliation';
+  END IF;
+  PERFORM id FROM project_api_keys
+   WHERE id = '$pg_inserted_id'::uuid
+   FOR UPDATE;
+END
+\$\$;
+SELECT CASE
+  WHEN NOT EXISTS (
+    SELECT 1 FROM project_api_keys
+     WHERE id = '$pg_inserted_id'::uuid
+  ) THEN 'candidate=absent'
+  WHEN EXISTS (
+    SELECT 1 FROM project_api_keys
+     WHERE id = '$pg_inserted_id'::uuid
+       AND project_id = '$project_id'::uuid
+       AND name = '$operator_key_name'
+       AND shorthand = '$query_shorthand'
+       AND hash = '$query_key_hash'
+       AND is_ingest_only = false
+       AND user_id IS NULL
+       AND expires_at IS NULL
+       AND value = ''
+  ) THEN 'candidate=match' || E'\t' || (
+    SELECT md5(row_to_json(pak)::text)
+      FROM project_api_keys AS pak
+     WHERE pak.id = '$pg_inserted_id'::uuid
+  )
+  ELSE 'candidate=mismatch'
+END;
+COMMIT;
+SQL
+  chmod 600 "$db_reconcile_sql"
+  if ! run_psql_file "$db_reconcile_sql"; then
+    return 1
+  fi
+  local candidate_meta candidate_kind candidate_hash
+  candidate_meta="$(cat "$sql_output")"
+  if [[ "$candidate_meta" == *$'\n'* ]]; then
+    return 1
+  fi
+  IFS=$'\t' read -r candidate_kind candidate_hash <<<"$candidate_meta"
+  case "$candidate_kind" in
+    candidate=absent)
+      [[ -z "$candidate_hash" ]] || return 1
+      pg_mutation_committed=unknown
+      pg_reconciliation_result=absent
+      return 0
+      ;;
+    candidate=match)
+      if [[ ! "$candidate_hash" =~ ^[[:xdigit:]]{32}$ ]]; then
+        return 1
+      fi
+      pg_inserted_row_hash="$candidate_hash"
+      pg_mutation_committed=true
+      pg_reconciliation_result=match
+      return 0
+      ;;
+    candidate=mismatch)
+      pg_reconciliation_result=mismatch
+      return 1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+restore_postgres_operator_row() {
+  if [[ -z "$pg_inserted_id" || -z "$pg_inserted_row_hash" ]]; then
+    return 1
+  fi
+  {
+    cat <<SQL
+BEGIN;
+DO \$\$
+DECLARE
+  current_row_hash text;
+BEGIN
+  PERFORM id FROM projects
+   WHERE id = '$project_id'::uuid
+   FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'configured Laminar project disappeared during rollback';
+  END IF;
+  SELECT md5(row_to_json(pak)::text)
+    INTO current_row_hash
+    FROM project_api_keys AS pak
+   WHERE pak.id = '$pg_inserted_id'::uuid
+     AND pak.project_id = '$project_id'::uuid
+     AND pak.name = '$operator_key_name'
+   FOR UPDATE;
+  IF current_row_hash IS DISTINCT FROM '$pg_inserted_row_hash' THEN
+    RAISE EXCEPTION 'helper PostgreSQL operator row changed before rollback';
+  END IF;
+END
+\$\$;
+DELETE FROM project_api_keys AS pak
+ WHERE pak.id = '$pg_inserted_id'::uuid
+   AND pak.project_id = '$project_id'::uuid
+   AND pak.name = '$operator_key_name'
+   AND md5(row_to_json(pak)::text) = '$pg_inserted_row_hash';
+SQL
+    if [[ -s "$db_backup_sql" ]]; then
+      cat "$db_backup_sql"
+    fi
+    if [[ -n "$operator_backup_id" ]]; then
+      cat <<SQL
+DO \$\$
+DECLARE
+  restored_row_hash text;
+BEGIN
+  SELECT md5(row_to_json(pak)::text)
+    INTO restored_row_hash
+   FROM project_api_keys AS pak
+   WHERE pak.id = '$operator_backup_id'::uuid
+     AND pak.project_id = '$project_id'::uuid
+     AND pak.name = '$operator_key_name'
+   FOR UPDATE;
+  IF restored_row_hash IS DISTINCT FROM '$operator_backup_row_hash' THEN
+    RAISE EXCEPTION 'prior PostgreSQL operator row was not restored exactly';
+  END IF;
+END
+\$\$;
+SQL
+    else
+      cat <<SQL
+DO \$\$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM project_api_keys
+     WHERE project_id = '$project_id'::uuid
+       AND name = '$operator_key_name'
+  ) THEN
+    RAISE EXCEPTION 'PostgreSQL operator row should be absent after rollback';
+  END IF;
+END
+\$\$;
+SQL
+    fi
+    cat <<SQL
+COMMIT;
+SQL
+  } >"$db_restore_sql"
+  chmod 600 "$db_restore_sql"
+  run_psql_file "$db_restore_sql"
+}
+
+rollback() {
+  local status="$?"
+  local rollback_failed=false
+  trap - EXIT
+  if [[ "$status" -ne 0 ]]; then
+    printf '%s\n' 'provisioning failed; starting deterministic compensation' >&2
+    if [[ "$env_mutation_attempted" == true ]]; then
+      if ! cp -p "$env_backup" "$env_file" || ! chmod 600 "$env_file"; then
+        rollback_failed=true
+        printf '%s\n' 'rollback failed while restoring .env' >&2
+      fi
+    fi
+    if [[ "$key_mutation_attempted" == true ]]; then
+      if [[ "$(cat "$key_backup_state")" == present ]]; then
+        if ! cp -p "$key_backup" "$query_key_file" || ! chmod 600 "$query_key_file"; then
+          rollback_failed=true
+          printf '%s\n' 'rollback failed while restoring the prior query key' >&2
+        fi
+      elif ! rm -f "$query_key_file"; then
+        rollback_failed=true
+        printf '%s\n' 'rollback failed while removing the staged query key' >&2
+      fi
+    fi
+    if [[ "$pg_mutation_attempted" == true ]]; then
+      if [[ "$pg_mutation_committed" == unknown ]]; then
+        if ! reconcile_unknown_postgres_commit; then
+          retain_pg_reconciliation_artifacts 'PostgreSQL transaction outcome could not be reconciled'
+          rollback_failed=true
+          printf '%s\n' 'PostgreSQL transaction outcome is unknown and the exact candidate row could not be reconciled; manual review is required' >&2
+        fi
+      fi
+      if [[ "$pg_mutation_committed" == true ]]; then
+        if ! restore_postgres_operator_row; then
+          retain_pg_reconciliation_artifacts 'PostgreSQL candidate row could not be restored exactly'
+          rollback_failed=true
+          printf '%s\n' 'rollback failed while restoring the prior PostgreSQL operator key' >&2
+        fi
+      elif [[ "$pg_reconciliation_result" == absent ]]; then
+        printf '%s\n' 'PostgreSQL exact candidate row is absent; commit outcome remains unknown and no exact row compensation was attempted' >&2
+      fi
+    fi
+    if [[ "$ch_mutation_attempted" == true ]]; then
+      if [[ "$ch_user_created" == true ]]; then
+        if ! drop_owned_clickhouse_user; then
+          retain_ch_ownership_evidence=true
+          rollback_failed=true
+          printf 'refusing to drop ClickHouse user after ownership check failed; reconcile user=%s id=%s evidence=%s password_config=%s\n' \
+            "$ro_user" "${ch_user_id:-unknown}" "$ch_ownership_evidence" "$ch_ro_config" >&2
+        fi
+      elif ! run_clickhouse_query "$ch_config_path" \
+        "SELECT name FROM system.users WHERE name = '$ro_user' FORMAT TSV"; then
+        rollback_failed=true
+        printf '%s\n' 'rollback could not determine whether a foreign ClickHouse user appeared' >&2
+      elif grep -Fxq "$ro_user" "$ch_output"; then
+        rollback_failed=true
+        printf '%s\n' 'refusing to drop a ClickHouse user after an ambiguous CREATE failure; reconcile it manually' >&2
+      fi
+    fi
+    if [[ "$rollback_failed" == true && "$pg_mutation_committed" == unknown ]]; then
+      retain_pg_reconciliation_artifacts 'another compensation step failed while PostgreSQL outcome remained unknown'
+    fi
+    printf 'rollback_env_backup=%s\n' "$env_backup" >&2
+    printf 'rollback_key_backup=%s\n' "$key_backup" >&2
+    printf 'rollback_db_backup=%s\n' "$db_backup_sql" >&2
+    if [[ "$retain_pg_reconciliation_evidence" == true ]]; then
+      printf 'rollback_pg_candidate_key=%s\n' "$candidate_key_evidence" >&2
+      printf 'rollback_pg_reconciliation_evidence=%s\n' \
+        "$pg_reconciliation_evidence" >&2
+      printf 'rollback_pg_reconciliation_sql=%s\n' "$db_reconcile_sql" >&2
+    fi
+    if [[ "$rollback_failed" == true ]]; then
+      printf '%s\n' 'automatic compensation was incomplete; keep the backups and reconcile by exact project/container identity' >&2
+      cleanup
+      exit 70
+    fi
+  fi
+  cleanup
+  exit "$status"
+}
+trap rollback EXIT
+
+# Install the protected key before the database commit. This ensures that a
+# process interruption cannot leave a committed database hash with no durable
+# copy of the corresponding secret.
+key_mutation_attempted=true
+mv -f "$new_key_file" "$query_key_file"
+chmod 600 "$query_key_file"
+chown root:root "$query_key_file"
+
+# The query-key transaction locks the project first, then locks and compares
+# the exact backed-up operator row before replacing it. It has no CREATE USER
+# side effects. The row ID is assigned before the transaction so a lost
+# response can be reconciled without a name-based delete.
+{
+  cat <<SQL
+BEGIN;
+DO \$\$
+DECLARE
+  current_id uuid;
+  current_row_hash text;
+BEGIN
+  PERFORM id FROM projects
+   WHERE id = '$project_id'::uuid
+   FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'configured Laminar project does not exist';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM project_api_keys
+    WHERE project_id = '$project_id'::uuid
+      AND is_ingest_only = true
+  ) THEN
+    RAISE EXCEPTION 'Collector ingest-only key row is missing';
+  END IF;
+  SELECT pak.id, md5(row_to_json(pak)::text)
+    INTO current_id, current_row_hash
+    FROM project_api_keys AS pak
+   WHERE pak.project_id = '$project_id'::uuid
+     AND pak.name = '$operator_key_name'
+   FOR UPDATE;
+SQL
+  if [[ -n "$operator_backup_id" ]]; then
+    cat <<SQL
+  IF NOT FOUND
+     OR current_id IS DISTINCT FROM '$operator_backup_id'::uuid
+     OR current_row_hash IS DISTINCT FROM '$operator_backup_row_hash' THEN
+    RAISE EXCEPTION 'operator key changed since its exact backup';
+  END IF;
+END
+\$\$;
+DELETE FROM project_api_keys AS pak
+ WHERE pak.id = '$operator_backup_id'::uuid
+   AND pak.project_id = '$project_id'::uuid
+   AND pak.name = '$operator_key_name'
+   AND md5(row_to_json(pak)::text) = '$operator_backup_row_hash';
+SQL
+  else
+    cat <<SQL
+  IF FOUND THEN
+    RAISE EXCEPTION 'operator key appeared since the exact backup';
+  END IF;
+END
+\$\$;
+SQL
+  fi
+  cat <<SQL
+WITH inserted AS (
+  INSERT INTO project_api_keys
+    (id, name, project_id, shorthand, hash, is_ingest_only, user_id, expires_at, value)
+  VALUES
+    ('$operator_insert_id'::uuid, '$operator_key_name', '$project_id'::uuid, '$query_shorthand',
+     '$query_key_hash', false, NULL, NULL, '')
+  RETURNING *
+)
+SELECT 'inserted=' || inserted.id::text || E'\t' || md5(row_to_json(inserted)::text)
+FROM inserted;
+DO \$\$
+BEGIN
+  IF (SELECT count(*) FROM project_api_keys
+      WHERE project_id = '$project_id'::uuid
+        AND is_ingest_only = true) < 1
+     OR (SELECT count(*) FROM project_api_keys
+         WHERE project_id = '$project_id'::uuid
+         AND name = '$operator_key_name'
+         AND is_ingest_only = false) <> 1 THEN
+    RAISE EXCEPTION 'operator key transaction failed its postcondition';
+  END IF;
+END
+\$\$;
+COMMIT;
+SQL
+} >"$sql_file"
+chmod 600 "$sql_file"
+
+pg_mutation_attempted=true
+if ! run_psql_file "$sql_file"; then
+  pg_mutation_committed=unknown
+  die 1 'Laminar operator key transaction failed; raw database output remains root-private'
+fi
+pg_mutation_committed=unknown
+inserted_meta="$(python3 - "$sql_output" "$operator_insert_id" <<'PY'
+import pathlib
+import re
+import sys
+
+lines = [line for line in pathlib.Path(sys.argv[1]).read_text().splitlines() if line]
+expected_id = sys.argv[2]
+if len(lines) != 1:
+    raise SystemExit("operator transaction did not return exactly one inserted-row marker")
+prefix, separator, row_hash = lines[0].partition("\t")
+if not prefix.startswith("inserted=") or not separator:
+    raise SystemExit("operator transaction returned an invalid inserted-row marker")
+row_id = prefix.removeprefix("inserted=")
+if not re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", row_id):
+    raise SystemExit("inserted operator row ID is not a canonical UUID")
+if row_id.lower() != expected_id.lower():
+    raise SystemExit("inserted operator row ID did not match the preassigned identity")
+if not re.fullmatch(r"[0-9a-fA-F]{32}", row_hash):
+    raise SystemExit("inserted operator row digest is malformed")
+print(f"{row_id}\t{row_hash}")
+PY
+)" || die 69 'operator transaction marker was unavailable; manual reconciliation is required'
+IFS=$'\t' read -r pg_inserted_id pg_inserted_row_hash <<<"$inserted_meta"
+pg_mutation_committed=true
+pg_reconciliation_result=match
+printf '%s\n' 'operator query key transaction=committed collector_key=preserved'
+
+# The target account was proved absent, so CREATE USER cannot overwrite a
+# pre-existing account. A legacy writer alias gets a fresh nonce-qualified
+# target name for every migration. CREATE runs separately from grants so the
+# compensation path can verify both the ClickHouse UUID and the generated
+# password before a name-based DROP. That check is intentionally conservative:
+# an identity mismatch retains protected reconciliation evidence and exits 70.
+# Authorized root operations must serialize this procedure with other account
+# administration; the check and DROP are not an atomic ClickHouse primitive.
+ch_mutation_attempted=true
+if ! podman exec -i "$ch_container" clickhouse-client \
+  --config-file "$ch_config_path" --multiquery <"$ch_sql" \
+  >"$ch_output" 2>"$ch_error"; then
+  die 1 'ClickHouse read-only user creation failed; raw output remains root-private'
+fi
+ch_user_created=true
+cat >"$ch_ownership_evidence" <<EOF
+target_user=$ro_user
+target_id=unknown
+password_config=$ch_ro_config
+EOF
+chmod 600 "$ch_ownership_evidence"
+if ! podman exec -i "$ch_container" sh -c 'umask 077; cat > "$1"' sh "$ch_ro_config_path" \
+  <"$ch_ro_config" >/dev/null 2>"$ch_error"; then
+  die 70 'could not install protected ClickHouse ownership config; reconcile the staged account'
+fi
+if ! run_clickhouse_query "$ch_config_path" \
+  "SELECT id FROM system.users WHERE name = '$ro_user' FORMAT TSV"; then
+  die 70 'could not capture the staged ClickHouse user UUID; reconcile the staged account'
+fi
+ch_user_id="$(awk 'NF { print $1; exit }' "$ch_output")"
+if [[ ! "$ch_user_id" =~ $uuid_pattern ]]; then
+  die 70 'staged ClickHouse user UUID is unavailable; reconcile the staged account'
+fi
+cat >"$ch_ownership_evidence" <<EOF
+target_user=$ro_user
+target_id=$ch_user_id
+password_config=$ch_ro_config
+EOF
+chmod 600 "$ch_ownership_evidence"
+if ! podman exec -i "$ch_container" clickhouse-client \
+  --config-file "$ch_config_path" --multiquery <"$ch_grant_sql" \
+  >"$ch_output" 2>"$ch_error"; then
+  die 1 'ClickHouse read-only user grants failed; raw output remains root-private'
+fi
+
+if ! run_clickhouse_query "$ch_config_path" \
+  "SHOW GRANTS FOR \`$ro_user\` FORMAT TSV"; then
+  die 1 'could not verify ClickHouse read-only grants'
+fi
+python3 - "$ch_output" "$ro_user" <<'PY'
+import pathlib
+import sys
+
+lines = [line.strip() for line in pathlib.Path(sys.argv[1]).read_text().splitlines() if line.strip()]
+user = sys.argv[2]
+required = {
+    f"GRANT SELECT ON default.spans TO {user}",
+    f"GRANT SELECT ON default.spans_v0 TO {user}",
+}
+if not required <= set(lines):
+    raise SystemExit("read-only grants did not match the two exposed span objects exactly")
+if any("ON *.*" in line or "WITH GRANT OPTION" in line for line in lines):
+    raise SystemExit("read-only account has a broader grant than the two span objects")
+PY
+if ! run_clickhouse_query "$ch_config_path" \
+  "SHOW CREATE USER \`$ro_user\` FORMAT TSV"; then
+  die 1 'could not verify ClickHouse read-only settings'
+fi
+python3 - "$ch_output" "$ro_user" <<'PY'
+import pathlib
+import sys
+
+text = pathlib.Path(sys.argv[1]).read_text()
+user = sys.argv[2]
+for marker in (
+    user,
+    "DEFAULT ROLE NONE",
+    "readonly = 1",
+    "max_execution_time = 30",
+    "max_memory_usage = 268435456",
+    "max_result_rows = 10000",
+    "max_result_bytes = 16777216",
+    "max_threads = 2",
+):
+    if marker not in text:
+        raise SystemExit(f"read-only account is missing setting: {marker}")
+PY
+if ! run_clickhouse_query "$ch_ro_config_path" \
+  "SELECT 1 FROM default.spans LIMIT 1 FORMAT TSV"; then
+  die 1 'read-only spans query was denied'
+fi
+if ! run_clickhouse_query "$ch_ro_config_path" \
+  "SELECT 1 FROM default.spans_v0 LIMIT 1 FORMAT TSV"; then
+  die 1 'read-only spans_v0 query was denied'
+fi
+printf '%s\n' 'clickhouse_readonly=verified objects=default.spans,default.spans_v0'
+
+# Update only the two protected Compose values after both remote writes have
+# passed their postconditions. The pre-change file remains available for
+# rollback and audit.
+printf 'CLICKHOUSE_RO_USER=%s\nCLICKHOUSE_RO_PASSWORD=%s\n' \
+  "$ro_user" "$clickhouse_ro_password" >"$env_fragment"
+chmod 600 "$env_fragment"
+env_mutation_attempted=true
+python3 - "$env_file" "$env_fragment" <<'PY'
+import os
+import pathlib
+import tempfile
+import sys
+
+env_path = pathlib.Path(sys.argv[1])
+fragment_path = pathlib.Path(sys.argv[2])
+replacement = {}
+for line in fragment_path.read_text().splitlines():
+    key, separator, value = line.partition("=")
+    if separator:
+        replacement[key] = value
+lines = env_path.read_text().splitlines()
+seen = set()
+updated = []
+for line in lines:
+    key, separator, _ = line.partition("=")
+    if separator and key in replacement:
+        updated.append(f"{key}={replacement[key]}")
+        seen.add(key)
+    else:
+        updated.append(line)
+for key, value in replacement.items():
+    if key not in seen:
+        updated.append(f"{key}={value}")
+fd, temporary = tempfile.mkstemp(prefix=".env.query-provision.", dir=env_path.parent, text=True)
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(updated) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, env_path)
+finally:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+PY
+chmod 600 "$env_file"
+chown root:root "$env_file"
+
+printf 'query_key_file=installed mode=0600 user=%s clickhouse_env=updated\n' "$query_key_file"
+printf 'container_identity=%s image_id=%s\n' \
+  "$ch_container" "$(podman inspect --format '{{.Image}}' "$ch_container")"
+printf 'rollback_env_backup=%s\n' "$env_backup"
+printf 'rollback_key_backup=%s\n' "$key_backup"
+printf 'rollback_db_backup=%s\n' "$db_backup_sql"
+printf '%s\n' 'No service restart was performed; recreate only the reviewed app-server/frontend services after inspecting the protected .env diff.'

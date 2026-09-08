@@ -128,6 +128,61 @@ statement rolls back the replacement, preserving the previous key. This does
 not coordinate a key rotation with a running Collector: recreate the appropriate
 services using the approved rotation procedure and verify ingestion afterwards.
 
+### Provision a read-only query account
+
+The checked-in `deploy/laminar/provision-query-readonly.sh` is the reviewed
+procedure for the separate operator query path. Before running it, confirm the
+deployment directory, Compose project, Laminar PostgreSQL and ClickHouse
+container names, and the configured `LAMINAR_PROJECT_ID` against the same live
+stack. Run it only as root with the explicit approval guard:
+
+```bash
+cd /opt/ai-agent-observability/deploy
+sudo env OBSERVABILITY_QUERY_PROVISION_APPROVED=true \
+  ./laminar/provision-query-readonly.sh
+```
+
+The helper performs a deployed schema preflight, preserving the existing
+Collector `is_ingest_only=true` project key row, then creates an operator key
+and a ClickHouse user with `readonly = 1`, bounded execution time, memory,
+rows, bytes, and threads. It grants `SELECT` only on `default.spans` and
+`default.spans_v0`, verifies those grants and both queries, writes the new
+operator key to a mode-0600 root-owned file, and updates only the two
+read-only ClickHouse values in `.env`. A legacy `CLICKHOUSE_RO_USER=lmnr`
+writer alias is admitted through live preflight and migrated to
+`lmnr_query_ro_<nonce>`; an already existing target account is refused.
+Credentials stay in protected files or stdin; they are not passed as
+command-line values.
+The helper does not restart the stack.
+
+Before any persistent write, the helper backs up `.env`, the existing operator
+key file, and the scoped PostgreSQL operator row. It installs the new key before
+the database commit. The PostgreSQL backup reads the restore SQL and the exact
+row ID/digest in one repeatable-read transaction while locking the project and
+scoped operator row. The replacement preassigns its row UUID and takes the same
+project-first lock order, so a changed row fails the compare-and-swap check
+without being deleted. If the PostgreSQL client fails after sending the
+transaction, the outcome is marked unknown and rollback reconciles the
+preassigned candidate by its exact ID and expected fields: an absent candidate
+skips exact row compensation while the overall commit outcome remains unknown,
+an exact match is restored, and a mismatch retains the row and exits 70 for
+manual review. If reconciliation or compensation cannot complete, the
+candidate key and owner-only reconciliation evidence remain on disk with the
+printed paths.
+Rollback then compensates the PostgreSQL row, ClickHouse account, key file, and
+`.env` in a fixed order when the outcome is known or has been reconciled. The
+helper prints the sanitized container identity and image ID plus root-only
+backup paths. Keep those backups until the query consumer has been checked; if
+compensation reports an incomplete rollback, stop and reconcile using the
+printed paths and the same project/container identities. When ClickHouse
+ownership cannot be verified by the staged user UUID and password, the helper
+preserves a mode-0600 ownership record and read-only password config and exits
+70; it never removes the possibly foreign account. Authorized root operators
+must serialize this procedure with other ClickHouse account administration.
+The UUID check and name-based DROP are not an atomic ClickHouse primitive.
+Record the exact container and image identity with any live evidence, and
+classify a failed query or backend check as unverified.
+
 - Image pull/build failure: build evidence is unavailable; existing running
   services are not changed by the failed build.
 - Database or search failure: health and end-to-end evidence are unavailable;

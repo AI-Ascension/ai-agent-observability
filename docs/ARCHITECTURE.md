@@ -73,8 +73,13 @@ Agents should normally target the Collector:
 
 ```text
 OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:14318
-OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_EXPORTER_OTLP_PROTOCOL=http/json
 ```
+
+The runtime-v3 harness uses the explicit `otlp-http-json-v1` profile: bounded
+OTLP/HTTP JSON requests to `/v1/traces` with `Content-Type: application/json`.
+The Collector may continue to accept protobuf and gRPC from other producers;
+those deployment inputs are separate from the runtime-v3 contract.
 
 The Collector uses OTLP/HTTP for both downstreams. MLflow receives the
 `x-mlflow-experiment-id` header and Laminar receives the bearer project key.
