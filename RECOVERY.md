@@ -19,7 +19,10 @@ The corrected source now includes:
   duplicate, and loop validation;
 - dependency fixtures covering direct A, CNAME, unrelated, duplicate, question-mismatch, and loop answers;
 - `deploy/install-otel-health-probe.sh`, a source/config/image/mount/digest guarded installer with
-  fresh backup verification, explicit approval/quiescence markers, single-service recreation, and rollback.
+  fresh backup verification, explicit approval/quiescence proof, single-service recreation, expanded
+  runtime identity verification, independent rollback budget, and rollback compensation.
+- `tests/otel-installer-guards.sh`, fake-engine fixtures for read-only preflight, env-file forwarding,
+  bounded engine output, image-build failure, and verified rollback.
 
 Validation is recorded in the handoff below and is source/build evidence only. No host mutation,
 image build, service recreation, publication, or live health claim is made by this recovery lane.
@@ -30,9 +33,10 @@ Refresh these values after any further source edit:
 
 ```text
 deploy/otel-health-probe.c  bbf0f19860233b2bee2e64dfab5a2e4c5a44a9d61eb1a1cbd01d83c3c7be55ea
-tests/otel-health-probe.sh  63f25a03b0423d767566dabe6d379277a8f1da1b77ad716d23475c68d32e33fc
-deploy/install-otel-health-probe.sh  e57cd64cdece66d7096270a5e05cf1c924db9315f7eeb01ef3546ab3bcda26ef
-docs/OTEL_HEALTH_PROBE.md  2e4cd0460453bfc0626c89f129051108e63ee938472ee694a7cb5f59fd441d36
+tests/otel-health-probe.sh  021d6dd931b37272f3b6493abb951277d5b7bb5f80cd52c983a5e1c1e9d75ea5
+tests/otel-installer-guards.sh  15959c721c55a30b8493066f9fd6f8ea65a1201fca414903fd61cb800e31edce
+deploy/install-otel-health-probe.sh  528f0b61f07505a52dfc18e0540ddd7c69be648bf62a48a5c02d222f3f07c756
+docs/OTEL_HEALTH_PROBE.md  a2dccaa0cab50ca1df5c0a67dbc31348d02a7dd78f26a2a96a04acf034b91b61
 deploy/compose.yaml  d0054cecb13316b30fc45acced195f097566e6fbfd94518baa0ed37dc6931c67
 deploy/otel-collector.yaml  bfb0615bfab74b6ed39bbd3b073f90325a657145297cc9149af5d8fa48e94f80
 deploy/Dockerfile.otel  354985e65f590a9602768b6469d526129effe3b85e4ea8cd9a4ebd718403b991

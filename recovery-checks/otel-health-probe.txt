@@ -5,12 +5,13 @@ Checkout: recovery/otel-corrected-health-probe-20260908
 Commands:
   bash -n deploy/install-otel-health-probe.sh
   bash -n tests/otel-health-probe.sh
+  bash -n tests/otel-installer-guards.sh
   gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -static -s -o /tmp/otel-probe-final deploy/otel-health-probe.c
   file /tmp/otel-probe-final
   bash tests/otel-health-probe.sh
 
 Result:
-  PASS; static ELF, direct health JSON/HTTP/timeout fixtures, direct and
+  PASS; fake-engine installer preflight/build-failure rollback fixtures, static ELF, direct health JSON/HTTP/timeout fixtures, direct and
   compressed DNS A/CNAME fixtures, answer ownership/duplicate/question/loop
   rejection, active exporter scope/unknown rejection, and one shared deadline.
 
@@ -19,5 +20,6 @@ Additional review:
   malformed/deep/random JSON HTTP fixtures without a sanitizer report.
 
 Installer:
-  bash syntax and static destructive-path guards pass. It was not executed;
-  no engine, host, image, volume, service, or publication mutation was made.
+  bash syntax, fake-engine guarded installer fixtures, and static destructive-path guards pass.
+  The fixture engine was local and synthetic; no host, image, volume, service, or publication
+  mutation was made.

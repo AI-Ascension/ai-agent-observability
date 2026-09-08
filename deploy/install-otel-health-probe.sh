@@ -22,16 +22,20 @@ recreate_timeout_seconds="${OTEL_RECREATE_TIMEOUT_SECONDS:-180}"
 inspect_timeout_seconds="${OTEL_INSPECT_TIMEOUT_SECONDS:-15}"
 ready_timeout_seconds="${OTEL_READY_TIMEOUT_SECONDS:-240}"
 install_timeout_seconds="${OTEL_INSTALL_TIMEOUT_SECONDS:-1200}"
+rollback_timeout_seconds="${OTEL_ROLLBACK_TIMEOUT_SECONDS:-600}"
 max_capture_bytes="${OTEL_MAX_CAPTURE_BYTES:-4194304}"
 install_mutated=false
+rollback_active=false
 backup_dir=""
 previous_image_id=""
 previous_config_sha256=""
 previous_env_sha256=""
 previous_full_env_sha256=""
+previous_runtime_sha256=""
 previous_health=""
 image_ref=""
 install_deadline=0
+rollback_deadline=0
 
 case "$mode" in
   --check|--install) ;;
@@ -80,56 +84,79 @@ remaining_timeout() {
   (( requested < remaining )) && printf '%s\n' "$requested" || printf '%s\n' "$remaining"
 }
 
+rollback_remaining_timeout() {
+  local requested="$1"
+  local remaining=$((rollback_deadline - SECONDS))
+  (( remaining > 0 )) || return 1
+  (( requested < remaining )) && printf '%s\n' "$requested" || printf '%s\n' "$remaining"
+}
+
+operation_timeout() {
+  if [[ "$rollback_active" == true ]]; then
+    rollback_remaining_timeout "$1"
+  else
+    remaining_timeout "$1"
+  fi
+}
+
 # Keep engine operations bounded and distinguish timeout from a normal command
-# failure. Captured output is stdout only so diagnostics cannot echo secrets.
+# failure. Stdout and stderr are capped separately; only stdout is returned so
+# engine diagnostics cannot contaminate identity values or echo secrets.
 bounded_capture() {
   local label="$1"
   local requested="$2"
   shift 2
-  local output status seconds file_limit bytes
+  local output error status seconds file_limit bytes error_bytes
   output="$(mktemp)"
-  seconds="$(remaining_timeout "$requested")"
+  error="$(mktemp)"
+  if ! seconds="$(operation_timeout "$requested")"; then
+    rm -f -- "$output" "$error"
+    printf 'otel installer: %s exceeded its aggregate timeout budget\n' "$label" >&2
+    return 124
+  fi
   file_limit=$(( (max_capture_bytes + 511) / 512 ))
   # No --foreground means timeout owns a process group and can terminate
-  # grandchildren. ulimit caps inherited stdout before the temp file grows.
+  # grandchildren. ulimit caps inherited stdout and stderr before either temp
+  # file grows.
   if timeout --kill-after=5s "${seconds}s" \
-      bash -c 'ulimit -f "$1" || exit 125; shift; exec "$@"' _ "$file_limit" "$@" >"$output"; then
+      bash -c 'ulimit -f "$1" || exit 125; shift; exec "$@"' _ "$file_limit" "$@" >"$output" 2>"$error"; then
     bytes="$(wc -c <"$output")"
-    if (( bytes > max_capture_bytes )); then
-      rm -f -- "$output"
-      fail "$label exceeded the ${max_capture_bytes}-byte capture limit"
+    error_bytes="$(wc -c <"$error")"
+    if (( bytes > max_capture_bytes || error_bytes > max_capture_bytes )); then
+      rm -f -- "$output" "$error"
+      printf 'otel installer: %s exceeded the %s-byte capture limit\n' "$label" "$max_capture_bytes" >&2
+      return 125
     fi
     cat -- "$output"
-    rm -f -- "$output"
+    rm -f -- "$output" "$error"
     return 0
   else
     status=$?
   fi
-  rm -f -- "$output"
+  rm -f -- "$output" "$error"
   if [[ "$status" == 124 || "$status" == 137 ]]; then
-    fail "$label timed out after ${seconds}s"
+    printf 'otel installer: %s timed out after %ss\n' "$label" "$seconds" >&2
+    return 124
   fi
   if [[ "$status" == 125 || "$status" == 153 ]]; then
-    fail "$label exceeded the ${max_capture_bytes}-byte capture limit"
+    printf 'otel installer: %s exceeded the %s-byte capture limit\n' "$label" "$max_capture_bytes" >&2
+    return 125
   fi
-  fail "$label failed (exit $status)"
+  printf 'otel installer: %s failed (exit %s)\n' "$label" "$status" >&2
+  return "$status"
 }
 
 bounded_run() {
   local label="$1"
   local requested="$2"
   shift 2
-  local status seconds
-  seconds="$(remaining_timeout "$requested")"
-  if timeout --kill-after=5s "${seconds}s" "$@"; then
+  local status
+  if bounded_capture "$label" "$requested" "$@" >/dev/null; then
     return 0
   else
     status=$?
   fi
-  if [[ "$status" == 124 || "$status" == 137 ]]; then
-    fail "$label timed out after ${seconds}s"
-  fi
-  fail "$label failed (exit $status)"
+  return "$status"
 }
 
 case "${OTEL_ENGINE:-podman}" in
@@ -154,6 +181,7 @@ command -v timeout >/dev/null 2>&1 || fail 'timeout is required'
 command -v awk >/dev/null 2>&1 || fail 'awk is required'
 command -v python3 >/dev/null 2>&1 || fail 'python3 is required'
 command -v readlink >/dev/null 2>&1 || fail 'readlink is required'
+command -v jq >/dev/null 2>&1 || fail 'jq is required'
 [[ -f "$compose_file" && -f "$collector_config" && -f "$probe_source" && -f "$dockerfile" ]] || \
   fail 'deployment files are incomplete'
 [[ -f "$env_file" ]] || fail "missing environment file: $env_file"
@@ -162,6 +190,7 @@ require_positive_integer OTEL_RECREATE_TIMEOUT_SECONDS "$recreate_timeout_second
 require_positive_integer OTEL_INSPECT_TIMEOUT_SECONDS "$inspect_timeout_seconds"
 require_positive_integer OTEL_READY_TIMEOUT_SECONDS "$ready_timeout_seconds"
 require_positive_integer OTEL_INSTALL_TIMEOUT_SECONDS "$install_timeout_seconds"
+require_positive_integer OTEL_ROLLBACK_TIMEOUT_SECONDS "$rollback_timeout_seconds"
 require_positive_integer OTEL_MAX_CAPTURE_BYTES "$max_capture_bytes"
 (( max_capture_bytes <= 16777216 )) || fail 'OTEL_MAX_CAPTURE_BYTES exceeds 16777216 bytes'
 (( max_capture_bytes >= 512 )) || fail 'OTEL_MAX_CAPTURE_BYTES is too small'
@@ -361,7 +390,7 @@ active_labels="$(bounded_capture 'active Collector label inspect' "$inspect_time
   "${engine[@]}" inspect --format '{{printf "%s\t%s" (index .Config.Labels "com.docker.compose.project") (index .Config.Labels "com.docker.compose.service")}}' "$container_name")"
 [[ "$active_labels" == "$project_name"$'\t'otel-collector ]] || \
   fail 'active Collector Compose project or service identity does not match the reviewed target'
-container_inspect="$(bounded_capture 'active Collector container inspect' "$inspect_timeout_seconds" \
+container_inspect_raw="$(bounded_capture 'active Collector container inspect' "$inspect_timeout_seconds" \
   "${engine[@]}" inspect "$container_name")"
 container_inspect="$(python3 -c '
 import json
@@ -389,7 +418,7 @@ for row in rows:
     })
 json.dump(safe, sys.stdout, sort_keys=True)
 sys.stdout.write("\n")
-' <<<"$container_inspect")" || fail 'active Collector inspect could not be sanitized'
+' <<<"$container_inspect_raw")" || fail 'active Collector inspect could not be sanitized'
 active_mounts="$(bounded_capture 'active Collector mount inspect' "$inspect_timeout_seconds" \
   "${engine[@]}" inspect --format '{{range .Mounts}}{{printf "%s\t%s\t%s\t%t\t%s\n" .Type .Source .Destination .RW .Mode}}{{end}}' "$container_name")"
 expected_mount_source="$(readlink -f "$collector_config")"
@@ -427,6 +456,139 @@ env_identity_all() {
   printf '%s\n' "$env_text" | LC_ALL=C sort | sha256sum | awk '{print $1}'
 }
 active_full_env_sha256="$(env_identity_all "$active_env_text")"
+
+runtime_identity() {
+  local inspect_json="$1"
+  # Keep the complete runtime contract secret-safe and stable across a
+  # recreation: dynamic IP addresses are excluded, while every requested
+  # command, port, network, device, and resource setting is compared.
+  jq -cS '
+    .[0] as $c |
+    {
+      config: {
+        entrypoint: ($c.Config.Entrypoint // []),
+        cmd: ($c.Config.Cmd // []),
+        exposed_ports: (($c.Config.ExposedPorts // {}) | to_entries | sort_by(.key)),
+        user: ($c.Config.User // ""),
+        working_dir: ($c.Config.WorkingDir // ""),
+        stop_signal: ($c.Config.StopSignal // "")
+      },
+      host: {
+        port_bindings: (($c.HostConfig.PortBindings // {}) | to_entries | sort_by(.key) |
+          map({port:.key, bindings:(.value // [] | sort_by(.HostIp,.HostPort) |
+            map({host_ip:(.HostIp // ""), host_port:(.HostPort // "")}))})),
+        publish_all_ports: ($c.HostConfig.PublishAllPorts // false),
+        network_mode: ($c.HostConfig.NetworkMode // ""),
+        extra_hosts: (($c.HostConfig.ExtraHosts // []) | sort),
+        devices: (($c.HostConfig.Devices // []) | map({host:(.PathOnHost // ""),container:(.PathInContainer // ""),permissions:(.CgroupPermissions // "")}) | sort_by(.host,.container,.permissions)),
+        device_requests: (($c.HostConfig.DeviceRequests // []) | map({driver:(.Driver // ""),count:(.Count // 0),device_ids:(.DeviceIDs // [] | sort),capabilities:(.Capabilities // [] | map(sort) | sort)}) | sort_by(.driver,.count,.device_ids)),
+        resources: {
+          blkio_weight: ($c.HostConfig.BlkioWeight // 0),
+          cpu_count: ($c.HostConfig.CpuCount // 0),
+          cpu_percent: ($c.HostConfig.CpuPercent // 0),
+          cpu_period: ($c.HostConfig.CpuPeriod // 0),
+          cpu_quota: ($c.HostConfig.CpuQuota // 0),
+          cpu_realtime_period: ($c.HostConfig.CpuRealtimePeriod // 0),
+          cpu_realtime_runtime: ($c.HostConfig.CpuRealtimeRuntime // 0),
+          cpu_shares: ($c.HostConfig.CpuShares // 0),
+          cpuset_cpus: ($c.HostConfig.CpusetCpus // ""),
+          cpuset_mems: ($c.HostConfig.CpusetMems // ""),
+          nano_cpus: ($c.HostConfig.NanoCpus // 0),
+          memory: ($c.HostConfig.Memory // 0),
+          memory_reservation: ($c.HostConfig.MemoryReservation // 0),
+          memory_swap: ($c.HostConfig.MemorySwap // 0),
+          memory_swappiness: ($c.HostConfig.MemorySwappiness // 0),
+          oom_kill_disable: ($c.HostConfig.OomKillDisable // false),
+          pids_limit: ($c.HostConfig.PidsLimit // 0),
+          ulimits: (($c.HostConfig.Ulimits // []) | map({name:(.Name // ""),soft:(.Soft // 0),hard:(.Hard // 0)}) | sort_by(.name))
+        },
+        readonly_rootfs: ($c.HostConfig.ReadonlyRootfs // false),
+        security_opt: (($c.HostConfig.SecurityOpt // []) | sort),
+        cap_add: (($c.HostConfig.CapAdd // []) | sort),
+        cap_drop: (($c.HostConfig.CapDrop // []) | sort),
+        privileged: ($c.HostConfig.Privileged // false),
+        tmpfs: (($c.HostConfig.Tmpfs // {}) | to_entries | sort_by(.key)),
+        restart_policy: ($c.HostConfig.RestartPolicy // {})
+      },
+      networks: (($c.NetworkSettings.Networks // {}) | to_entries |
+        map({name:.key, aliases:(.value.Aliases // [] | sort)}) | sort_by(.name)),
+      mounts: (($c.Mounts // []) | map({type:(.Type // ""),source:(.Source // ""),destination:(.Destination // ""),mode:(.Mode // ""),rw:(.RW // false)}) | sort_by(.destination,.source,.type))
+    }
+  ' <<<"$inspect_json"
+}
+
+active_container_id="$(jq -r '.[0].Id // ""' <<<"$container_inspect_raw")"
+[[ -n "$active_container_id" ]] || fail 'active Collector container identity is unavailable'
+active_runtime_sha256="$(runtime_identity "$container_inspect_raw" | sha256sum | awk '{print $1}')"
+[[ "$active_runtime_sha256" =~ ^[0-9a-f]{64}$ ]] || fail 'active Collector runtime identity is unavailable'
+
+verify_quiescence_proof() {
+  local proof="$1"
+  local expected_id="$2"
+  [[ -f "$proof" ]] || fail 'OTEL_QUIESCE_PROOF must name a fresh proof file'
+  python3 - "$proof" "$project_name" "$container_name" "$expected_id" \
+    "${OTEL_QUIESCE_MAX_AGE_SECONDS:-120}" <<'PY'
+import datetime as dt
+import json
+import sys
+from pathlib import Path
+
+path, project, container, expected_id, max_age_text = sys.argv[1:]
+try:
+    max_age = int(max_age_text)
+except ValueError:
+    raise SystemExit("OTEL_QUIESCE_MAX_AGE_SECONDS must be an integer")
+if max_age < 5 or max_age > 3600:
+    raise SystemExit("OTEL_QUIESCE_MAX_AGE_SECONDS is outside 5..3600")
+try:
+    proof = json.loads(Path(path).read_text(encoding="utf-8"))
+except Exception as exc:
+    raise SystemExit(f"quiescence proof is not valid JSON: {exc}")
+if proof.get("schema") != "otel-quiescence-proof-v1":
+    raise SystemExit("quiescence proof schema is invalid")
+if proof.get("verified") is not True or proof.get("approved") is not True:
+    raise SystemExit("quiescence proof is not verified and approved")
+if proof.get("project") != project or proof.get("service") != "otel-collector":
+    raise SystemExit("quiescence proof target does not match the reviewed service")
+if proof.get("container") != container:
+    raise SystemExit("quiescence proof container name does not match the reviewed target")
+if proof.get("container_id") != expected_id:
+    raise SystemExit("quiescence proof container identity does not match the active container")
+observations = proof.get("observations")
+if not isinstance(observations, list) or len(observations) < 2:
+    raise SystemExit("quiescence proof needs two consecutive live observations")
+parsed = []
+for observation in observations:
+    if not isinstance(observation, dict):
+        raise SystemExit("quiescence observation is not an object")
+    if observation.get("source") != "live-collector-metrics+producer-drain":
+        raise SystemExit("quiescence observation source is not the reviewed live source")
+    if observation.get("active_requests") != 0 or observation.get("queue_depth") != 0:
+        raise SystemExit("quiescence observation reports active requests or queued spans")
+    if observation.get("producers_drained") is not True:
+        raise SystemExit("quiescence observation does not prove producer drain")
+    try:
+        stamp = dt.datetime.fromisoformat(str(observation["observed_at_utc"]).replace("Z", "+00:00"))
+    except Exception as exc:
+        raise SystemExit(f"quiescence observation timestamp is invalid: {exc}")
+    if stamp.tzinfo is None:
+        raise SystemExit("quiescence observation timestamp has no timezone")
+    parsed.append(stamp.astimezone(dt.timezone.utc))
+if parsed != sorted(parsed) or (parsed[-1] - parsed[0]).total_seconds() < 5:
+    raise SystemExit("quiescence observations are not a five-second consecutive window")
+now = dt.datetime.now(dt.timezone.utc)
+age = (now - parsed[-1]).total_seconds()
+if age < -5 or age > max_age:
+    raise SystemExit("quiescence observation is stale or from the future")
+try:
+    top_stamp = dt.datetime.fromisoformat(str(proof["observed_at_utc"]).replace("Z", "+00:00"))
+except Exception as exc:
+    raise SystemExit(f"quiescence proof timestamp is invalid: {exc}")
+if abs((top_stamp.astimezone(dt.timezone.utc) - parsed[-1]).total_seconds()) > 1:
+    raise SystemExit("quiescence proof timestamp does not match its latest observation")
+PY
+}
+
 active_health="$(bounded_capture 'active Collector health inspect' "$inspect_timeout_seconds" \
   "${engine[@]}" inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$container_name")"
 [[ "$active_health" == healthy ]] || fail "active Collector is not healthy (status=$active_health)"
@@ -440,6 +602,7 @@ fi
   fail 'set OTEL_HEALTH_PROBE_INSTALL_APPROVED=true for installation'
 [[ "${OTEL_QUIESCE_APPROVED:-}" == true ]] || \
   fail 'set OTEL_QUIESCE_APPROVED=true after producers are quiesced'
+need_value OTEL_QUIESCE_PROOF
 need_value OTEL_EXPECTED_BUILT_IMAGE_ID
 
 command -v flock >/dev/null 2>&1 || fail 'flock is required'
@@ -472,6 +635,7 @@ printf '%s\n' "$active_image_id" >"$backup_dir/previous-image-id"
 printf '%s\n' "$expected_config_sha256" >"$backup_dir/previous-config-sha256"
 printf '%s\n' "$active_env_sha256" >"$backup_dir/previous-env-sha256"
 printf '%s\n' "$active_full_env_sha256" >"$backup_dir/previous-full-env-sha256"
+printf '%s\n' "$active_runtime_sha256" >"$backup_dir/previous-runtime-sha256"
 printf '%s\n' "$active_health" >"$backup_dir/previous-health"
 printf '%s\n' "$image_ref" >"$backup_dir/previous-image-ref"
 sha256sum "$backup_dir"/* >"$backup_dir/SHA256SUMS"
@@ -483,18 +647,20 @@ verify_runtime_state() {
   local expected_env_digest="$3"
   local expected_full_env_digest="$4"
   local expected_health="$5"
-  local image_id mounts env_text health labels
+  local expected_runtime="$6"
+  local inspect_json image_id mounts env_text health labels runtime_sha256 cp_seconds
   local mount_count=0
   local temp
 
-  image_id="$(timeout --kill-after=5s "${inspect_timeout_seconds}s" \
-    "${engine[@]}" inspect --format '{{.Image}}' "$container_name" 2>/dev/null)" || return 1
+  inspect_json="$(bounded_capture 'runtime identity inspect' "$inspect_timeout_seconds" \
+    "${engine[@]}" inspect "$container_name")" || return 1
+  image_id="$(jq -r '.[0].Image // ""' <<<"$inspect_json")" || return 1
   [[ "$image_id" == "$expected_image" ]] || return 1
-  labels="$(timeout --kill-after=5s "${inspect_timeout_seconds}s" \
-    "${engine[@]}" inspect --format '{{printf "%s\t%s" (index .Config.Labels "com.docker.compose.project") (index .Config.Labels "com.docker.compose.service")}}' "$container_name" 2>/dev/null)" || return 1
+  labels="$(jq -r '.[0].Config.Labels as $l | (($l["com.docker.compose.project"] // "") + "\t" + ($l["com.docker.compose.service"] // ""))' <<<"$inspect_json")" || return 1
   [[ "$labels" == "$project_name"$'\t'otel-collector ]] || return 1
-  mounts="$(timeout --kill-after=5s "${inspect_timeout_seconds}s" \
-    "${engine[@]}" inspect --format '{{range .Mounts}}{{printf "%s\t%s\t%s\t%t\t%s\n" .Type .Source .Destination .RW .Mode}}{{end}}' "$container_name" 2>/dev/null)" || return 1
+  runtime_sha256="$(runtime_identity "$inspect_json" | sha256sum | awk '{print $1}')" || return 1
+  [[ "$runtime_sha256" == "$expected_runtime" ]] || return 1
+  mounts="$(jq -r '.[0].Mounts[]? | [.Type,.Source,.Destination,.RW,.Mode] | @tsv' <<<"$inspect_json")" || return 1
   while IFS=$'\t' read -r mount_type mount_source mount_target mount_rw mount_mode; do
     [[ -n "${mount_target:-}" ]] || continue
     if [[ "$mount_target" == "$mount_destination" ]]; then
@@ -505,7 +671,11 @@ verify_runtime_state() {
   done <<<"$mounts"
   [[ "$mount_count" == 1 ]] || return 1
   temp="$(mktemp -d)" || return 1
-  if ! timeout --kill-after=5s "${inspect_timeout_seconds}s" \
+  cp_seconds="$(operation_timeout "$inspect_timeout_seconds")" || {
+    rm -rf -- "$temp"
+    return 1
+  }
+  if ! timeout --kill-after=5s "${cp_seconds}s" \
       "${engine[@]}" cp "$container_name:$mount_destination" "$temp/config.yaml" >/dev/null 2>&1; then
     rm -rf -- "$temp"
     return 1
@@ -515,13 +685,11 @@ verify_runtime_state() {
     return 1
   fi
   rm -rf -- "$temp"
-  env_text="$(timeout --kill-after=5s "${inspect_timeout_seconds}s" \
-    "${engine[@]}" inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container_name" 2>/dev/null)" || return 1
+  env_text="$(jq -r '.[0].Config.Env[]?' <<<"$inspect_json")" || return 1
   verify_env_text "$env_text" || return 1
   [[ "$(env_identity "$env_text")" == "$expected_env_digest" ]] || return 1
   [[ "$(env_identity_all "$env_text")" == "$expected_full_env_digest" ]] || return 1
-  health="$(timeout --kill-after=5s "${inspect_timeout_seconds}s" \
-    "${engine[@]}" inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$container_name" 2>/dev/null)" || return 1
+  health="$(jq -r '.[0].State.Health.Status // "missing"' <<<"$inspect_json")" || return 1
   [[ "$health" == "$expected_health" ]] || return 1
   return 0
 }
@@ -534,6 +702,8 @@ rollback() {
 
   trap - EXIT RETURN
   set +e
+  rollback_active=true
+  rollback_deadline=$((SECONDS + rollback_timeout_seconds))
   if [[ -n "$backup_dir" ]]; then
     rollback_log="$backup_dir/rollback.log"
     : >"$rollback_log"
@@ -541,10 +711,15 @@ rollback() {
   fi
   rollback_phase() {
     local label="$1"
-    local seconds="$2"
+    local requested="$2"
     shift 2
-    local status
+    local status seconds
 
+    if ! seconds="$(rollback_remaining_timeout "$requested")"; then
+      phase_status='timeout:aggregate'
+      [[ -z "$rollback_log" ]] || printf 'phase=%s result=%s\n' "$label" "$phase_status" >>"$rollback_log"
+      return 124
+    fi
     if timeout --kill-after=5s "${seconds}s" "$@" >/dev/null 2>&1; then
       phase_status=ok
       status=0
@@ -565,9 +740,10 @@ rollback() {
       rollback_ok=false
     fi
     if [[ "$rollback_ok" == true ]]; then
-      restored_image_id="$(timeout --kill-after=5s "${inspect_timeout_seconds}s" \
-        "${engine[@]}" image inspect --format '{{.Id}}' "$image_ref" 2>/dev/null)"
-      if [[ "$restored_image_id" == "$active_image_id" ]]; then
+      if restored_inspect_seconds="$(rollback_remaining_timeout "$inspect_timeout_seconds")" && \
+         restored_image_id="$(timeout --kill-after=5s "${restored_inspect_seconds}s" \
+           "${engine[@]}" image inspect --format '{{.Id}}' "$image_ref" 2>/dev/null)" && \
+         [[ "$restored_image_id" == "$active_image_id" ]]; then
         [[ -z "$rollback_log" ]] || printf 'phase=verify-retag result=ok\n' >>"$rollback_log"
       else
         [[ -z "$rollback_log" ]] || printf 'phase=verify-retag result=failed:image-id-mismatch\n' >>"$rollback_log"
@@ -584,13 +760,14 @@ rollback() {
       rollback_last_health=missing
       # The previous image has a 30s health start period. Wait through that
       # bounded grace before deciding that compensation failed.
-      while (( rollback_elapsed <= ready_timeout_seconds )); do
-        if rollback_last_health="$(timeout --kill-after=5s "${inspect_timeout_seconds}s" \
+      while :; do
+        if rollback_health_seconds="$(rollback_remaining_timeout "$inspect_timeout_seconds")" && \
+           rollback_last_health="$(timeout --kill-after=5s "${rollback_health_seconds}s" \
             "${engine[@]}" inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
             "$container_name" 2>/dev/null)"; then
           if [[ "$rollback_last_health" == healthy ]]; then
             if verify_runtime_state "$active_image_id" "$expected_config_sha256" \
-                "$active_env_sha256" "$active_full_env_sha256" healthy; then
+                "$active_env_sha256" "$active_full_env_sha256" healthy "$active_runtime_sha256"; then
               rollback_health_verified=true
               break
             fi
@@ -600,8 +777,11 @@ rollback() {
         else
           break
         fi
-        sleep 5
-        (( rollback_elapsed += 5 ))
+        if ! rollback_sleep_seconds="$(rollback_remaining_timeout 5)" || \
+           ! timeout --kill-after=5s "${rollback_sleep_seconds}s" sleep "$rollback_sleep_seconds" >/dev/null 2>&1; then
+          break
+        fi
+        (( rollback_elapsed += rollback_sleep_seconds ))
       done
     fi
     if [[ "$rollback_health_verified" != true ]]; then
@@ -628,17 +808,21 @@ rollback() {
 }
 trap 'status=$?; if [[ $status -ne 0 ]]; then rollback "$status"; fi' EXIT
 
+# The image build can replace the Compose image tag or otherwise mutate the
+# engine state before the service is recreated, so compensation covers the
+# build itself as well as the later service replacement.
 install_mutated=true
-bounded_run 'Collector image build' "$(remaining_timeout "$build_timeout_seconds")" \
+bounded_run 'Collector image build' "$build_timeout_seconds" \
   "${compose[@]}" -p "$project_name" -f "$compose_file" build otel-collector
-built_image_id="$(bounded_capture 'built Collector image inspect' "$(remaining_timeout "$inspect_timeout_seconds")" \
+built_image_id="$(bounded_capture 'built Collector image inspect' "$inspect_timeout_seconds" \
   "${engine[@]}" image inspect --format '{{.Id}}' "$image_ref")"
 [[ "$built_image_id" == "$OTEL_EXPECTED_BUILT_IMAGE_ID" ]] || \
   fail 'built image identity does not match OTEL_EXPECTED_BUILT_IMAGE_ID'
+verify_quiescence_proof "$OTEL_QUIESCE_PROOF" "$active_container_id"
 
 # Recreate exactly one service after the owner has recorded quiescence. No
 # project-wide down, volume deletion, or dependency recreation is allowed.
-bounded_run 'Collector service recreation' "$(remaining_timeout "$recreate_timeout_seconds")" \
+bounded_run 'Collector service recreation' "$recreate_timeout_seconds" \
   "${compose[@]}" -p "$project_name" -f "$compose_file" up -d --no-build --no-deps --force-recreate otel-collector
 last_health='missing'
 elapsed=0
@@ -655,14 +839,19 @@ while (( elapsed <= ready_timeout_seconds )); do
     fail "Collector health inspect failed (exit $status)"
   fi
   if [[ "$last_health" == healthy ]]; then
-    if verify_runtime_state "$built_image_id" "$expected_config_sha256" "$expected_env_sha256" "$active_full_env_sha256" healthy; then
+    if verify_runtime_state "$built_image_id" "$expected_config_sha256" "$expected_env_sha256" "$active_full_env_sha256" healthy "$active_runtime_sha256"; then
       trap - EXIT
       printf 'OTel Collector installed and identity-verified healthy; backup=%s image=%s\n' "$backup_dir" "$built_image_id"
       exit 0
     fi
     fail 'post-install identity verification failed'
   fi
-  (( elapsed += 5 ))
-  (( elapsed <= ready_timeout_seconds )) && sleep 5
+  sleep_seconds=5
+  (( ready_timeout_seconds - elapsed < sleep_seconds )) && sleep_seconds=$((ready_timeout_seconds - elapsed))
+  (( sleep_seconds > 0 )) || break
+  sleep_seconds="$(remaining_timeout "$sleep_seconds")"
+  timeout --kill-after=5s "${sleep_seconds}s" sleep "$sleep_seconds" >/dev/null 2>&1 || \
+    fail 'Collector readiness wait failed'
+  (( elapsed += sleep_seconds ))
 done
 fail "Collector remained $last_health for ${ready_timeout_seconds}s"

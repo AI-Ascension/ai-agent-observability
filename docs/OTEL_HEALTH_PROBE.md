@@ -55,20 +55,51 @@ record for another name cannot satisfy the check.
 preflight. Installation requires explicit source/config/Compose/Dockerfile
 and image identity hashes, a clean probe build input set,
 `OTEL_HEALTH_PROBE_INSTALL_APPROVED=true`, and an operator quiescence record
-through `OTEL_QUIESCE_APPROVED=true`. It compares the exact active traces
-exporter set, rendered Compose image reference, bind source/destination/RO
-mode, mounted config hash, and intended Collector environment before making a
-fresh verified backup. The complete pre-update environment is retained only as
-a digest and is required to match after recreation; the inspect backup removes
-environment values and command arguments. It then builds and verifies the
+through `OTEL_QUIESCE_APPROVED=true` plus a fresh `OTEL_QUIESCE_PROOF` JSON
+record. The record binds two live observations at least five seconds apart to
+the current Collector container and shows zero active requests, zero queued
+spans, and drained producers. It compares the exact active traces exporter set,
+rendered Compose image reference, bind source/destination/RO mode, mounted
+config hash, and intended Collector environment before making a fresh verified
+backup. The complete pre-update environment is retained only as a digest and is
+required to match after recreation; the inspect backup removes environment
+values and command arguments. The runtime identity digest also covers the
+command, entrypoint, exposed and published ports, network aliases, devices,
+resource limits, security settings, and mounts. It then builds and verifies the
 wrapper image, recreates only `otel-collector`, waits for its health state, and
 verifies the same identities afterward under one aggregate installation
 deadline (`OTEL_INSTALL_TIMEOUT_SECONDS`, 1200 seconds by default). If the
-guarded operation fails it retags the prior image and recreates the same
-service only when every bounded rollback step can be checked. Each rollback
+guarded operation fails, including during the image build, it retags the prior
+image and recreates the same service only when every bounded rollback step can
+be checked. Rollback has its own aggregate deadline
+(`OTEL_ROLLBACK_TIMEOUT_SECONDS`, 600 seconds by default) so a nearly
+exhausted install budget cannot make compensation unbounded. Each rollback
 phase records a status in a mode-0600 private log; otherwise it reports
 rollback as unknown and requires manual reconciliation. It never uses
 project-wide down, volume deletion, or image pruning.
+
+The quiescence handoff is an owner-produced file, for example:
+
+```json
+{
+  "schema": "otel-quiescence-proof-v1",
+  "verified": true,
+  "approved": true,
+  "project": "ai-agent-observability",
+  "service": "otel-collector",
+  "container": "ai-agent-observability-otel-collector",
+  "container_id": "<current-container-id>",
+  "observed_at_utc": "2026-09-08T20:00:05Z",
+  "observations": [
+    {"source":"live-collector-metrics+producer-drain","active_requests":0,"queue_depth":0,"producers_drained":true,"observed_at_utc":"2026-09-08T20:00:00Z"},
+    {"source":"live-collector-metrics+producer-drain","active_requests":0,"queue_depth":0,"producers_drained":true,"observed_at_utc":"2026-09-08T20:00:05Z"}
+  ]
+}
+```
+
+Pass its path as `OTEL_QUIESCE_PROOF`; the installer rejects stale records,
+identity mismatches, missing producer drain, and observations less than five
+seconds apart.
 
 The image and Compose healthcheck use a 30-second interval, five-second engine
 timeout, 30-second startup grace, and three retries. Podman 4.9.3 cannot add a

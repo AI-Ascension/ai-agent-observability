@@ -77,6 +77,7 @@ if grep -Eq 'compose.*down|down.*-v|volume prune|image prune' "$installer"; then
   printf '%s\n' 'the guarded OTel installer contains a destructive cleanup path' >&2
   exit 1
 fi
+"$repo_root/tests/otel-installer-guards.sh"
 
 start_fixture() {
   local mode="$1"
