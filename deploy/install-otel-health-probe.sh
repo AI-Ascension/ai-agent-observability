@@ -24,7 +24,10 @@ ready_timeout_seconds="${OTEL_READY_TIMEOUT_SECONDS:-240}"
 install_timeout_seconds="${OTEL_INSTALL_TIMEOUT_SECONDS:-1200}"
 rollback_timeout_seconds="${OTEL_ROLLBACK_TIMEOUT_SECONDS:-600}"
 max_capture_bytes="${OTEL_MAX_CAPTURE_BYTES:-4194304}"
-install_mutated=false
+quiesce_observation_seconds="${OTEL_QUIESCE_OBSERVATION_SECONDS:-5}"
+image_tag_mutated=false
+runtime_mutation_attempted=false
+runtime_mutation_may_have_changed=false
 rollback_active=false
 backup_dir=""
 previous_image_id=""
@@ -34,8 +37,11 @@ previous_full_env_sha256=""
 previous_runtime_sha256=""
 previous_health=""
 image_ref=""
+metrics_url=""
 install_deadline=0
 rollback_deadline=0
+runtime_container_id=""
+observed_runtime_container_id=""
 
 case "$mode" in
   --check|--install) ;;
@@ -192,8 +198,11 @@ require_positive_integer OTEL_READY_TIMEOUT_SECONDS "$ready_timeout_seconds"
 require_positive_integer OTEL_INSTALL_TIMEOUT_SECONDS "$install_timeout_seconds"
 require_positive_integer OTEL_ROLLBACK_TIMEOUT_SECONDS "$rollback_timeout_seconds"
 require_positive_integer OTEL_MAX_CAPTURE_BYTES "$max_capture_bytes"
+require_positive_integer OTEL_QUIESCE_OBSERVATION_SECONDS "$quiesce_observation_seconds"
 (( max_capture_bytes <= 16777216 )) || fail 'OTEL_MAX_CAPTURE_BYTES exceeds 16777216 bytes'
 (( max_capture_bytes >= 512 )) || fail 'OTEL_MAX_CAPTURE_BYTES is too small'
+(( quiesce_observation_seconds >= 5 && quiesce_observation_seconds <= 120 )) || \
+  fail 'OTEL_QUIESCE_OBSERVATION_SECONDS must be between 5 and 120 seconds'
 # The aggregate deadline begins before source, runtime, and backup preflight.
 # Every later bounded operation uses the remaining budget as its upper bound.
 install_deadline=$((SECONDS + install_timeout_seconds))
@@ -215,6 +224,11 @@ grep -Fq 'pipelines:' "$collector_config" || fail 'collector config has no pipel
 grep -Fq 'endpoint: 127.0.0.1:13133' "$collector_config" || fail 'collector health endpoint moved off loopback'
 grep -Fq 'health_check:' "$collector_config" || fail 'collector health extension is absent'
 grep -Fq 'component_health:' "$collector_config" || fail 'component health status is absent'
+grep -Fq 'sending_queue:' "$collector_config" || \
+  fail 'Collector queue metrics are not configured for the quiescence observer'
+grep -Fq 'without_type_suffix: true' "$collector_config" || \
+  fail 'Collector Prometheus metrics naming is not pinned for the quiescence observer'
+grep -Fq 'OTEL_METRICS_PORT' "$compose_file" || fail 'Collector metrics port is not configured'
 grep -Fq 'extension.healthcheck.useComponentStatus' "$compose_file" || fail 'component status feature gate is absent'
 grep -Fq '/usr/local/bin/otel-health-probe' "$compose_file" || fail 'native probe healthcheck is absent'
 grep -Fq './otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro' "$compose_file" || \
@@ -381,6 +395,14 @@ expected_env_lines="$(for env_name in "${expected_env_names[@]}"; do
 done | LC_ALL=C sort)"
 expected_env_sha256="$(printf '%s\n' "$expected_env_lines" | sha256sum | awk '{print $1}')"
 
+metrics_bind_address="$(dotenv_value BIND_ADDRESS)"
+metrics_port="$(dotenv_value OTEL_METRICS_PORT)"
+[[ "$metrics_bind_address" == 127.0.0.1 ]] || \
+  fail 'BIND_ADDRESS must remain 127.0.0.1 while the Collector metrics observer is enabled'
+require_positive_integer OTEL_METRICS_PORT "$metrics_port"
+metrics_url="${OTEL_METRICS_URL:-http://${metrics_bind_address}:${metrics_port}/metrics}"
+[[ "$metrics_url" == http://* ]] || fail 'OTEL_METRICS_URL must use plain HTTP on the protected loopback endpoint'
+
 active_image_id="$(bounded_capture 'active Collector image inspect' "$inspect_timeout_seconds" \
   "${engine[@]}" inspect --format '{{.Image}}' "$container_name")"
 need_value OTEL_EXPECTED_ACTIVE_IMAGE_ID
@@ -519,13 +541,41 @@ runtime_identity() {
 
 active_container_id="$(jq -r '.[0].Id // ""' <<<"$container_inspect_raw")"
 [[ -n "$active_container_id" ]] || fail 'active Collector container identity is unavailable'
+active_state_status="$(jq -r '.[0].State.Status // "missing"' <<<"$container_inspect_raw")"
+[[ "$active_state_status" == running ]] || \
+  fail "active Collector is not running (state=$active_state_status)"
+healthcheck_contract_matches() {
+  local inspect_json="$1"
+  jq -e --arg probe "$probe_path" '
+    .[0].Config.Healthcheck as $health |
+    ($health | type) == "object" and
+    ($health.Test | type) == "array" and
+    ($health.Test | length) >= 2 and
+    ($health.Test[0] == "CMD" or $health.Test[0] == "CMD-SHELL") and
+    ($health.Test | any(. == $probe)) and
+    ($health.Interval // 0) != 0 and
+    ($health.Timeout // 0) != 0 and
+    ($health.Retries // 0) > 0
+  ' <<<"$inspect_json" >/dev/null
+}
+healthcheck_contract_matches "$container_inspect_raw" || \
+  fail 'active Collector healthcheck contract is missing or does not invoke the native probe'
 active_runtime_sha256="$(runtime_identity "$container_inspect_raw" | sha256sum | awk '{print $1}')"
 [[ "$active_runtime_sha256" =~ ^[0-9a-f]{64}$ ]] || fail 'active Collector runtime identity is unavailable'
 
-verify_quiescence_proof() {
+assert_active_container_unchanged() {
+  local current_json current_id current_image
+  current_json="$(bounded_capture 'active Collector identity recheck' "$inspect_timeout_seconds" \
+    "${engine[@]}" inspect "$container_name")" || return 1
+  current_id="$(jq -r '.[0].Id // ""' <<<"$current_json")" || return 1
+  current_image="$(jq -r '.[0].Image // ""' <<<"$current_json")" || return 1
+  [[ "$current_id" == "$active_container_id" && "$current_image" == "$active_image_id" ]] || return 1
+}
+
+verify_quiescence_approval() {
   local proof="$1"
   local expected_id="$2"
-  [[ -f "$proof" ]] || fail 'OTEL_QUIESCE_PROOF must name a fresh proof file'
+  [[ -f "$proof" ]] || fail 'OTEL_QUIESCE_PROOF must name a fresh approval file'
   python3 - "$proof" "$project_name" "$container_name" "$expected_id" \
     "${OTEL_QUIESCE_MAX_AGE_SECONDS:-120}" <<'PY'
 import datetime as dt
@@ -543,49 +593,155 @@ if max_age < 5 or max_age > 3600:
 try:
     proof = json.loads(Path(path).read_text(encoding="utf-8"))
 except Exception as exc:
-    raise SystemExit(f"quiescence proof is not valid JSON: {exc}")
-if proof.get("schema") != "otel-quiescence-proof-v1":
-    raise SystemExit("quiescence proof schema is invalid")
-if proof.get("verified") is not True or proof.get("approved") is not True:
-    raise SystemExit("quiescence proof is not verified and approved")
+    raise SystemExit(f"quiescence approval is not valid JSON: {exc}")
+if proof.get("schema") != "otel-quiescence-approval-v1":
+    raise SystemExit("quiescence approval schema is invalid")
+if proof.get("approved") is not True:
+    raise SystemExit("quiescence approval is not approved")
 if proof.get("project") != project or proof.get("service") != "otel-collector":
-    raise SystemExit("quiescence proof target does not match the reviewed service")
-if proof.get("container") != container:
-    raise SystemExit("quiescence proof container name does not match the reviewed target")
-if proof.get("container_id") != expected_id:
-    raise SystemExit("quiescence proof container identity does not match the active container")
-observations = proof.get("observations")
-if not isinstance(observations, list) or len(observations) < 2:
-    raise SystemExit("quiescence proof needs two consecutive live observations")
-parsed = []
-for observation in observations:
-    if not isinstance(observation, dict):
-        raise SystemExit("quiescence observation is not an object")
-    if observation.get("source") != "live-collector-metrics+producer-drain":
-        raise SystemExit("quiescence observation source is not the reviewed live source")
-    if observation.get("active_requests") != 0 or observation.get("queue_depth") != 0:
-        raise SystemExit("quiescence observation reports active requests or queued spans")
-    if observation.get("producers_drained") is not True:
-        raise SystemExit("quiescence observation does not prove producer drain")
-    try:
-        stamp = dt.datetime.fromisoformat(str(observation["observed_at_utc"]).replace("Z", "+00:00"))
-    except Exception as exc:
-        raise SystemExit(f"quiescence observation timestamp is invalid: {exc}")
-    if stamp.tzinfo is None:
-        raise SystemExit("quiescence observation timestamp has no timezone")
-    parsed.append(stamp.astimezone(dt.timezone.utc))
-if parsed != sorted(parsed) or (parsed[-1] - parsed[0]).total_seconds() < 5:
-    raise SystemExit("quiescence observations are not a five-second consecutive window")
-now = dt.datetime.now(dt.timezone.utc)
-age = (now - parsed[-1]).total_seconds()
-if age < -5 or age > max_age:
-    raise SystemExit("quiescence observation is stale or from the future")
+    raise SystemExit("quiescence approval target does not match the reviewed service")
+if proof.get("container") != container or proof.get("container_id") != expected_id:
+    raise SystemExit("quiescence approval container identity does not match the active container")
 try:
-    top_stamp = dt.datetime.fromisoformat(str(proof["observed_at_utc"]).replace("Z", "+00:00"))
+    stamp = dt.datetime.fromisoformat(str(proof["approved_at_utc"]).replace("Z", "+00:00"))
 except Exception as exc:
-    raise SystemExit(f"quiescence proof timestamp is invalid: {exc}")
-if abs((top_stamp.astimezone(dt.timezone.utc) - parsed[-1]).total_seconds()) > 1:
-    raise SystemExit("quiescence proof timestamp does not match its latest observation")
+    raise SystemExit(f"quiescence approval timestamp is invalid: {exc}")
+if stamp.tzinfo is None:
+    raise SystemExit("quiescence approval timestamp has no timezone")
+age = (dt.datetime.now(dt.timezone.utc) - stamp.astimezone(dt.timezone.utc)).total_seconds()
+if age < -5 or age > max_age:
+    raise SystemExit("quiescence approval is stale or from the future")
+PY
+}
+
+# The approval file records operator intent only. Quiescence is established by
+# this read-only observer against the running Collector's Prometheus endpoint:
+# every exporter queue and in-flight request must be zero, and the accepted
+# span counter must remain unchanged over the complete bounded interval.
+observe_live_quiescence() {
+  local label="$1"
+  local requested="$2"
+  # The requested interval is the observation window itself. Allow a bounded
+  # margin for the initial/final HTTP samples so the outer timeout cannot kill
+  # a valid five-second observation at its deadline.
+  bounded_capture "$label" "$((requested + 5))" python3 - "$metrics_url" \
+    "$quiesce_observation_seconds" <<'PY'
+import json
+import math
+import re
+import sys
+import time
+import urllib.error
+import urllib.request
+
+url, duration_text = sys.argv[1:]
+try:
+    duration = int(duration_text)
+except ValueError:
+    raise SystemExit("OTEL_QUIESCE_OBSERVATION_SECONDS must be an integer")
+if duration < 5 or duration > 120:
+    raise SystemExit("OTEL_QUIESCE_OBSERVATION_SECONDS is outside 5..120")
+
+sample_re = re.compile(
+    r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+([-+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?|NaN|\+Inf|-Inf)(?:\s+\S+)?$"
+)
+label_re = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:\\.|[^"\\])*)"')
+
+def parse_labels(text):
+    labels = {}
+    if not text:
+        return labels
+    position = 0
+    for match in label_re.finditer(text):
+        if match.start() != position and text[position:match.start()].strip().strip(","):
+            raise ValueError("invalid Prometheus labels")
+        labels[match.group(1)] = bytes(match.group(2), "utf-8").decode("unicode_escape")
+        position = match.end()
+    if text[position:].strip().strip(","):
+        raise ValueError("invalid Prometheus labels")
+    return labels
+
+def fetch():
+    request = urllib.request.Request(url, headers={"Accept": "text/plain; version=0.0.4"})
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            if response.status != 200:
+                raise RuntimeError(f"metrics endpoint returned HTTP {response.status}")
+            body = response.read(1024 * 1024 + 1)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(f"live Collector metrics endpoint unavailable: {exc}") from exc
+    if len(body) > 1024 * 1024:
+        raise RuntimeError("live Collector metrics response exceeded 1048576 bytes")
+    queues = []
+    in_flight = []
+    accepted = []
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError(f"live Collector metrics are not UTF-8: {exc}") from exc
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        match = sample_re.match(line)
+        if not match:
+            continue
+        name, raw_labels, raw_value = match.groups()
+        try:
+            labels = parse_labels(raw_labels)
+            value = float(raw_value)
+        except (ValueError, OverflowError) as exc:
+            raise RuntimeError(f"invalid live Collector metric sample: {exc}") from exc
+        if not math.isfinite(value):
+            raise RuntimeError("live Collector metric is not finite")
+        if name == "otelcol_exporter_queue_size":
+            queues.append((labels, value))
+        elif name == "otelcol_exporter_in_flight_requests":
+            in_flight.append((labels, value))
+        elif name == "otelcol_receiver_accepted_spans":
+            accepted.append((labels, value))
+    if not queues:
+        raise RuntimeError("live Collector queue metric is unavailable")
+    if not in_flight:
+        raise RuntimeError("live Collector in-flight request metric is unavailable")
+    if not accepted:
+        raise RuntimeError("live Collector accepted-span metric is unavailable")
+    if any(value != 0 for _, value in queues):
+        raise RuntimeError("live Collector exporter queue is not empty")
+    if any(value != 0 for _, value in in_flight):
+        raise RuntimeError("live Collector exporter has in-flight requests")
+    return {
+        "queue_depth": int(sum(value for _, value in queues)),
+        "in_flight_requests": int(sum(value for _, value in in_flight)),
+        "accepted_spans": sum(value for _, value in accepted),
+        "queue_series": len(queues),
+        "accepted_series": len(accepted),
+    }
+
+started = time.monotonic()
+first = fetch()
+last = first
+while time.monotonic() - started < duration:
+    time.sleep(min(1.0, max(0.0, duration - (time.monotonic() - started))))
+    last = fetch()
+    if last["accepted_spans"] != first["accepted_spans"]:
+        raise SystemExit("live Collector accepted-span counter changed during quiescence observation")
+    if last["queue_depth"] != 0 or last["in_flight_requests"] != 0:
+        raise SystemExit("live Collector queue or in-flight request state changed during observation")
+elapsed = time.monotonic() - started
+if elapsed < duration:
+    raise SystemExit("live Collector quiescence observation ended before its bounded interval")
+if last["accepted_spans"] != first["accepted_spans"]:
+    raise SystemExit("live Collector accepted-span counter was not stable")
+print(json.dumps({
+    "schema": "otel-live-quiescence-v1",
+    "observed_seconds": round(elapsed, 3),
+    "queue_depth": last["queue_depth"],
+    "in_flight_requests": last["in_flight_requests"],
+    "accepted_spans": last["accepted_spans"],
+    "accepted_spans_stable": True,
+    "queue_series": last["queue_series"],
+    "accepted_series": last["accepted_series"],
+}, sort_keys=True, separators=(",", ":")))
 PY
 }
 
@@ -612,6 +768,10 @@ flock -n 9 || fail 'another OTel installation is already running'
 
 backup_dir="$backup_root/$(date -u +%Y%m%dT%H%M%SZ)-$$"
 mkdir -p -m 700 "$backup_dir"
+verify_quiescence_approval "$OTEL_QUIESCE_PROOF" "$active_container_id"
+assert_active_container_unchanged || fail 'active Collector identity changed before live quiescence observation'
+pre_live_quiescence="$(observe_live_quiescence 'pre-build live Collector quiescence' \
+  "$quiesce_observation_seconds")" || fail 'live Collector metrics did not prove pre-build quiescence'
 backup_file() {
   local source="$1"
   local destination="$backup_dir/$(basename "$source")"
@@ -623,6 +783,8 @@ backup_file() {
   destination_hash="$(sha256_file "$destination")"
   [[ "$source_hash" == "$destination_hash" ]] || fail "backup verification failed for $source"
 }
+
+backup_sources=("$probe_source" "$collector_config" "$compose_file" "$dockerfile" "$env_file")
 
 backup_file "$probe_source"
 backup_file "$collector_config"
@@ -638,8 +800,30 @@ printf '%s\n' "$active_full_env_sha256" >"$backup_dir/previous-full-env-sha256"
 printf '%s\n' "$active_runtime_sha256" >"$backup_dir/previous-runtime-sha256"
 printf '%s\n' "$active_health" >"$backup_dir/previous-health"
 printf '%s\n' "$image_ref" >"$backup_dir/previous-image-ref"
+printf '%s\n' "$pre_live_quiescence" >"$backup_dir/pre-build-live-quiescence.json"
 sha256sum "$backup_dir"/* >"$backup_dir/SHA256SUMS"
-chmod 600 "$backup_dir"/container-inspect.json "$backup_dir"/previous-* "$backup_dir"/SHA256SUMS
+chmod 600 "$backup_dir"/container-inspect.json "$backup_dir"/previous-* \
+  "$backup_dir"/pre-build-live-quiescence.json "$backup_dir"/SHA256SUMS
+
+# A rollback may restore only files that still have the exact bytes captured at
+# preflight. This turns an unrelated edit during a long image build into an
+# explicit manual-reconciliation result instead of silently overwriting it.
+restore_backups_if_unchanged() {
+  local source destination source_hash backup_hash
+  for source in "${backup_sources[@]}"; do
+    destination="$backup_dir/$(basename "$source")"
+    [[ -f "$source" && -f "$destination" ]] || return 1
+    source_hash="$(sha256_file "$source")" || return 1
+    backup_hash="$(sha256_file "$destination")" || return 1
+    [[ "$source_hash" == "$backup_hash" ]] || return 1
+  done
+  for source in "${backup_sources[@]}"; do
+    destination="$backup_dir/$(basename "$source")"
+    cp -p -- "$destination" "$source" || return 1
+    [[ "$(sha256_file "$source")" == "$(sha256_file "$destination")" ]] || return 1
+  done
+  chmod 600 "$env_file" || return 1
+}
 
 verify_runtime_state() {
   local expected_image="$1"
@@ -648,12 +832,18 @@ verify_runtime_state() {
   local expected_full_env_digest="$4"
   local expected_health="$5"
   local expected_runtime="$6"
-  local inspect_json image_id mounts env_text health labels runtime_sha256 cp_seconds
+  local expected_container="${7:-}"
+  local inspect_json image_id mounts env_text health labels runtime_sha256 cp_seconds state_status
   local mount_count=0
   local temp
 
   inspect_json="$(bounded_capture 'runtime identity inspect' "$inspect_timeout_seconds" \
     "${engine[@]}" inspect "$container_name")" || return 1
+  observed_runtime_container_id="$(jq -r '.[0].Id // ""' <<<"$inspect_json")" || return 1
+  [[ -n "$observed_runtime_container_id" ]] || return 1
+  if [[ -n "$expected_container" && "$observed_runtime_container_id" != "$expected_container" ]]; then
+    return 1
+  fi
   image_id="$(jq -r '.[0].Image // ""' <<<"$inspect_json")" || return 1
   [[ "$image_id" == "$expected_image" ]] || return 1
   labels="$(jq -r '.[0].Config.Labels as $l | (($l["com.docker.compose.project"] // "") + "\t" + ($l["com.docker.compose.service"] // ""))' <<<"$inspect_json")" || return 1
@@ -691,14 +881,18 @@ verify_runtime_state() {
   [[ "$(env_identity_all "$env_text")" == "$expected_full_env_digest" ]] || return 1
   health="$(jq -r '.[0].State.Health.Status // "missing"' <<<"$inspect_json")" || return 1
   [[ "$health" == "$expected_health" ]] || return 1
+  state_status="$(jq -r '.[0].State.Status // "missing"' <<<"$inspect_json")" || return 1
+  [[ "$state_status" == running ]] || return 1
+  healthcheck_contract_matches "$inspect_json" || return 1
   return 0
 }
 
 rollback() {
   local original_status="$1"
   local rollback_ok=true
-  local restored_image_id phase_status
+  local restored_image_id phase_status current_id
   local rollback_log=""
+  local should_recreate=false
 
   trap - EXIT RETURN
   set +e
@@ -734,7 +928,48 @@ rollback() {
     [[ -z "$rollback_log" ]] || printf 'phase=%s result=%s\n' "$label" "$phase_status" >>"$rollback_log"
     return "$status"
   }
-  if [[ "$install_mutated" == true ]]; then
+
+  if [[ -z "$backup_dir" || ! -d "$backup_dir" ]]; then
+    rollback_ok=false
+    phase_status='failed:backup-missing'
+  elif ! restore_backups_if_unchanged; then
+    rollback_ok=false
+    phase_status='failed:source-files-changed-or-backup-mismatch'
+    [[ -z "$rollback_log" ]] || printf 'phase=restore-source-files result=%s\n' "$phase_status" >>"$rollback_log"
+  else
+    [[ -z "$rollback_log" ]] || printf 'phase=restore-source-files result=ok\n' >>"$rollback_log"
+  fi
+
+  # Before compensating, ensure the service is still the one this invocation
+  # observed. If recreation was attempted, a changed ID is accepted only when
+  # it is the ID captured immediately after that attempt; any other ID is an
+  # unclassifiable concurrent mutation and must stop with rollback UNKNOWN.
+  if [[ "$rollback_ok" == true ]]; then
+    if current_id="$(bounded_capture 'rollback container identity inspect' "$inspect_timeout_seconds" \
+      "${engine[@]}" inspect --format '{{.Id}}' "$container_name")"; then
+      if [[ "$runtime_mutation_attempted" == true ]]; then
+        if [[ -n "$runtime_container_id" ]]; then
+          if [[ "$current_id" == "$runtime_container_id" ]]; then
+            [[ "$runtime_mutation_may_have_changed" == true ]] && should_recreate=true
+          elif [[ "$current_id" != "$active_container_id" ]]; then
+            rollback_ok=false
+            [[ -z "$rollback_log" ]] || printf 'phase=guard-current-container result=failed:unknown-id\n' >>"$rollback_log"
+          fi
+        elif [[ "$current_id" != "$active_container_id" ]]; then
+          rollback_ok=false
+          [[ -z "$rollback_log" ]] || printf 'phase=guard-current-container result=failed:unknown-id\n' >>"$rollback_log"
+        fi
+      elif [[ "$current_id" != "$active_container_id" ]]; then
+        rollback_ok=false
+        [[ -z "$rollback_log" ]] || printf 'phase=guard-current-container result=failed:unexpected-id\n' >>"$rollback_log"
+      fi
+    else
+      rollback_ok=false
+      [[ -z "$rollback_log" ]] || printf 'phase=guard-current-container result=failed:inspect\n' >>"$rollback_log"
+    fi
+  fi
+
+  if [[ "$rollback_ok" == true && "$image_tag_mutated" == true ]]; then
     if ! rollback_phase 'retag-previous-image' "$recreate_timeout_seconds" \
         "${engine[@]}" image tag "$active_image_id" "$image_ref"; then
       rollback_ok=false
@@ -750,10 +985,12 @@ rollback() {
         rollback_ok=false
       fi
     fi
-    if [[ "$rollback_ok" == true ]] && ! rollback_phase 'recreate-previous-service' "$recreate_timeout_seconds" \
+  fi
+  if [[ "$rollback_ok" == true && "$should_recreate" == true ]] && ! rollback_phase 'recreate-previous-service' "$recreate_timeout_seconds" \
         "${compose[@]}" -p "$project_name" -f "$compose_file" up -d --no-build --no-deps --force-recreate otel-collector; then
-      rollback_ok=false
-    fi
+    rollback_ok=false
+  fi
+  if [[ "$rollback_ok" == true && "$should_recreate" == true ]]; then
     rollback_health_verified=false
     if [[ "$rollback_ok" == true ]]; then
       rollback_elapsed=0
@@ -766,10 +1003,15 @@ rollback() {
             "${engine[@]}" inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
             "$container_name" 2>/dev/null)"; then
           if [[ "$rollback_last_health" == healthy ]]; then
-            if verify_runtime_state "$active_image_id" "$expected_config_sha256" \
-                "$active_env_sha256" "$active_full_env_sha256" healthy "$active_runtime_sha256"; then
-              rollback_health_verified=true
-              break
+            rollback_container_id=""
+            if rollback_container_id="$(bounded_capture 'rollback container identity recheck' "$inspect_timeout_seconds" \
+                "${engine[@]}" inspect --format '{{.Id}}' "$container_name")"; then
+              if [[ -n "$rollback_container_id" ]] && verify_runtime_state "$active_image_id" \
+                  "$expected_config_sha256" "$active_env_sha256" "$active_full_env_sha256" \
+                  healthy "$active_runtime_sha256" "$rollback_container_id"; then
+                rollback_health_verified=true
+                break
+              fi
             fi
             break
           fi
@@ -808,22 +1050,34 @@ rollback() {
 }
 trap 'status=$?; if [[ $status -ne 0 ]]; then rollback "$status"; fi' EXIT
 
-# The image build can replace the Compose image tag or otherwise mutate the
-# engine state before the service is recreated, so compensation covers the
-# build itself as well as the later service replacement.
-install_mutated=true
+# Building can replace the Compose image tag, so image compensation starts
+# before the build. Runtime compensation starts only immediately before the
+# one-service recreation; a build failure therefore does not disrupt the live
+# Collector container.
+image_tag_mutated=true
 bounded_run 'Collector image build' "$build_timeout_seconds" \
   "${compose[@]}" -p "$project_name" -f "$compose_file" build otel-collector
 built_image_id="$(bounded_capture 'built Collector image inspect' "$inspect_timeout_seconds" \
   "${engine[@]}" image inspect --format '{{.Id}}' "$image_ref")"
 [[ "$built_image_id" == "$OTEL_EXPECTED_BUILT_IMAGE_ID" ]] || \
   fail 'built image identity does not match OTEL_EXPECTED_BUILT_IMAGE_ID'
-verify_quiescence_proof "$OTEL_QUIESCE_PROOF" "$active_container_id"
+assert_active_container_unchanged || fail 'active Collector identity changed during image build'
+verify_quiescence_approval "$OTEL_QUIESCE_PROOF" "$active_container_id"
+post_build_live_quiescence="$(observe_live_quiescence 'pre-recreate live Collector quiescence' \
+  "$quiesce_observation_seconds")" || fail 'live Collector metrics did not prove pre-recreate quiescence'
+printf '%s\n' "$post_build_live_quiescence" >"$backup_dir/pre-recreate-live-quiescence.json"
+chmod 600 "$backup_dir/pre-recreate-live-quiescence.json"
 
 # Recreate exactly one service after the owner has recorded quiescence. No
 # project-wide down, volume deletion, or dependency recreation is allowed.
+runtime_mutation_attempted=true
 bounded_run 'Collector service recreation' "$recreate_timeout_seconds" \
   "${compose[@]}" -p "$project_name" -f "$compose_file" up -d --no-build --no-deps --force-recreate otel-collector
+runtime_container_id="$(bounded_capture 'recreated Collector identity inspect' "$inspect_timeout_seconds" \
+  "${engine[@]}" inspect --format '{{.Id}}' "$container_name")"
+[[ -n "$runtime_container_id" && "$runtime_container_id" != "$active_container_id" ]] || \
+  fail 'Collector recreation did not produce a new container identity'
+runtime_mutation_may_have_changed=true
 last_health='missing'
 elapsed=0
 while (( elapsed <= ready_timeout_seconds )); do
@@ -839,7 +1093,8 @@ while (( elapsed <= ready_timeout_seconds )); do
     fail "Collector health inspect failed (exit $status)"
   fi
   if [[ "$last_health" == healthy ]]; then
-    if verify_runtime_state "$built_image_id" "$expected_config_sha256" "$expected_env_sha256" "$active_full_env_sha256" healthy "$active_runtime_sha256"; then
+    if verify_runtime_state "$built_image_id" "$expected_config_sha256" "$expected_env_sha256" \
+        "$active_full_env_sha256" healthy "$active_runtime_sha256" "$runtime_container_id"; then
       trap - EXIT
       printf 'OTel Collector installed and identity-verified healthy; backup=%s image=%s\n' "$backup_dir" "$built_image_id"
       exit 0

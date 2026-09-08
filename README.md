@@ -39,6 +39,7 @@ Useful local endpoints after startup:
 | Laminar gRPC | `127.0.0.1:18001` | Direct OTLP/gRPC access |
 | OTLP Collector HTTP | `http://127.0.0.1:14318` | Recommended agent endpoint |
 | OTLP Collector gRPC | `127.0.0.1:14317` | Recommended agent endpoint |
+| OTEL Collector metrics | `http://127.0.0.1:18888/metrics` | Owner-side quiescence observer |
 
 The operator should use an SSH tunnel or an approved private reverse proxy for
 browser access. The initial deployment intentionally does not modify shared

@@ -4,7 +4,15 @@ set -Eeuo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 installer="$repo_root/deploy/install-otel-health-probe.sh"
 test_root="$(mktemp -d)"
-trap 'rm -rf -- "$test_root"' EXIT
+metrics_pid=""
+cleanup() {
+  if [[ -n "$metrics_pid" ]]; then
+    kill "$metrics_pid" 2>/dev/null || true
+    wait "$metrics_pid" 2>/dev/null || true
+  fi
+  rm -rf -- "$test_root"
+}
+trap cleanup EXIT
 
 bash -n "$installer"
 python3 - "$installer" <<'PY'
@@ -24,31 +32,51 @@ required = (
     "previous-runtime-sha256",
     "OTEL_QUIESCE_PROOF",
     "OTEL_ROLLBACK_TIMEOUT_SECONDS",
+    "OTEL_METRICS_URL",
+    "otelcol_exporter_queue_size",
+    "healthcheck_contract_matches",
+    "restore_backups_if_unchanged",
+    "runtime_mutation_attempted",
+    "runtime_mutation_may_have_changed",
 )
 missing = [needle for needle in required if needle not in source]
 if missing:
     raise SystemExit(f"installer contract is missing: {', '.join(missing)}")
 if "timeout --foreground" in source:
     raise SystemExit("installer uses a timeout mode that leaves grandchildren running")
-if source.count("install_mutated=true") != 1:
-    raise SystemExit("installer mutation marker is not single and explicit")
-if source.index("install_mutated=true") > source.index("bounded_run 'Collector image build'"):
-    raise SystemExit("image build is not covered by compensation")
+if source.count("image_tag_mutated=true") != 1:
+    raise SystemExit("image tag mutation marker is not single and explicit")
+if source.index("image_tag_mutated=true") > source.index("bounded_run 'Collector image build'"):
+    raise SystemExit("image build is not covered by image compensation")
+if source.count("runtime_mutation_attempted=true") != 1:
+    raise SystemExit("runtime mutation marker is not single and explicit")
+if source.index("runtime_mutation_attempted=true") < source.index("pre-recreate live Collector quiescence"):
+    raise SystemExit("runtime mutation begins before the immediate quiescence recheck")
 PY
 
 fake_bin="$test_root/bin"
 state_dir="$test_root/state"
 mkdir -p -- "$fake_bin" "$state_dir"
 env_file="$test_root/.env"
+metrics_port="$(python3 - <<'PY'
+import socket
+with socket.socket() as sock:
+    sock.bind(("127.0.0.1", 0))
+    print(sock.getsockname()[1])
+PY
+)"
 cat >"$env_file" <<'ENV'
+BIND_ADDRESS=127.0.0.1
+OTEL_METRICS_PORT=18888
 MLFLOW_EXPERIMENT_ID=0
 LAMINAR_PROJECT_API_KEY=fixture-key
 ENV
+sed -i "s/^OTEL_METRICS_PORT=.*/OTEL_METRICS_PORT=$metrics_port/" "$env_file"
 
 collector_config="$repo_root/deploy/otel-collector.yaml"
 expected_mount_source="$(readlink -f "$collector_config")"
 cat >"$state_dir/inspect.json" <<JSON
-[{"Id":"fixture-container-id","Name":"/ai-agent-observability-otel-collector","Image":"sha256:fixture-active","Created":"2026-09-08T00:00:00Z","Config":{"Entrypoint":[],"Cmd":["--feature-gates=+extension.healthcheck.useComponentStatus","--config=/etc/otelcol-contrib/config.yaml"],"ExposedPorts":{"4317/tcp":{},"4318/tcp":{}},"Env":["MLFLOW_EXPERIMENT_ID=0","LAMINAR_PROJECT_API_KEY=fixture-key"],"Healthcheck":{"Test":["CMD","/usr/local/bin/otel-health-probe"]},"Labels":{"com.docker.compose.project":"ai-agent-observability","com.docker.compose.service":"otel-collector"},"ReadonlyRootfs":true,"User":"","WorkingDir":"/"},"HostConfig":{"PortBindings":{"4317/tcp":[{"HostIp":"127.0.0.1","HostPort":"14317"}],"4318/tcp":[{"HostIp":"127.0.0.1","HostPort":"14318"}]},"PublishAllPorts":false,"NetworkMode":"ai-agent-observability_default","ExtraHosts":[],"Devices":[],"DeviceRequests":[],"BlkioWeight":0,"CpuCount":0,"CpuPercent":0,"CpuPeriod":0,"CpuQuota":0,"CpuRealtimePeriod":0,"CpuRealtimeRuntime":0,"CpuShares":0,"CpusetCpus":"","CpusetMems":"","NanoCpus":0,"Memory":0,"MemoryReservation":0,"MemorySwap":0,"MemorySwappiness":0,"OomKillDisable":false,"PidsLimit":0,"Ulimits":[],"ReadonlyRootfs":true,"SecurityOpt":["no-new-privileges:true"],"CapAdd":[],"CapDrop":[],"Privileged":false,"Tmpfs":{"/tmp":"rw"},"RestartPolicy":{"Name":"unless-stopped"}},"NetworkSettings":{"Networks":{"ai-agent-observability_default":{"Aliases":["otel-collector","ai-agent-observability-otel-collector"]}}},"Mounts":[{"Type":"bind","Source":"$expected_mount_source","Destination":"/etc/otelcol-contrib/config.yaml","Mode":"ro","RW":false}],"State":{"Health":{"Status":"healthy","Log":[]}}}]
+[{"Id":"fixture-container-id","Name":"/ai-agent-observability-otel-collector","Image":"sha256:fixture-active","Created":"2026-09-08T00:00:00Z","Config":{"Entrypoint":[],"Cmd":["--feature-gates=+extension.healthcheck.useComponentStatus","--config=/etc/otelcol-contrib/config.yaml"],"ExposedPorts":{"4317/tcp":{},"4318/tcp":{},"8888/tcp":{}},"Env":["MLFLOW_EXPERIMENT_ID=0","LAMINAR_PROJECT_API_KEY=fixture-key"],"Healthcheck":{"Test":["CMD","/usr/local/bin/otel-health-probe"],"Interval":30000000000,"Timeout":5000000000,"Retries":3,"StartPeriod":30000000000},"Labels":{"com.docker.compose.project":"ai-agent-observability","com.docker.compose.service":"otel-collector"},"ReadonlyRootfs":true,"User":"","WorkingDir":"/"},"HostConfig":{"PortBindings":{"4317/tcp":[{"HostIp":"127.0.0.1","HostPort":"14317"}],"4318/tcp":[{"HostIp":"127.0.0.1","HostPort":"14318"}],"8888/tcp":[{"HostIp":"127.0.0.1","HostPort":"$metrics_port"}]},"PublishAllPorts":false,"NetworkMode":"ai-agent-observability_default","ExtraHosts":[],"Devices":[],"DeviceRequests":[],"BlkioWeight":0,"CpuCount":0,"CpuPercent":0,"CpuPeriod":0,"CpuQuota":0,"CpuRealtimePeriod":0,"CpuRealtimeRuntime":0,"CpuShares":0,"CpusetCpus":"","CpusetMems":"","NanoCpus":0,"Memory":0,"MemoryReservation":0,"MemorySwap":0,"MemorySwappiness":0,"OomKillDisable":false,"PidsLimit":0,"Ulimits":[],"ReadonlyRootfs":true,"SecurityOpt":["no-new-privileges:true"],"CapAdd":[],"CapDrop":[],"Privileged":false,"Tmpfs":{"/tmp":"rw"},"RestartPolicy":{"Name":"unless-stopped"}},"NetworkSettings":{"Networks":{"ai-agent-observability_default":{"Aliases":["otel-collector","ai-agent-observability-otel-collector"]}}},"Mounts":[{"Type":"bind","Source":"$expected_mount_source","Destination":"/etc/otelcol-contrib/config.yaml","Mode":"ro","RW":false}],"State":{"Status":"running","Health":{"Status":"healthy","Log":[]}}}]
 JSON
 
 cat >"$fake_bin/podman" <<'FAKE'
@@ -58,6 +86,23 @@ set -Eeuo pipefail
 log_file="${FAKE_LOG:?}"
 state_dir="${FAKE_STATE_DIR:?}"
 printf '%s\n' "$*" >>"$log_file"
+
+inspect_json() {
+  local source="$state_dir/inspect.json"
+  if [[ -e "$state_dir/recreated" ]]; then
+    if [[ -e "$state_dir/rollback-recreated" ]]; then
+      sed 's/fixture-container-id/fixture-rollback-id/g; s/sha256:fixture-active/sha256:fixture-active/g' "$source"
+    else
+      sed 's/fixture-container-id/fixture-new-id/g; s/sha256:fixture-active/sha256:fixture-built/g' "$source"
+    fi
+  elif [[ -e "$state_dir/id-changed" ]]; then
+    sed 's/fixture-container-id/fixture-concurrent-id/g' "$source"
+  elif [[ "${FAKE_STOPPED:-}" == yes ]]; then
+    sed 's/"Status":"running"/"Status":"exited"/' "$source"
+  else
+    cat "$source"
+  fi
+}
 
 if [[ "${1:-}" == compose ]]; then
   if [[ " $* " == *" config "* ]]; then
@@ -74,22 +119,41 @@ YAML
   fi
   if [[ " $* " == *" build "* ]]; then
     printf '%s\n' 'fixture build stdout'
+    if [[ "${FAKE_OUTPUT_OVERFLOW:-}" == yes ]]; then
+      python3 -c 'import sys; sys.stdout.write("x" * 200000)'
+    fi
+    if [[ "${FAKE_BUILD_TIMEOUT:-}" == yes ]]; then
+      (sleep 30) &
+      wait
+    fi
     if [[ "${FAKE_BUILD_FAIL:-}" == yes ]]; then
       printf '%s\n' 'fixture build failure' >&2
       exit 42
+    fi
+    if [[ "${FAKE_ID_CHANGE:-}" == yes ]]; then
+      : >"$state_dir/id-changed"
     fi
     : >"$state_dir/built"
     exit 0
   fi
   if [[ " $* " == *" up "* ]]; then
+    if [[ "${FAKE_RECREATE_FAIL:-}" == yes ]]; then
+      : >"$state_dir/recreate-attempted"
+      exit 43
+    fi
     : >"$state_dir/recreated"
+    if [[ -e "$state_dir/retagged" ]]; then
+      : >"$state_dir/rollback-recreated"
+    fi
     exit 0
   fi
   exit 0
 fi
 
 if [[ "${1:-}" == image && "${2:-}" == inspect ]]; then
-  if [[ -e "$state_dir/built" ]]; then
+  if [[ -e "$state_dir/retagged" ]]; then
+    printf '%s\n' 'sha256:fixture-active'
+  elif [[ -e "$state_dir/built" ]]; then
     printf '%s\n' 'sha256:fixture-built'
   else
     printf '%s\n' 'sha256:fixture-active'
@@ -98,6 +162,9 @@ if [[ "${1:-}" == image && "${2:-}" == inspect ]]; then
 fi
 
 if [[ "${1:-}" == image && "${2:-}" == tag ]]; then
+  if [[ "${FAKE_ROLLBACK_UNKNOWN:-}" == yes ]]; then
+    exit 41
+  fi
   : >"$state_dir/retagged"
   exit 0
 fi
@@ -106,8 +173,25 @@ if [[ "${1:-}" == inspect ]]; then
   if [[ " $* " == *" --format "* ]]; then
     format="${3:-}"
     case "$format" in
+      *'.Id'*)
+        if [[ -e "$state_dir/recreated" ]]; then
+          if [[ -e "$state_dir/rollback-recreated" ]]; then
+            printf '%s\n' fixture-rollback-id
+          else
+            printf '%s\n' fixture-new-id
+          fi
+        elif [[ -e "$state_dir/id-changed" ]]; then
+          printf '%s\n' fixture-concurrent-id
+        else
+          printf '%s\n' fixture-container-id
+        fi
+        ;;
       *'.Image'*)
-        printf '%s\n' 'sha256:fixture-active'
+        if [[ -e "$state_dir/recreated" && ! -e "$state_dir/rollback-recreated" ]]; then
+          printf '%s\n' 'sha256:fixture-built'
+        else
+          printf '%s\n' 'sha256:fixture-active'
+        fi
         ;;
       *'com.docker.compose.project'*)
         printf '%s\t%s\n' 'ai-agent-observability' 'otel-collector'
@@ -130,11 +214,7 @@ if [[ "${1:-}" == inspect ]]; then
         ;;
     esac
   else
-    if [[ -e "$state_dir/built" ]]; then
-      sed 's/sha256:fixture-active/sha256:fixture-built/g' "${FAKE_STATE_DIR:?}/inspect.json"
-    else
-      cat "${FAKE_STATE_DIR:?}/inspect.json"
-    fi
+    inspect_json
   fi
   exit 0
 fi
@@ -150,6 +230,51 @@ exit 1
 FAKE
 chmod +x "$fake_bin/podman"
 
+cat >"$test_root/metrics-server.py" <<'PY'
+import http.server
+import sys
+
+port = int(sys.argv[1])
+payload = b"""# TYPE otelcol_exporter_queue_size gauge
+otelcol_exporter_queue_size{exporter=\"otlp_http/mlflow\"} 0
+otelcol_exporter_queue_size{exporter=\"otlp_http/laminar\"} 0
+# TYPE otelcol_exporter_in_flight_requests gauge
+otelcol_exporter_in_flight_requests{exporter=\"otlp_http/mlflow\"} 0
+otelcol_exporter_in_flight_requests{exporter=\"otlp_http/laminar\"} 0
+# TYPE otelcol_receiver_accepted_spans counter
+otelcol_receiver_accepted_spans{receiver=\"otlp\",transport=\"http\"} 10
+"""
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path != "/metrics":
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; version=0.0.4")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+    def log_message(self, *_args):
+        pass
+
+http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+PY
+python3 -u "$test_root/metrics-server.py" "$metrics_port" &
+metrics_pid=$!
+for _ in $(seq 1 20); do
+  if python3 - "$metrics_port" <<'PY'
+import socket, sys
+with socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=0.2):
+    pass
+PY
+  then
+    break
+  fi
+  sleep 0.05
+done
+
 log_file="$test_root/check.log"
 : >"$log_file"
 common_env=(
@@ -157,6 +282,7 @@ common_env=(
   OTEL_COMPOSE_PROJECT=ai-agent-observability
   OTEL_CONTAINER_NAME=ai-agent-observability-otel-collector
   OTEL_ENV_FILE="$env_file"
+  OTEL_METRICS_URL="http://127.0.0.1:$metrics_port/metrics"
   OTEL_BACKUP_ROOT="$test_root/check-backups"
   OTEL_EXPECTED_GIT_HEAD="$(git -C "$repo_root" rev-parse HEAD)"
   OTEL_EXPECTED_PROBE_SHA256="$(sha256sum "$repo_root/deploy/otel-health-probe.c" | awk '{print $1}')"
@@ -180,10 +306,9 @@ grep -Fq -- "--env-file $env_file" "$log_file"
 grep -Fq 'no mutation performed' "$test_root/check.out"
 
 proof="$test_root/quiescence.json"
-old_stamp="$(date -u -d '6 seconds ago' '+%Y-%m-%dT%H:%M:%SZ')"
 new_stamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 cat >"$proof" <<JSON
-{"schema":"otel-quiescence-proof-v1","verified":true,"approved":true,"project":"ai-agent-observability","service":"otel-collector","container":"ai-agent-observability-otel-collector","container_id":"fixture-container-id","observed_at_utc":"$new_stamp","observations":[{"source":"live-collector-metrics+producer-drain","active_requests":0,"queue_depth":0,"producers_drained":true,"observed_at_utc":"$old_stamp"},{"source":"live-collector-metrics+producer-drain","active_requests":0,"queue_depth":0,"producers_drained":true,"observed_at_utc":"$new_stamp"}]}
+{"schema":"otel-quiescence-approval-v1","approved":true,"project":"ai-agent-observability","service":"otel-collector","container":"ai-agent-observability-otel-collector","container_id":"fixture-container-id","approved_at_utc":"$new_stamp"}
 JSON
 
 install_log="$test_root/install.log"
@@ -198,7 +323,7 @@ install_env=(
   OTEL_BUILD_TIMEOUT_SECONDS=10
   OTEL_RECREATE_TIMEOUT_SECONDS=10
   OTEL_INSPECT_TIMEOUT_SECONDS=2
-  OTEL_INSTALL_TIMEOUT_SECONDS=30
+  OTEL_INSTALL_TIMEOUT_SECONDS=180
   OTEL_ROLLBACK_TIMEOUT_SECONDS=30
   OTEL_READY_TIMEOUT_SECONDS=10
   OTEL_MAX_CAPTURE_BYTES=65536
@@ -222,12 +347,18 @@ if grep -Fq 'fixture build stdout' "$test_root/install.out"; then
   exit 1
 fi
 grep -Fq 'image tag' "$install_log"
-grep -Fq 'up -d --no-build --no-deps --force-recreate otel-collector' "$install_log"
-[[ -e "$state_dir/retagged" && -e "$state_dir/recreated" ]] || exit 1
+if grep -Fq 'up -d --no-build --no-deps --force-recreate otel-collector' "$install_log"; then
+  printf '%s\n' 'build failure unnecessarily recreated the active Collector' >&2
+  exit 1
+fi
+[[ -e "$state_dir/retagged" && ! -e "$state_dir/recreated" ]] || exit 1
 if grep -Fq 'rollback UNKNOWN' "$test_root/install.err"; then
   printf '%s\n' 'fixture build failure did not complete verified rollback' >&2
   exit 1
 fi
+
+rm -f "$state_dir"/built "$state_dir"/retagged "$state_dir"/recreated \
+  "$state_dir"/rollback-recreated "$state_dir"/recreate-attempted "$state_dir"/id-changed
 
 success_log="$test_root/success.log"
 : >"$success_log"
@@ -241,7 +372,7 @@ success_env=(
   OTEL_BUILD_TIMEOUT_SECONDS=10
   OTEL_RECREATE_TIMEOUT_SECONDS=10
   OTEL_INSPECT_TIMEOUT_SECONDS=2
-  OTEL_INSTALL_TIMEOUT_SECONDS=30
+  OTEL_INSTALL_TIMEOUT_SECONDS=180
   OTEL_ROLLBACK_TIMEOUT_SECONDS=30
   OTEL_READY_TIMEOUT_SECONDS=10
   OTEL_MAX_CAPTURE_BYTES=65536

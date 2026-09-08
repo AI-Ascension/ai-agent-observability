@@ -54,52 +54,60 @@ record for another name cannot satisfy the check.
 `deploy/install-otel-health-probe.sh --check` is a read-only owner-side
 preflight. Installation requires explicit source/config/Compose/Dockerfile
 and image identity hashes, a clean probe build input set,
-`OTEL_HEALTH_PROBE_INSTALL_APPROVED=true`, and an operator quiescence record
-through `OTEL_QUIESCE_APPROVED=true` plus a fresh `OTEL_QUIESCE_PROOF` JSON
-record. The record binds two live observations at least five seconds apart to
-the current Collector container and shows zero active requests, zero queued
-spans, and drained producers. It compares the exact active traces exporter set,
-rendered Compose image reference, bind source/destination/RO mode, mounted
-config hash, and intended Collector environment before making a fresh verified
-backup. The complete pre-update environment is retained only as a digest and is
-required to match after recreation; the inspect backup removes environment
-values and command arguments. The runtime identity digest also covers the
-command, entrypoint, exposed and published ports, network aliases, devices,
-resource limits, security settings, and mounts. It then builds and verifies the
-wrapper image, recreates only `otel-collector`, waits for its health state, and
-verifies the same identities afterward under one aggregate installation
-deadline (`OTEL_INSTALL_TIMEOUT_SECONDS`, 1200 seconds by default). If the
-guarded operation fails, including during the image build, it retags the prior
-image and recreates the same service only when every bounded rollback step can
-be checked. Rollback has its own aggregate deadline
-(`OTEL_ROLLBACK_TIMEOUT_SECONDS`, 600 seconds by default) so a nearly
-exhausted install budget cannot make compensation unbounded. Each rollback
-phase records a status in a mode-0600 private log; otherwise it reports
-rollback as unknown and requires manual reconciliation. It never uses
-project-wide down, volume deletion, or image pruning.
+`OTEL_HEALTH_PROBE_INSTALL_APPROVED=true`, and an operator approval through
+`OTEL_QUIESCE_APPROVED=true` plus a fresh `OTEL_QUIESCE_PROOF` JSON record. The
+approval records intent and binds the target to the current Collector
+container; it does not claim that producers have already drained. The installer
+then observes the running Collector's Prometheus endpoint at
+`OTEL_METRICS_URL` (by default the loopback-published
+`http://127.0.0.1:${OTEL_METRICS_PORT}/metrics`) for the configured
+`OTEL_QUIESCE_OBSERVATION_SECONDS` interval, which defaults to five seconds.
+It requires queue and in-flight request series, requires their values to remain
+zero, and requires `otelcol_receiver_accepted_spans` to remain unchanged over
+the complete interval. It performs this live observation before the build and
+again immediately before service recreation, after rechecking the container
+identity, so a stale approval cannot substitute for current runtime evidence.
 
-The quiescence handoff is an owner-produced file, for example:
+The approval file has this schema:
 
 ```json
 {
-  "schema": "otel-quiescence-proof-v1",
-  "verified": true,
+  "schema": "otel-quiescence-approval-v1",
   "approved": true,
   "project": "ai-agent-observability",
   "service": "otel-collector",
   "container": "ai-agent-observability-otel-collector",
   "container_id": "<current-container-id>",
-  "observed_at_utc": "2026-09-08T20:00:05Z",
-  "observations": [
-    {"source":"live-collector-metrics+producer-drain","active_requests":0,"queue_depth":0,"producers_drained":true,"observed_at_utc":"2026-09-08T20:00:00Z"},
-    {"source":"live-collector-metrics+producer-drain","active_requests":0,"queue_depth":0,"producers_drained":true,"observed_at_utc":"2026-09-08T20:00:05Z"}
-  ]
+  "approved_at_utc": "2026-09-08T20:00:00Z"
 }
 ```
 
-Pass its path as `OTEL_QUIESCE_PROOF`; the installer rejects stale records,
-identity mismatches, missing producer drain, and observations less than five
-seconds apart.
+Pass its path as `OTEL_QUIESCE_PROOF`; the installer rejects stale records and
+identity mismatches. The live metrics observer rejects missing series, nonzero
+queues or in-flight requests, changing accepted-span counters, malformed
+Prometheus samples, non-finite values, and an unavailable endpoint. Its
+machine-readable result is retained in the private installation backup.
+
+The installer compares the exact active traces exporter set, rendered Compose
+image reference, bind source/destination/RO mode, mounted config hash, and
+intended Collector environment before making a fresh verified backup. The
+complete pre-update environment is retained only as a digest and is required
+to match after recreation; the inspect backup removes environment values and
+command arguments. The runtime identity digest also covers the command,
+entrypoint, exposed and published ports, network aliases, devices, resource
+limits, security settings, and mounts. It then builds and verifies the wrapper
+image, recreates only `otel-collector`, waits for its health state, and verifies
+the same identities afterward under one aggregate installation deadline
+(`OTEL_INSTALL_TIMEOUT_SECONDS`, 1200 seconds by default). If the image build
+fails, the prior image tag is restored while the active Collector is left
+untouched because runtime mutation has not begun. If a later runtime mutation
+fails, the installer retags the prior image and recreates the same service only
+when every bounded rollback step can be checked. Rollback has its own aggregate
+deadline (`OTEL_ROLLBACK_TIMEOUT_SECONDS`, 600 seconds by default) so a nearly
+exhausted install budget cannot make compensation unbounded. Each rollback
+phase records a status in a mode-0600 private log; otherwise it reports
+rollback as unknown and requires manual reconciliation. It never uses
+project-wide down, volume deletion, or image pruning.
 
 The image and Compose healthcheck use a 30-second interval, five-second engine
 timeout, 30-second startup grace, and three retries. Podman 4.9.3 cannot add a

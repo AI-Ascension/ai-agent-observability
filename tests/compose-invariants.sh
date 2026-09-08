@@ -48,7 +48,7 @@ if ! awk '
   exit 1
 fi
 
-for published_port in 15000 15667 14317 14318; do
+for published_port in 15000 15667 14317 14318 18888; do
   if ! grep -Fq "published: \"$published_port\"" <<<"$compose_output"; then
     printf 'missing published loopback port: %s\n' "$published_port" >&2
     exit 1

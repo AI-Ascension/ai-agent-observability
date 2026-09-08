@@ -353,6 +353,7 @@ services:
     ports:
       - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${OTEL_GRPC_PORT:?OTEL_GRPC_PORT is required}:4317"
       - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${OTEL_HTTP_PORT:?OTEL_HTTP_PORT is required}:4318"
+      - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${OTEL_METRICS_PORT:?OTEL_METRICS_PORT is required}:8888"
     volumes:
       - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
     healthcheck:
