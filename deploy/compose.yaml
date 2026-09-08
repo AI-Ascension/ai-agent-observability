@@ -11,8 +11,9 @@ services:
       POSTGRES_DB: ${MLFLOW_POSTGRES_DB}
     volumes:
       - mlflow-postgres-data:/var/lib/postgresql/data
+      - ./healthchecks/postgres-readiness.sh:/usr/local/bin/postgres-readiness.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      test: ["CMD", "/usr/local/bin/postgres-readiness.sh"]
       interval: 5s
       timeout: 5s
       retries: 12
@@ -137,6 +138,7 @@ services:
       - laminar-clickhouse-logs:/var/log/clickhouse-server
       - ./laminar/clickhouse-profiles-config.xml:/etc/clickhouse-server/users.d/ai-agent-observability.xml:ro
       - ./laminar/clickhouse-server-config.xml:/etc/clickhouse-server/config.d/ai-agent-observability.xml:ro
+      - ./healthchecks/clickhouse-readiness.sh:/usr/local/bin/clickhouse-readiness.sh:ro
     cap_add:
       - SYS_NICE
       - IPC_LOCK
@@ -145,7 +147,7 @@ services:
         soft: 262144
         hard: 262144
     healthcheck:
-      test: ["CMD-SHELL", "clickhouse-client --host 127.0.0.1 --user \"$${CLICKHOUSE_USER}\" --password \"$${CLICKHOUSE_PASSWORD}\" --query 'SELECT 1' >/dev/null"]
+      test: ["CMD", "/usr/local/bin/clickhouse-readiness.sh"]
       interval: 10s
       timeout: 5s
       retries: 18
@@ -162,8 +164,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - laminar-postgres-data:/var/lib/postgresql/data
+      - ./healthchecks/postgres-readiness.sh:/usr/local/bin/postgres-readiness.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      test: ["CMD", "/usr/local/bin/postgres-readiness.sh"]
       interval: 3s
       timeout: 5s
       retries: 20
