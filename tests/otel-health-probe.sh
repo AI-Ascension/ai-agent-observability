@@ -65,6 +65,14 @@ grep -Fq 'Collector image build' "$installer"
 grep -Fq 'Collector service recreation' "$installer"
 grep -Fq 'backup verification failed' "$installer"
 grep -Fq 'rollback verified' "$installer"
+grep -Fq 'compose=(podman compose --env-file "$env_file")' "$installer"
+grep -Fq 'rollback_last_health' "$installer"
+grep -Fq 'sys.stdout.write("\n")' "$installer"
+grep -Fq 'StatusRecoverableError' "$repo_root/deploy/otel-health-probe.c"
+if grep -Fq 'timeout --foreground' "$installer"; then
+  printf '%s\n' 'the installer must use process-group timeouts' >&2
+  exit 1
+fi
 if grep -Eq 'compose.*down|down.*-v|volume prune|image prune' "$installer"; then
   printf '%s\n' 'the guarded OTel installer contains a destructive cleanup path' >&2
   exit 1
@@ -161,7 +169,12 @@ fi
 stop_fixture
 
 expect_failure 'healthy=false' response 200 '{"healthy":false,"status":"StatusOK"}'
-expect_failure 'degraded status' response 200 '{"healthy":true,"status":"StatusRecoverableError"}'
+start_fixture response 200 '{"healthy":true,"status":"StatusRecoverableError"}'
+if ! "$test_root/otel-health-probe" --port "$(<"$test_root/port")"; then
+  printf '%s\n' 'probe rejected a recoverable healthy fixture' >&2
+  exit 1
+fi
+stop_fixture
 expect_failure 'HTTP failure' response 503 '{"healthy":false,"status":"StatusStarting"}'
 expect_failure 'malformed JSON' response 200 'not-json'
 expect_failure 'trailing JSON garbage' response 200 '{"healthy":true,"status":"StatusOK"} garbage'
@@ -383,6 +396,24 @@ run_dependency_probe duplicate failure
 run_dependency_probe question-mismatch failure
 run_dependency_probe loop failure
 run_dependency_probe compression-loop failure
+
+cat >"$dependency_config" <<'YAML'
+exporters:
+  otlp_http/mlflow:
+    headers:
+      endpoint: http://resolver.test:0
+service:
+  pipelines:
+    traces:
+      exporters: [otlp_http/mlflow]
+YAML
+start_dependency_fixture 200 address
+build_dependency_probe "$(<"$test_root/status-port")" "$(<"$test_root/target-port")" "$(<"$test_root/dns-port")"
+if "$test_root/otel-health-probe-dependencies"; then
+  printf '%s\n' 'probe accepted a nested exporter endpoint without a top-level endpoint' >&2
+  exit 1
+fi
+stop_dependency_fixture
 
 cat >"$dependency_config" <<'YAML'
 # exporters: [otlp_http/laminar]

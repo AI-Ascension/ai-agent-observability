@@ -29,7 +29,10 @@ Accept: application/json
 ```
 
 It succeeds only when the endpoint returns HTTP 200 and the top-level JSON
-fields report `healthy: true` and `status: "StatusOK"`. It reads at most 8 KiB
+fields report `healthy: true` and status `"StatusOK"` or
+`"StatusRecoverableError"`. The latter is accepted only for the configured
+30-second recoverable-error window; starting, permanent, and unknown statuses
+remain failures. It reads at most 8 KiB
 and has one two-second monotonic deadline shared by connection, write, read,
 DNS, and downstream checks. Any connection, HTTP, JSON, health,
 pipeline-status, or deadline failure exits nonzero without printing response

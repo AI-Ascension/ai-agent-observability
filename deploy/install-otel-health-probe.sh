@@ -22,6 +22,7 @@ recreate_timeout_seconds="${OTEL_RECREATE_TIMEOUT_SECONDS:-180}"
 inspect_timeout_seconds="${OTEL_INSPECT_TIMEOUT_SECONDS:-15}"
 ready_timeout_seconds="${OTEL_READY_TIMEOUT_SECONDS:-240}"
 install_timeout_seconds="${OTEL_INSTALL_TIMEOUT_SECONDS:-1200}"
+max_capture_bytes="${OTEL_MAX_CAPTURE_BYTES:-4194304}"
 install_mutated=false
 backup_dir=""
 previous_image_id=""
@@ -72,34 +73,55 @@ require_positive_integer() {
   [[ "$value" =~ ^[1-9][0-9]*$ ]] || fail "$name must be a positive integer"
 }
 
+remaining_timeout() {
+  local requested="$1"
+  local remaining=$((install_deadline - SECONDS))
+  (( remaining > 0 )) || fail "overall installation timeout of ${install_timeout_seconds}s exceeded"
+  (( requested < remaining )) && printf '%s\n' "$requested" || printf '%s\n' "$remaining"
+}
+
 # Keep engine operations bounded and distinguish timeout from a normal command
 # failure. Captured output is stdout only so diagnostics cannot echo secrets.
 bounded_capture() {
   local label="$1"
-  local seconds="$2"
+  local requested="$2"
   shift 2
-  local output
-  local status
-
-  if output="$(timeout --foreground --kill-after=5s "${seconds}s" "$@" 2>/dev/null)"; then
-    printf '%s' "$output"
+  local output status seconds file_limit bytes
+  output="$(mktemp)"
+  seconds="$(remaining_timeout "$requested")"
+  file_limit=$(( (max_capture_bytes + 511) / 512 ))
+  # No --foreground means timeout owns a process group and can terminate
+  # grandchildren. ulimit caps inherited stdout before the temp file grows.
+  if timeout --kill-after=5s "${seconds}s" \
+      bash -c 'ulimit -f "$1" || exit 125; shift; exec "$@"' _ "$file_limit" "$@" >"$output"; then
+    bytes="$(wc -c <"$output")"
+    if (( bytes > max_capture_bytes )); then
+      rm -f -- "$output"
+      fail "$label exceeded the ${max_capture_bytes}-byte capture limit"
+    fi
+    cat -- "$output"
+    rm -f -- "$output"
     return 0
   else
     status=$?
   fi
+  rm -f -- "$output"
   if [[ "$status" == 124 || "$status" == 137 ]]; then
     fail "$label timed out after ${seconds}s"
+  fi
+  if [[ "$status" == 125 || "$status" == 153 ]]; then
+    fail "$label exceeded the ${max_capture_bytes}-byte capture limit"
   fi
   fail "$label failed (exit $status)"
 }
 
 bounded_run() {
   local label="$1"
-  local seconds="$2"
+  local requested="$2"
   shift 2
-  local status
-
-  if timeout --foreground --kill-after=5s "${seconds}s" "$@"; then
+  local status seconds
+  seconds="$(remaining_timeout "$requested")"
+  if timeout --kill-after=5s "${seconds}s" "$@"; then
     return 0
   else
     status=$?
@@ -114,12 +136,12 @@ case "${OTEL_ENGINE:-podman}" in
   podman)
     command -v podman >/dev/null 2>&1 || fail 'podman is required'
     engine=(podman)
-    compose=(podman compose)
+    compose=(podman compose --env-file "$env_file")
     ;;
   docker)
     command -v docker >/dev/null 2>&1 || fail 'docker is required'
     engine=(docker)
-    compose=(docker compose)
+    compose=(docker compose --env-file "$env_file")
     ;;
   *)
     fail 'OTEL_ENGINE must be podman or docker'
@@ -140,6 +162,12 @@ require_positive_integer OTEL_RECREATE_TIMEOUT_SECONDS "$recreate_timeout_second
 require_positive_integer OTEL_INSPECT_TIMEOUT_SECONDS "$inspect_timeout_seconds"
 require_positive_integer OTEL_READY_TIMEOUT_SECONDS "$ready_timeout_seconds"
 require_positive_integer OTEL_INSTALL_TIMEOUT_SECONDS "$install_timeout_seconds"
+require_positive_integer OTEL_MAX_CAPTURE_BYTES "$max_capture_bytes"
+(( max_capture_bytes <= 16777216 )) || fail 'OTEL_MAX_CAPTURE_BYTES exceeds 16777216 bytes'
+(( max_capture_bytes >= 512 )) || fail 'OTEL_MAX_CAPTURE_BYTES is too small'
+# The aggregate deadline begins before source, runtime, and backup preflight.
+# Every later bounded operation uses the remaining budget as its upper bound.
+install_deadline=$((SECONDS + install_timeout_seconds))
 
 need_value OTEL_EXPECTED_GIT_HEAD
 actual_head="$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null || true)"
@@ -360,7 +388,7 @@ for row in rows:
         },
     })
 json.dump(safe, sys.stdout, sort_keys=True)
-sys.stdout.write("\\n")
+sys.stdout.write("\n")
 ' <<<"$container_inspect")" || fail 'active Collector inspect could not be sanitized'
 active_mounts="$(bounded_capture 'active Collector mount inspect' "$inspect_timeout_seconds" \
   "${engine[@]}" inspect --format '{{range .Mounts}}{{printf "%s\t%s\t%s\t%t\t%s\n" .Type .Source .Destination .RW .Mode}}{{end}}' "$container_name")"
@@ -459,13 +487,13 @@ verify_runtime_state() {
   local mount_count=0
   local temp
 
-  image_id="$(timeout --foreground --kill-after=5s "${inspect_timeout_seconds}s" \
+  image_id="$(timeout --kill-after=5s "${inspect_timeout_seconds}s" \
     "${engine[@]}" inspect --format '{{.Image}}' "$container_name" 2>/dev/null)" || return 1
   [[ "$image_id" == "$expected_image" ]] || return 1
-  labels="$(timeout --foreground --kill-after=5s "${inspect_timeout_seconds}s" \
+  labels="$(timeout --kill-after=5s "${inspect_timeout_seconds}s" \
     "${engine[@]}" inspect --format '{{printf "%s\t%s" (index .Config.Labels "com.docker.compose.project") (index .Config.Labels "com.docker.compose.service")}}' "$container_name" 2>/dev/null)" || return 1
   [[ "$labels" == "$project_name"$'\t'otel-collector ]] || return 1
-  mounts="$(timeout --foreground --kill-after=5s "${inspect_timeout_seconds}s" \
+  mounts="$(timeout --kill-after=5s "${inspect_timeout_seconds}s" \
     "${engine[@]}" inspect --format '{{range .Mounts}}{{printf "%s\t%s\t%s\t%t\t%s\n" .Type .Source .Destination .RW .Mode}}{{end}}' "$container_name" 2>/dev/null)" || return 1
   while IFS=$'\t' read -r mount_type mount_source mount_target mount_rw mount_mode; do
     [[ -n "${mount_target:-}" ]] || continue
@@ -477,7 +505,7 @@ verify_runtime_state() {
   done <<<"$mounts"
   [[ "$mount_count" == 1 ]] || return 1
   temp="$(mktemp -d)" || return 1
-  if ! timeout --foreground --kill-after=5s "${inspect_timeout_seconds}s" \
+  if ! timeout --kill-after=5s "${inspect_timeout_seconds}s" \
       "${engine[@]}" cp "$container_name:$mount_destination" "$temp/config.yaml" >/dev/null 2>&1; then
     rm -rf -- "$temp"
     return 1
@@ -487,12 +515,12 @@ verify_runtime_state() {
     return 1
   fi
   rm -rf -- "$temp"
-  env_text="$(timeout --foreground --kill-after=5s "${inspect_timeout_seconds}s" \
+  env_text="$(timeout --kill-after=5s "${inspect_timeout_seconds}s" \
     "${engine[@]}" inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container_name" 2>/dev/null)" || return 1
   verify_env_text "$env_text" || return 1
   [[ "$(env_identity "$env_text")" == "$expected_env_digest" ]] || return 1
   [[ "$(env_identity_all "$env_text")" == "$expected_full_env_digest" ]] || return 1
-  health="$(timeout --foreground --kill-after=5s "${inspect_timeout_seconds}s" \
+  health="$(timeout --kill-after=5s "${inspect_timeout_seconds}s" \
     "${engine[@]}" inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$container_name" 2>/dev/null)" || return 1
   [[ "$health" == "$expected_health" ]] || return 1
   return 0
@@ -517,7 +545,7 @@ rollback() {
     shift 2
     local status
 
-    if timeout --foreground --kill-after=5s "${seconds}s" "$@" >/dev/null 2>&1; then
+    if timeout --kill-after=5s "${seconds}s" "$@" >/dev/null 2>&1; then
       phase_status=ok
       status=0
     else
@@ -537,7 +565,7 @@ rollback() {
       rollback_ok=false
     fi
     if [[ "$rollback_ok" == true ]]; then
-      restored_image_id="$(timeout --foreground --kill-after=5s "${inspect_timeout_seconds}s" \
+      restored_image_id="$(timeout --kill-after=5s "${inspect_timeout_seconds}s" \
         "${engine[@]}" image inspect --format '{{.Id}}' "$image_ref" 2>/dev/null)"
       if [[ "$restored_image_id" == "$active_image_id" ]]; then
         [[ -z "$rollback_log" ]] || printf 'phase=verify-retag result=ok\n' >>"$rollback_log"
@@ -550,9 +578,34 @@ rollback() {
         "${compose[@]}" -p "$project_name" -f "$compose_file" up -d --no-build --no-deps --force-recreate otel-collector; then
       rollback_ok=false
     fi
-    if [[ "$rollback_ok" == true ]] && ! verify_runtime_state "$active_image_id" "$expected_config_sha256" \
-        "$active_env_sha256" "$active_full_env_sha256" "$active_health"; then
-      [[ -z "$rollback_log" ]] || printf 'phase=verify-previous-runtime result=failed\n' >>"$rollback_log"
+    rollback_health_verified=false
+    if [[ "$rollback_ok" == true ]]; then
+      rollback_elapsed=0
+      rollback_last_health=missing
+      # The previous image has a 30s health start period. Wait through that
+      # bounded grace before deciding that compensation failed.
+      while (( rollback_elapsed <= ready_timeout_seconds )); do
+        if rollback_last_health="$(timeout --kill-after=5s "${inspect_timeout_seconds}s" \
+            "${engine[@]}" inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
+            "$container_name" 2>/dev/null)"; then
+          if [[ "$rollback_last_health" == healthy ]]; then
+            if verify_runtime_state "$active_image_id" "$expected_config_sha256" \
+                "$active_env_sha256" "$active_full_env_sha256" healthy; then
+              rollback_health_verified=true
+              break
+            fi
+            break
+          fi
+          [[ "$rollback_last_health" == unhealthy ]] && break
+        else
+          break
+        fi
+        sleep 5
+        (( rollback_elapsed += 5 ))
+      done
+    fi
+    if [[ "$rollback_health_verified" != true ]]; then
+      [[ -z "$rollback_log" ]] || printf 'phase=verify-previous-runtime result=failed:health=%s\n' "$rollback_last_health" >>"$rollback_log"
       rollback_ok=false
     elif [[ -n "$rollback_log" ]]; then
       printf 'phase=verify-previous-runtime result=ok\n' >>"$rollback_log"
@@ -575,14 +628,6 @@ rollback() {
 }
 trap 'status=$?; if [[ $status -ne 0 ]]; then rollback "$status"; fi' EXIT
 
-install_deadline=$((SECONDS + install_timeout_seconds))
-remaining_timeout() {
-  local requested="$1"
-  local remaining=$((install_deadline - SECONDS))
-  (( remaining > 0 )) || fail "overall installation timeout of ${install_timeout_seconds}s exceeded"
-  (( requested < remaining )) && printf '%s\n' "$requested" || printf '%s\n' "$remaining"
-}
-
 install_mutated=true
 bounded_run 'Collector image build' "$(remaining_timeout "$build_timeout_seconds")" \
   "${compose[@]}" -p "$project_name" -f "$compose_file" build otel-collector
@@ -599,7 +644,7 @@ last_health='missing'
 elapsed=0
 while (( elapsed <= ready_timeout_seconds )); do
   health_inspect_timeout="$(remaining_timeout "$inspect_timeout_seconds")"
-  if health="$(timeout --foreground --kill-after=5s "${health_inspect_timeout}s" \
+  if health="$(timeout --kill-after=5s "${health_inspect_timeout}s" \
       "${engine[@]}" inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$container_name" 2>/dev/null)"; then
     last_health="$health"
   else

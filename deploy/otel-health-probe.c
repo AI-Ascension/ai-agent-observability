@@ -990,7 +990,7 @@ static int exporter_endpoint(const char *config, size_t length, const char *name
             endpoint_seen = 0;
             continue;
         }
-        if (in_target && indent > target_indent &&
+        if (in_target && indent == target_indent + 2 &&
             yaml_key(content, content_length, "endpoint", &value, &value_length)) {
             if (endpoint_seen || !parse_endpoint(value, value_length, target)) {
                 return 0;
@@ -1376,7 +1376,12 @@ static int json_health_object(struct json_parser *parser, int *healthy, int *sta
                 return 0;
             }
             *status_seen = 1;
-            *status_ok = status_decoded && strcmp(status, "StatusOK") == 0;
+            // v0.160's component-status extension reports recoverable errors
+            // as healthy during recovery_duration. Accept that explicit state
+            // while continuing to reject starting, permanent, or unknown states.
+            *status_ok = status_decoded &&
+                (strcmp(status, "StatusOK") == 0 ||
+                 strcmp(status, "StatusRecoverableError") == 0);
         } else if (!json_value(parser, 1)) {
             return 0;
         }

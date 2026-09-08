@@ -85,7 +85,8 @@ sudo podman inspect --format '{{.State.Health.Status}}' ai-agent-observability-o
 ```
 
 The healthcheck requires the traces pipeline to report `healthy: true` and
-`StatusOK`. Do not treat a running Collector process, an open OTLP socket, or
+`StatusOK` or the configured recoverable `StatusRecoverableError` state during
+its recovery window. Do not treat a running Collector process, an open OTLP socket, or
 an HTTP response from a different service as Collector readiness.
 
 ## Browser access
