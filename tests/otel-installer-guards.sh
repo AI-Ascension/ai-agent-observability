@@ -149,9 +149,9 @@ inspect_json() {
       source="$state_dir/inspect-missing-health.json"
     fi
     if [[ "${FAKE_BAD_METRICS_BIND:-}" == yes ]]; then
-      sed 's/"HostIp":"127.0.0.1"/"HostIp":"0.0.0.0"/g' "$source"
+      jq '.[0].HostConfig.PortBindings["8888/tcp"][0].HostIp = "0.0.0.0"' "$source"
     elif [[ "${FAKE_BAD_HEALTH:-}" == yes ]]; then
-      sed 's/"Retries":3/"Retries":2/' "$source"
+      jq '.[0].Config.Healthcheck.Retries = 2' "$source"
     else
       cat "$source"
     fi
