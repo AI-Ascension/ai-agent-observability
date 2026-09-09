@@ -87,6 +87,9 @@ cat >"$state_dir/inspect.json" <<JSON
 [{"Id":"fixture-container-id","Name":"/ai-agent-observability-otel-collector","Image":"sha256:fixture-active","Created":"2026-09-08T00:00:00Z","Config":{"Entrypoint":[],"Cmd":["--feature-gates=+extension.healthcheck.useComponentStatus","--config=/etc/otelcol-contrib/config.yaml"],"ExposedPorts":{"4317/tcp":{},"4318/tcp":{},"8888/tcp":{}},"Env":["MLFLOW_EXPERIMENT_ID=0","LAMINAR_PROJECT_API_KEY=fixture-key"],"Healthcheck":{"Test":["CMD","/usr/local/bin/otel-health-probe"],"Interval":30000000000,"Timeout":5000000000,"Retries":3,"StartPeriod":30000000000},"Labels":{"com.docker.compose.project":"ai-agent-observability","com.docker.compose.service":"otel-collector"},"ReadonlyRootfs":true,"User":"","WorkingDir":"/"},"HostConfig":{"PortBindings":{"4317/tcp":[{"HostIp":"127.0.0.1","HostPort":"14317"}],"4318/tcp":[{"HostIp":"127.0.0.1","HostPort":"14318"}],"8888/tcp":[{"HostIp":"127.0.0.1","HostPort":"$metrics_port"}]},"PublishAllPorts":false,"NetworkMode":"ai-agent-observability_default","ExtraHosts":[],"Devices":[],"DeviceRequests":[],"BlkioWeight":0,"CpuCount":0,"CpuPercent":0,"CpuPeriod":0,"CpuQuota":0,"CpuRealtimePeriod":0,"CpuRealtimeRuntime":0,"CpuShares":0,"CpusetCpus":"","CpusetMems":"","NanoCpus":0,"Memory":0,"MemoryReservation":0,"MemorySwap":0,"MemorySwappiness":0,"OomKillDisable":false,"PidsLimit":0,"Ulimits":[],"ReadonlyRootfs":true,"SecurityOpt":["no-new-privileges:true"],"CapAdd":[],"CapDrop":[],"Privileged":false,"Tmpfs":{"/tmp":"rw"},"RestartPolicy":{"Name":"unless-stopped"}},"NetworkSettings":{"Networks":{"ai-agent-observability_default":{"Aliases":["otel-collector","ai-agent-observability-otel-collector"]}}},"Mounts":[{"Type":"bind","Source":"$expected_mount_source","Destination":"/etc/otelcol-contrib/config.yaml","Mode":"ro","RW":false}],"State":{"Status":"running","Health":{"Status":"healthy","Log":[]}}}]
 JSON
 expected_active_healthcheck_sha256="$(jq -cS '.[0].Config.Healthcheck // null' "$state_dir/inspect.json" | sha256sum | awk '{print $1}')"
+jq '.[0].Config.Healthcheck = null | .[0].State |= del(.Health)' \
+  "$state_dir/inspect.json" >"$state_dir/inspect-missing-health.json"
+missing_active_healthcheck_sha256="$(jq -cS '.[0].Config.Healthcheck // null' "$state_dir/inspect-missing-health.json" | sha256sum | awk '{print $1}')"
 
 cat >"$fake_bin/podman" <<'FAKE'
 #!/usr/bin/env bash
@@ -98,9 +101,14 @@ printf '%s\n' "$*" >>"$log_file"
 
 inspect_json() {
   local source="$state_dir/inspect.json"
+  if [[ "${FAKE_MISSING_HEALTH:-}" == yes && ( ! -e "$state_dir/recreated" || -e "$state_dir/rollback-recreated" ) ]]; then
+    source="$state_dir/inspect-missing-health.json"
+  fi
   if [[ -e "$state_dir/recreated" ]]; then
     if [[ -e "$state_dir/rollback-recreated" ]]; then
       sed 's/fixture-container-id/fixture-rollback-id/g; s/sha256:fixture-active/sha256:fixture-active/g' "$source"
+    elif [[ "${FAKE_POST_RECREATE_DRIFT:-}" == yes ]]; then
+      sed 's/fixture-container-id/fixture-new-id/g; s/sha256:fixture-active/sha256:fixture-built/g; s/"WorkingDir":"\/"/"WorkingDir":"\/drift"/' "$source"
     else
       sed 's/fixture-container-id/fixture-new-id/g; s/sha256:fixture-active/sha256:fixture-built/g' "$source"
     fi
@@ -226,7 +234,11 @@ if [[ "${1:-}" == inspect ]]; then
         printf '%s\n' 'MLFLOW_EXPERIMENT_ID=0' 'LAMINAR_PROJECT_API_KEY=fixture-key'
         ;;
       *'.State.Health'*)
-        printf '%s\n' healthy
+        if [[ "${FAKE_MISSING_HEALTH:-}" == yes && ( ! -e "$state_dir/recreated" || -e "$state_dir/rollback-recreated" ) ]]; then
+          printf '%s\n' missing
+        else
+          printf '%s\n' healthy
+        fi
         ;;
       *)
         printf '%s\n' 'unsupported fixture inspect format' >&2
@@ -347,6 +359,18 @@ fi
 grep -Fq -- "--env-file $env_file" "$log_file"
 grep -Fq 'no mutation performed' "$test_root/check.out"
 
+missing_check_log="$test_root/missing-check.log"
+: >"$missing_check_log"
+if ! env "${common_env[@]}" \
+    OTEL_EXPECTED_ACTIVE_HEALTHCHECK_SHA256="$missing_active_healthcheck_sha256" \
+    FAKE_MISSING_HEALTH=yes FAKE_LOG="$missing_check_log" PATH="$fake_bin:$PATH" \
+    "$installer" --check >"$test_root/missing-check.out" 2>"$test_root/missing-check.err"; then
+  cat "$test_root/missing-check.err" >&2
+  printf '%s\n' 'installer rejected a legacy baseline with no Docker healthcheck' >&2
+  exit 1
+fi
+grep -Fq 'no mutation performed' "$test_root/missing-check.out"
+
 proof="$test_root/quiescence.json"
 refresh_proof() {
   local new_stamp
@@ -450,6 +474,35 @@ if grep -Fq 'rollback UNKNOWN' "$test_root/install.err"; then
   printf '%s\n' 'fixture build failure did not complete verified rollback' >&2
   exit 1
 fi
+
+rm -f "$state_dir"/built "$state_dir"/retagged "$state_dir"/recreated \
+  "$state_dir"/rollback-recreated "$state_dir"/recreate-attempted "$state_dir"/id-changed \
+  "$state_dir"/runtime-drift
+missing_rollback_log="$test_root/missing-rollback.log"
+: >"$missing_rollback_log"
+refresh_proof
+status=0
+if env "${install_env[@]}" \
+    OTEL_EXPECTED_ACTIVE_HEALTHCHECK_SHA256="$missing_active_healthcheck_sha256" \
+    FAKE_MISSING_HEALTH=yes FAKE_POST_RECREATE_DRIFT=yes FAKE_LOG="$missing_rollback_log" \
+    PATH="$fake_bin:$PATH" "$installer" --install >"$test_root/missing-rollback.out" \
+    2>"$test_root/missing-rollback.err"; then
+  status=0
+else
+  status=$?
+fi
+[[ "$status" == 1 ]] || {
+  cat "$test_root/missing-rollback.err" >&2
+  printf 'expected missing-health baseline rollback fixture to preserve status 1, got %s\n' "$status" >&2
+  exit 1
+}
+grep -Fq 'post-install identity verification failed' "$test_root/missing-rollback.err"
+grep -Fq 'rollback verified' "$test_root/missing-rollback.err"
+grep -Fq 'up -d --no-build --no-deps --force-recreate otel-collector' "$missing_rollback_log"
+[[ -e "$state_dir/rollback-recreated" ]] || {
+  printf '%s\n' 'missing-health baseline rollback did not recreate the legacy service' >&2
+  exit 1
+}
 
 rm -f "$state_dir"/built "$state_dir"/retagged "$state_dir"/recreated \
   "$state_dir"/rollback-recreated "$state_dir"/recreate-attempted "$state_dir"/id-changed \

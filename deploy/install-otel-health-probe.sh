@@ -970,7 +970,13 @@ PY
 
 active_health="$(bounded_capture 'active Collector health inspect' "$inspect_timeout_seconds" \
   "${engine[@]}" inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$container_name")"
-[[ "$active_health" == healthy ]] || fail "active Collector is not healthy (status=$active_health)"
+# The pre-install service is the captured legacy baseline. A legacy image may
+# have no Docker healthcheck at all, in which case the engine reports
+# `missing`; an owner-approved legacy healthcheck must already be healthy.
+case "$active_health" in
+  healthy|missing) ;;
+  *) fail "active Collector legacy baseline is not ready (status=$active_health)" ;;
+esac
 
 if [[ "$mode" == --check ]]; then
   printf '%s\n' 'OTel source, build inputs, active traces exporters, image, mount, environment, and health guards passed; no mutation performed.'
@@ -1373,13 +1379,13 @@ restore_materialized_source_if_unchanged"
            rollback_last_health="$(timeout --kill-after="${timeout_kill_after_seconds}s" "${rollback_health_seconds}s" \
             "${engine[@]}" inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' \
             "$container_name" 2>/dev/null)"; then
-          if [[ "$rollback_last_health" == healthy ]]; then
+          if [[ "$rollback_last_health" == "$active_health" ]]; then
             rollback_container_id=""
             if rollback_container_id="$(bounded_capture 'rollback container identity recheck' "$inspect_timeout_seconds" \
                 "${engine[@]}" inspect --format '{{.Id}}' "$container_name")"; then
               if [[ -n "$rollback_container_id" ]] && verify_runtime_state "$active_image_id" \
                   "$expected_config_sha256" "$active_env_sha256" "$active_full_env_sha256" \
-                healthy "$active_runtime_sha256" "$rollback_container_id" baseline \
+                "$active_health" "$active_runtime_sha256" "$rollback_container_id" baseline \
                 "$active_healthcheck_sha256"; then
                 rollback_health_verified=true
                 break
@@ -1436,7 +1442,7 @@ built_image_id="$(bounded_capture 'built Collector image inspect' "$inspect_time
 assert_active_container_unchanged || fail 'active Collector identity changed during image build'
 verify_source_files_unchanged || fail 'reviewed source inputs changed during image build'
 verify_runtime_state "$active_image_id" "$expected_config_sha256" "$active_env_sha256" \
-  "$active_full_env_sha256" healthy "$active_runtime_sha256" "$active_container_id" baseline \
+  "$active_full_env_sha256" "$active_health" "$active_runtime_sha256" "$active_container_id" baseline \
   "$active_healthcheck_sha256" || \
   fail 'active Collector runtime contract changed during image build'
 verify_quiescence_approval "$OTEL_QUIESCE_PROOF" "$active_container_id"
@@ -1446,7 +1452,7 @@ printf '%s\n' "$post_build_live_quiescence" >"$backup_dir/pre-recreate-live-quie
 chmod 600 "$backup_dir/pre-recreate-live-quiescence.json"
 verify_source_files_unchanged || fail 'reviewed source inputs changed before recreation'
 verify_runtime_state "$active_image_id" "$expected_config_sha256" "$active_env_sha256" \
-  "$active_full_env_sha256" healthy "$active_runtime_sha256" "$active_container_id" baseline \
+  "$active_full_env_sha256" "$active_health" "$active_runtime_sha256" "$active_container_id" baseline \
   "$active_healthcheck_sha256" || \
   fail 'active Collector runtime contract changed immediately before recreation'
 
