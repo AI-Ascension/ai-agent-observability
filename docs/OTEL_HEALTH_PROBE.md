@@ -59,10 +59,17 @@ and image identity hashes, a clean probe build input set,
 approval records intent and binds the target to the current Collector
 container; it does not claim that producers have already drained. The installer
 then observes the running Collector's Prometheus endpoint at
-`OTEL_METRICS_URL` (the configured loopback-published
-`http://127.0.0.1:${OTEL_METRICS_PORT}/metrics` endpoint) for the configured
-`OTEL_QUIESCE_OBSERVATION_SECONDS` interval, which defaults to five seconds.
-An override is accepted only when it is that exact loopback URL.
+`OTEL_METRICS_URL` for the configured `OTEL_QUIESCE_OBSERVATION_SECONDS`
+interval, which defaults to five seconds. With a configured host binding this
+is the exact loopback-published
+`http://127.0.0.1:${OTEL_METRICS_PORT}/metrics` endpoint. A legacy deployment
+may have neither the `OTEL_METRICS_PORT` key in its `.env` nor an `8888/tcp`
+host binding. In that case the owner supplies `OTEL_EXPECTED_METRICS_PORT` for
+the reviewed candidate port, leaves the legacy `.env` unchanged, and the
+installer observes `http://127.0.0.1:8888/metrics` through the captured
+container network namespace with `nsenter --target <State.Pid> --net
+python3`. An explicit `OTEL_METRICS_URL` is accepted only when it is the
+corresponding exact loopback endpoint.
 It requires queue and in-flight request series, requires their values to remain
 zero, and requires `otelcol_receiver_accepted_spans` to remain unchanged over
 the complete interval. It performs this live observation before the build and
@@ -105,10 +112,15 @@ or unexpected values fail closed. The live observer requires exactly one queue
 and one in-flight series for every expected exporter, and exactly one accepted
 span series for every expected `receiver/transport` pair. Duplicate labels,
 malformed samples, negative counters, and unrelated receiver or exporter
-series are rejected. The observer also requires that the active container
-inspect maps `8888/tcp` exactly to `127.0.0.1:${OTEL_METRICS_PORT}` before it
-uses the host endpoint, so an unrelated loopback listener cannot satisfy the
-quiescence gate.
+series are rejected. When the baseline has a host binding, the observer
+requires that the active container inspect maps `8888/tcp` exactly to
+`127.0.0.1:${OTEL_METRICS_PORT}` before it uses the host endpoint. When the
+baseline binding is absent, it requires a positive `State.Pid` and checks the
+same container ID, image ID, and PID immediately before and after the
+namespace read. Any unrelated or malformed `8888/tcp` binding is rejected.
+After recreation, the candidate must own the exact reviewed loopback host
+binding; the stable runtime comparison permits only that new `8888/tcp`
+binding and requires every other runtime field to remain unchanged.
 
 The complete pre-update environment is retained only as a digest and is
 required to match after recreation; the inspect backup removes environment
@@ -140,7 +152,8 @@ checkout there, run `deploy/materialize-otel-source.sh --materialize` with
 `OTEL_MATERIALIZATION_BACKUP_ROOT`, and the exact
 `OTEL_EXPECTED_GIT_HEAD`. The helper archives the complete original tree,
 records source modes and bind-source device/inode identities, writes reviewed
-files in place, and leaves the existing `.env` untouched. It does not replace
+files in place, and leaves the existing `.env` untouched. Its rollback restores
+those bind-source files in place as well, preserving their inodes. It does not replace
 the deployment directory, because replacing a bind-source file or directory
 can leave an already-mounted inode pinned to the old content. The generated
 `deploy/.otel-source-manifest.json` lets the installer admit the non-Git tree
