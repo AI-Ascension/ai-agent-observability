@@ -5,12 +5,14 @@ repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 installer="$repo_root/deploy/install-otel-health-probe.sh"
 test_root="$(mktemp -d)"
 metrics_pid=""
+dirty_fixture="$repo_root/.otel-installer-dirty-fixture"
 cleanup() {
+  rm -f -- "$dirty_fixture"
   if [[ -n "$metrics_pid" ]]; then
     kill "$metrics_pid" 2>/dev/null || true
     wait "$metrics_pid" 2>/dev/null || true
   fi
-  rm -rf -- "$test_root"
+  [[ "${OTEL_TEST_KEEP:-}" == true ]] || rm -rf -- "$test_root"
 }
 trap cleanup EXIT
 
@@ -30,6 +32,11 @@ required = (
     "device_requests:",
     "resources:",
     "previous-runtime-sha256",
+    "OTEL_EXPECTED_ACTIVE_CONFIG_SHA256",
+    "OTEL_EXPECTED_SOURCE_MANIFEST_SHA256",
+    "verify_source_tree",
+    "source checkout is dirty",
+    "source tree does not match OTEL_EXPECTED_GIT_HEAD",
     "OTEL_QUIESCE_PROOF",
     "OTEL_ROLLBACK_TIMEOUT_SECONDS",
     "OTEL_METRICS_URL",
@@ -41,6 +48,10 @@ required = (
     "otelcol_exporter_queue_size",
     "OTEL_EXPECTED_TRACE_RECEIVER_SERIES",
     "metrics_port_binding_contract_matches",
+    "network_namespace_pin",
+    "State.Status",
+    "active_netns_pin",
+    "candidate_command_contract_matches",
     "StartPeriod == 30000000000",
     "source materialization manifest",
     "healthcheck_contract_matches",
@@ -86,6 +97,9 @@ sed -i "s/^OTEL_METRICS_PORT=.*/OTEL_METRICS_PORT=$metrics_port/" "$env_file"
 
 collector_config="$repo_root/deploy/otel-collector.yaml"
 expected_mount_source="$(readlink -f "$collector_config")"
+legacy_config="$test_root/legacy-collector.yaml"
+printf '%s\n' 'legacy baseline config without the candidate health extension' >"$legacy_config"
+legacy_config_sha256="$(sha256sum "$legacy_config" | awk '{print $1}')"
 cat >"$state_dir/inspect.json" <<JSON
 [{"Id":"fixture-container-id","Name":"/ai-agent-observability-otel-collector","Image":"sha256:fixture-active","Created":"2026-09-08T00:00:00Z","Config":{"Entrypoint":[],"Cmd":["--feature-gates=+extension.healthcheck.useComponentStatus","--config=/etc/otelcol-contrib/config.yaml"],"ExposedPorts":{"4317/tcp":{},"4318/tcp":{},"8888/tcp":{}},"Env":["MLFLOW_EXPERIMENT_ID=0","LAMINAR_PROJECT_API_KEY=fixture-key"],"Healthcheck":{"Test":["CMD","/usr/local/bin/otel-health-probe"],"Interval":30000000000,"Timeout":5000000000,"Retries":3,"StartPeriod":30000000000},"Labels":{"com.docker.compose.project":"ai-agent-observability","com.docker.compose.service":"otel-collector"},"ReadonlyRootfs":true,"User":"","WorkingDir":"/"},"HostConfig":{"PortBindings":{"4317/tcp":[{"HostIp":"127.0.0.1","HostPort":"14317"}],"4318/tcp":[{"HostIp":"127.0.0.1","HostPort":"14318"}],"8888/tcp":[{"HostIp":"127.0.0.1","HostPort":"$metrics_port"}]},"PublishAllPorts":false,"NetworkMode":"ai-agent-observability_default","ExtraHosts":[],"Devices":[],"DeviceRequests":[],"BlkioWeight":0,"CpuCount":0,"CpuPercent":0,"CpuPeriod":0,"CpuQuota":0,"CpuRealtimePeriod":0,"CpuRealtimeRuntime":0,"CpuShares":0,"CpusetCpus":"","CpusetMems":"","NanoCpus":0,"Memory":0,"MemoryReservation":0,"MemorySwap":0,"MemorySwappiness":0,"OomKillDisable":false,"PidsLimit":0,"Ulimits":[],"ReadonlyRootfs":true,"SecurityOpt":["no-new-privileges:true"],"CapAdd":[],"CapDrop":[],"Privileged":false,"Tmpfs":{"/tmp":"rw"},"RestartPolicy":{"Name":"unless-stopped"}},"NetworkSettings":{"Networks":{"ai-agent-observability_default":{"Aliases":["otel-collector","ai-agent-observability-otel-collector"],"IPAddress":"10.89.0.9"}}},"Mounts":[{"Type":"bind","Source":"$expected_mount_source","Destination":"/etc/otelcol-contrib/config.yaml","Mode":"ro","RW":false}],"State":{"Status":"running","Pid":12345,"Health":{"Status":"healthy","Log":[]}}}]
 JSON
@@ -93,7 +107,7 @@ expected_active_healthcheck_sha256="$(jq -cS '.[0].Config.Healthcheck // null' "
 jq '.[0].Config.Healthcheck = null | .[0].State |= del(.Health)' \
   "$state_dir/inspect.json" >"$state_dir/inspect-missing-health.json"
 missing_active_healthcheck_sha256="$(jq -cS '.[0].Config.Healthcheck // null' "$state_dir/inspect-missing-health.json" | sha256sum | awk '{print $1}')"
-jq '.[0].Config.Healthcheck = null | .[0].State.Health.Status = "" | .[0].HostConfig.PortBindings |= with_entries(select(.key != "8888/tcp"))' \
+jq '.[0].Config.Cmd = ["--config=/etc/otelcol-contrib/config.yaml"] | .[0].Config.Healthcheck = null | .[0].State |= del(.Health) | .[0].HostConfig.PortBindings |= with_entries(select(.key != "8888/tcp"))' \
   "$state_dir/inspect.json" >"$state_dir/inspect-legacy.json"
 
 cat >"$fake_bin/podman" <<'FAKE'
@@ -106,15 +120,18 @@ printf '%s\n' "$*" >>"$log_file"
 
 inspect_json() {
   local source="$state_dir/inspect.json"
-  if [[ "${FAKE_LEGACY_BASELINE:-}" == yes ]]; then
-    source="$state_dir/inspect-legacy.json"
-  elif [[ "${FAKE_MISSING_HEALTH:-}" == yes && ( ! -e "$state_dir/recreated" || -e "$state_dir/rollback-recreated" ) ]]; then
-    source="$state_dir/inspect-missing-health.json"
-  fi
   if [[ -e "$state_dir/recreated" ]]; then
     if [[ -e "$state_dir/rollback-recreated" ]]; then
+      if [[ "${FAKE_LEGACY_BASELINE:-}" == yes ]]; then
+        source="$state_dir/inspect-legacy.json"
+      elif [[ "${FAKE_MISSING_HEALTH:-}" == yes ]]; then
+        source="$state_dir/inspect-missing-health.json"
+      fi
       sed 's/fixture-container-id/fixture-rollback-id/g; s/sha256:fixture-active/sha256:fixture-active/g' "$source"
     elif [[ "${FAKE_POST_RECREATE_DRIFT:-}" == yes ]]; then
+      if [[ "${FAKE_MISSING_HEALTH:-}" == yes ]]; then
+        source="$state_dir/inspect-missing-health.json"
+      fi
       sed 's/fixture-container-id/fixture-new-id/g; s/sha256:fixture-active/sha256:fixture-built/g; s/"WorkingDir":"\/"/"WorkingDir":"\/drift"/' "$source"
     else
       sed 's/fixture-container-id/fixture-new-id/g; s/sha256:fixture-active/sha256:fixture-built/g' "$source"
@@ -126,6 +143,11 @@ inspect_json() {
   elif [[ "${FAKE_STOPPED:-}" == yes ]]; then
     sed 's/"Status":"running"/"Status":"exited"/' "$source"
   else
+    if [[ "${FAKE_LEGACY_BASELINE:-}" == yes ]]; then
+      source="$state_dir/inspect-legacy.json"
+    elif [[ "${FAKE_MISSING_HEALTH:-}" == yes ]]; then
+      source="$state_dir/inspect-missing-health.json"
+    fi
     if [[ "${FAKE_BAD_METRICS_BIND:-}" == yes ]]; then
       sed 's/"HostIp":"127.0.0.1"/"HostIp":"0.0.0.0"/g' "$source"
     elif [[ "${FAKE_BAD_HEALTH:-}" == yes ]]; then
@@ -242,7 +264,7 @@ if [[ "${1:-}" == inspect ]]; then
         ;;
       *'.State.Health'*)
         if [[ "${FAKE_LEGACY_BASELINE:-}" == yes && ! -e "$state_dir/recreated" ]]; then
-          printf '%s\n' ''
+          printf '%s\n' missing
         elif [[ "${FAKE_MISSING_HEALTH:-}" == yes && ( ! -e "$state_dir/recreated" || -e "$state_dir/rollback-recreated" ) ]]; then
           printf '%s\n' missing
         else
@@ -262,7 +284,11 @@ fi
 
 if [[ "${1:-}" == cp ]]; then
   destination="${@: -1}"
-  cp "${FAKE_CONFIG:?}" "$destination"
+  config_source="${FAKE_CONFIG:?}"
+  if [[ "${FAKE_LEGACY_BASELINE:-}" == yes && ! -e "$state_dir/recreated" && -n "${FAKE_ACTIVE_CONFIG:-}" ]]; then
+    config_source="$FAKE_ACTIVE_CONFIG"
+  fi
+  cp "$config_source" "$destination"
   exit 0
 fi
 
@@ -270,6 +296,28 @@ printf 'unsupported fixture podman invocation: %s\n' "$*" >&2
 exit 1
 FAKE
 chmod +x "$fake_bin/podman"
+
+cat >"$fake_bin/nsenter" <<'FAKE_NSENTER'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' "$*" >>"${FAKE_NSENTER_LOG:?}"
+[[ "${1:-}" == --target && "${3:-}" == --net && "${4:-}" == python3 ]] || {
+  printf '%s\n' 'namespace reader did not receive --target PID --net python3' >&2
+  exit 2
+}
+target_pid="$2"
+[[ "$target_pid" =~ ^[1-9][0-9]*$ && -e "/proc/$target_pid/ns/net" ]] || {
+  printf '%s\n' 'namespace reader target PID is not live' >&2
+  exit 3
+}
+shift 4
+url="${2:-}"
+if [[ "$url" == http://127.0.0.1:8888/metrics && -n "${FAKE_NAMESPACE_METRICS_URL:-}" ]]; then
+  set -- "$1" "${FAKE_NAMESPACE_METRICS_URL}" "${@:3}"
+fi
+exec python3 "$@"
+FAKE_NSENTER
+chmod +x "$fake_bin/nsenter"
 
 cat >"$test_root/metrics-server.py" <<'PY'
 import http.server
@@ -334,6 +382,10 @@ PY
   fi
   sleep 0.05
 done
+jq --argjson pid "$metrics_pid" '.[0].State.Pid = $pid' "$state_dir/inspect.json" >"$state_dir/inspect.json.tmp"
+mv "$state_dir/inspect.json.tmp" "$state_dir/inspect.json"
+jq --argjson pid "$metrics_pid" '.[0].State.Pid = $pid' "$state_dir/inspect-legacy.json" >"$state_dir/inspect-legacy.json.tmp"
+mv "$state_dir/inspect-legacy.json.tmp" "$state_dir/inspect-legacy.json"
 
 log_file="$test_root/check.log"
 : >"$log_file"
@@ -347,6 +399,7 @@ common_env=(
   OTEL_EXPECTED_GIT_HEAD="$(git -C "$repo_root" rev-parse HEAD)"
   OTEL_EXPECTED_PROBE_SHA256="$(sha256sum "$repo_root/deploy/otel-health-probe.c" | awk '{print $1}')"
   OTEL_EXPECTED_CONFIG_SHA256="$(sha256sum "$collector_config" | awk '{print $1}')"
+  OTEL_EXPECTED_ACTIVE_CONFIG_SHA256="$(sha256sum "$collector_config" | awk '{print $1}')"
   OTEL_EXPECTED_COMPOSE_SHA256="$(sha256sum "$repo_root/deploy/compose.yaml" | awk '{print $1}')"
   OTEL_EXPECTED_DOCKERFILE_SHA256="$(sha256sum "$repo_root/deploy/Dockerfile.otel" | awk '{print $1}')"
   OTEL_EXPECTED_ACTIVE_IMAGE_ID=sha256:fixture-active
@@ -368,6 +421,15 @@ fi
 grep -Fq -- "--env-file $env_file" "$log_file"
 grep -Fq 'no mutation performed' "$test_root/check.out"
 
+printf '%s\n' 'unreviewed source drift' >"$dirty_fixture"
+if env "${common_env[@]}" PATH="$fake_bin:$PATH" \
+    "$installer" --check >"$test_root/dirty-check.out" 2>"$test_root/dirty-check.err"; then
+  printf '%s\n' 'installer accepted an unrelated dirty source path' >&2
+  exit 1
+fi
+grep -Fq 'source checkout is dirty' "$test_root/dirty-check.err"
+rm -f -- "$dirty_fixture"
+
 missing_check_log="$test_root/missing-check.log"
 : >"$missing_check_log"
 if ! env "${common_env[@]}" \
@@ -387,8 +449,9 @@ legacy_check_log="$test_root/legacy-check.log"
 if ! env "${common_env[@]}" \
     OTEL_ENV_FILE="$legacy_env_file" OTEL_EXPECTED_METRICS_PORT=18888 \
     OTEL_METRICS_URL=http://127.0.0.1:8888/metrics \
+    OTEL_EXPECTED_ACTIVE_CONFIG_SHA256="$legacy_config_sha256" \
     OTEL_EXPECTED_ACTIVE_HEALTHCHECK_SHA256="$missing_active_healthcheck_sha256" \
-    FAKE_LEGACY_BASELINE=yes FAKE_LOG="$legacy_check_log" PATH="$fake_bin:$PATH" \
+    FAKE_LEGACY_BASELINE=yes FAKE_ACTIVE_CONFIG="$legacy_config" FAKE_LOG="$legacy_check_log" PATH="$fake_bin:$PATH" \
     "$installer" --check >"$test_root/legacy-check.out" 2>"$test_root/legacy-check.err"; then
   cat "$test_root/legacy-check.err" >&2
   printf '%s\n' 'installer rejected an empty-health legacy baseline without a host metrics binding' >&2
@@ -424,6 +487,29 @@ install_env=(
   OTEL_READY_TIMEOUT_SECONDS=10
   OTEL_MAX_CAPTURE_BYTES=65536
 )
+
+legacy_namespace_log="$test_root/legacy-namespace.log"
+refresh_proof
+if ! env "${install_env[@]}" \
+    OTEL_ENV_FILE="$legacy_env_file" OTEL_EXPECTED_METRICS_PORT=18888 \
+    OTEL_METRICS_URL=http://127.0.0.1:8888/metrics \
+    OTEL_EXPECTED_ACTIVE_CONFIG_SHA256="$legacy_config_sha256" \
+    OTEL_EXPECTED_ACTIVE_HEALTHCHECK_SHA256="$missing_active_healthcheck_sha256" \
+    FAKE_LEGACY_BASELINE=yes FAKE_ACTIVE_CONFIG="$legacy_config" \
+    FAKE_NSENTER_LOG="$legacy_namespace_log" FAKE_NAMESPACE_METRICS_URL="http://127.0.0.1:$metrics_port/metrics" \
+    FAKE_LOG="$test_root/legacy-install.log" PATH="$fake_bin:$PATH" \
+    "$installer" --install >"$test_root/legacy-install.out" 2>"$test_root/legacy-install.err"; then
+  cat "$test_root/legacy-install.err" >&2
+  printf '%s\n' 'installer rejected the real legacy config and namespace metrics path' >&2
+  exit 1
+fi
+grep -Fq 'OTel Collector installed and identity-verified healthy' "$test_root/legacy-install.out"
+grep -Fq -- "--target $metrics_pid --net python3" "$legacy_namespace_log"
+[[ "$(wc -l <"$legacy_namespace_log")" -ge 2 ]] || {
+  printf '%s\n' 'legacy install did not observe the namespace metrics endpoint twice' >&2
+  exit 1
+}
+rm -f "$state_dir"/{built,retagged,recreated,rollback-recreated,recreate-attempted,id-changed,runtime-drift}
 
 run_expected_install_failure() {
   local label="$1"

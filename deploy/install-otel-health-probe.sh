@@ -17,7 +17,10 @@ source_manifest="${OTEL_SOURCE_MANIFEST:-$script_dir/.otel-source-manifest.json}
 materialization_backup_dir="${OTEL_MATERIALIZATION_BACKUP_DIR:-}"
 mount_destination="/etc/otelcol-contrib/config.yaml"
 probe_path="/usr/local/bin/otel-health-probe"
-backup_root="${OTEL_BACKUP_ROOT:-$repo_dir/.otel-health-probe-backups}"
+# Keep the default private transaction capture outside the reviewed checkout;
+# otherwise the installer would make its own Git source appear dirty during
+# the post-build full-tree recheck.
+backup_root="${OTEL_BACKUP_ROOT:-$repo_dir/../.otel-health-probe-backups}"
 mode="${1:---install}"
 build_timeout_seconds="${OTEL_BUILD_TIMEOUT_SECONDS:-900}"
 recreate_timeout_seconds="${OTEL_RECREATE_TIMEOUT_SECONDS:-180}"
@@ -50,6 +53,8 @@ operation_deadline=0
 timeout_kill_after_seconds=1
 runtime_container_id=""
 observed_runtime_container_id=""
+active_config_sha256=""
+active_netns_pin=""
 
 case "$mode" in
   --check|--install) ;;
@@ -83,6 +88,104 @@ require_hash() {
   [[ -f "$path" ]] || fail "missing $path"
   actual="$(sha256_file "$path")"
   [[ "$actual" == "$expected" ]] || fail "$path hash does not match $name"
+}
+
+require_sha256_value() {
+  local name="$1"
+  local value="${!name:-}"
+  need_value "$name"
+  [[ "$value" =~ ^[0-9a-f]{64}$ ]] || fail "$name must be a lowercase SHA-256 digest"
+}
+
+verify_non_git_source_manifest() {
+  [[ "$source_is_git" == false ]] || return 0
+  require_sha256_value OTEL_EXPECTED_SOURCE_MANIFEST_SHA256
+  require_hash OTEL_EXPECTED_SOURCE_MANIFEST_SHA256 "$source_manifest"
+  [[ -f "$materialization_backup_dir/original-tree.tar" ]] || \
+    fail 'non-Git source requires OTEL_MATERIALIZATION_BACKUP_DIR/original-tree.tar'
+  [[ -f "$materialization_backup_dir/candidate-source-manifest.json" ]] || \
+    fail 'non-Git source requires the externally captured candidate source manifest'
+  cmp -s -- "$source_manifest" "$materialization_backup_dir/candidate-source-manifest.json" || \
+    fail 'materialized source manifest does not match the external candidate capture'
+  python3 - "$source_manifest" "$repo_dir" "$OTEL_EXPECTED_GIT_HEAD" <<'PY'
+import hashlib
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+manifest_path, target_text, expected_head = sys.argv[1:]
+target = Path(os.path.realpath(target_text))
+try:
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+except Exception as exc:
+    raise SystemExit(f"source materialization manifest is not valid JSON: {exc}")
+if manifest.get("schema") != "otel-source-materialization-v1":
+    raise SystemExit("source materialization manifest schema is invalid")
+if manifest.get("source_head") != expected_head:
+    raise SystemExit("source materialization manifest head does not match OTEL_EXPECTED_GIT_HEAD")
+if os.path.realpath(str(manifest.get("target_path", ""))) != str(target):
+    raise SystemExit("source materialization manifest target does not match the installer path")
+files = manifest.get("files")
+if not isinstance(files, list) or not files:
+    raise SystemExit("source materialization manifest has no files")
+seen = set()
+required = {
+    "deploy/Dockerfile.otel",
+    "deploy/otel-health-probe.c",
+    "deploy/otel-collector.yaml",
+    "deploy/compose.yaml",
+}
+for entry in files:
+    if not isinstance(entry, dict):
+        raise SystemExit("source materialization manifest contains a malformed file entry")
+    rel = entry.get("path")
+    digest = entry.get("sha256")
+    mode = entry.get("mode")
+    if not isinstance(rel, str) or not rel or rel.startswith("/") or ".." in Path(rel).parts:
+        raise SystemExit("source materialization manifest contains an unsafe path")
+    if rel in seen:
+        raise SystemExit("source materialization manifest contains a duplicate path")
+    seen.add(rel)
+    if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+        raise SystemExit(f"source materialization manifest has an invalid hash for {rel}")
+    if not isinstance(mode, int) or mode < 0 or mode > 0o7777:
+        raise SystemExit(f"source materialization manifest has an invalid mode for {rel}")
+    path = target / rel
+    if not path.is_file() or path.is_symlink():
+        raise SystemExit(f"materialized source file is missing or is a symlink: {rel}")
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != digest:
+        raise SystemExit(f"materialized source hash does not match the reviewed manifest: {rel}")
+    if stat.S_IMODE(path.stat().st_mode) != mode:
+        raise SystemExit(f"materialized source mode does not match the reviewed manifest: {rel}")
+if not required.issubset(seen):
+    raise SystemExit("source materialization manifest omits a required deployment input")
+PY
+}
+
+verify_source_tree() {
+  if [[ "$source_is_git" == true ]]; then
+    local current_head current_status expected_tree actual_tree
+    current_head="$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null || true)"
+    [[ "$current_head" == "$OTEL_EXPECTED_GIT_HEAD" ]] || fail 'source HEAD changed from OTEL_EXPECTED_GIT_HEAD'
+    current_status="$(git -C "$repo_dir" status --porcelain=v1 --untracked-files=all 2>/dev/null || true)"
+    [[ -z "$current_status" ]] || fail 'source checkout is dirty'
+    expected_tree="$(git -C "$repo_dir" rev-parse "${OTEL_EXPECTED_GIT_HEAD}^{tree}" 2>/dev/null || true)"
+    actual_tree="$(git -C "$repo_dir" rev-parse 'HEAD^{tree}' 2>/dev/null || true)"
+    [[ -n "$expected_tree" && "$actual_tree" == "$expected_tree" ]] || \
+      fail 'source tree does not match OTEL_EXPECTED_GIT_HEAD'
+  else
+    verify_non_git_source_manifest
+  fi
+}
+
+network_namespace_pin() {
+  local pid="$1"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ -e "/proc/$pid/ns/net" ]] || return 1
+  stat -Lc '%d:%i' "/proc/$pid/ns/net"
 }
 
 require_positive_integer() {
@@ -199,6 +302,7 @@ command -v timeout >/dev/null 2>&1 || fail 'timeout is required'
 command -v awk >/dev/null 2>&1 || fail 'awk is required'
 command -v python3 >/dev/null 2>&1 || fail 'python3 is required'
 command -v readlink >/dev/null 2>&1 || fail 'readlink is required'
+command -v stat >/dev/null 2>&1 || fail 'stat is required'
 command -v jq >/dev/null 2>&1 || fail 'jq is required'
 command -v tar >/dev/null 2>&1 || fail 'tar is required'
 command -v cmp >/dev/null 2>&1 || fail 'cmp is required'
@@ -293,10 +397,12 @@ PY
   [[ -f "$materialization_backup_dir/original-tree.tar" ]] || \
     fail 'non-Git source requires OTEL_MATERIALIZATION_BACKUP_DIR/original-tree.tar'
 fi
+verify_source_tree
 require_hash OTEL_EXPECTED_PROBE_SHA256 "$probe_source"
 require_hash OTEL_EXPECTED_CONFIG_SHA256 "$collector_config"
 require_hash OTEL_EXPECTED_COMPOSE_SHA256 "$compose_file"
 require_hash OTEL_EXPECTED_DOCKERFILE_SHA256 "$dockerfile"
+require_sha256_value OTEL_EXPECTED_ACTIVE_CONFIG_SHA256
 
 # Static guards cover the runtime contract before a mutable engine is touched.
 grep -Fq 'service:' "$collector_config" || fail 'collector config has no service section'
@@ -659,8 +765,9 @@ bounded_run 'active mounted config copy' "$inspect_timeout_seconds" \
 mounted_config_sha256="$(sha256_file "$mounted_tmp/config.yaml")"
 expected_config_sha256="$(sha256_file "$collector_config")"
 rm -rf -- "$mounted_tmp"
-[[ "$mounted_config_sha256" == "$expected_config_sha256" ]] || \
-  fail 'active mounted Collector config hash does not match the reviewed config'
+active_config_sha256="$mounted_config_sha256"
+[[ "$active_config_sha256" == "$OTEL_EXPECTED_ACTIVE_CONFIG_SHA256" ]] || \
+  fail 'active mounted Collector config hash does not match OTEL_EXPECTED_ACTIVE_CONFIG_SHA256'
 active_healthcheck="$(bounded_capture 'active Collector healthcheck inspect' "$inspect_timeout_seconds" \
   "${engine[@]}" inspect "$container_name")"
 active_healthcheck_sha256="$(jq -cS '.[0].Config.Healthcheck // null' <<<"$active_healthcheck" | \
@@ -759,6 +866,16 @@ healthcheck_contract_matches() {
   ' <<<"$inspect_json" >/dev/null
 }
 
+candidate_command_contract_matches() {
+  local inspect_json="$1"
+  jq -e '
+    .[0].Config.Cmd == [
+      "--feature-gates=+extension.healthcheck.useComponentStatus",
+      "--config=/etc/otelcol-contrib/config.yaml"
+    ]
+  ' <<<"$inspect_json" >/dev/null
+}
+
 # The configured loopback metrics endpoint is observed through the host binding
 # or the exact legacy container network namespace before recreation.
 # The existing container is a captured legacy baseline. It may have no
@@ -804,6 +921,8 @@ case "$metrics_binding_state" in
     command -v nsenter >/dev/null 2>&1 || fail 'nsenter is required for the legacy Collector metrics observer'
     active_pid="$(jq -r '.[0].State.Pid // 0' <<<"$container_inspect_raw")"
     [[ "$active_pid" =~ ^[1-9][0-9]*$ ]] || fail 'legacy Collector PID is unavailable for namespace metrics observation'
+    active_netns_pin="$(network_namespace_pin "$active_pid")" || \
+      fail 'legacy Collector network namespace cannot be pinned'
     metrics_access_mode=namespace
     metrics_reader=(nsenter --target "$active_pid" --net python3)
     expected_metrics_url="http://127.0.0.1:8888/metrics"
@@ -817,24 +936,34 @@ metrics_url="${OTEL_METRICS_URL:-$expected_metrics_url}"
   fail 'OTEL_METRICS_URL must be the configured loopback metrics endpoint or the exact legacy namespace endpoint'
 
 runtime_identity_stable_sha256() {
-  # The candidate is allowed exactly one new loopback 8888/tcp binding. Remove
-  # only that port from the comparison; all other ports/resources/security,
-  # networks, mounts, and commands remain required to match the baseline.
-  runtime_identity "$1" | jq -cS 'del(.host.port_bindings[] | select(.port == "8888/tcp"))' | \
+  # The candidate is allowed exactly one new loopback 8888/tcp binding and the
+  # reviewed feature-gate argument. Remove only those two intentional deltas;
+  # every other port/resource/security, network, mount, and command argument
+  # remains required to match the baseline.
+  runtime_identity "$1" | jq -cS '
+    .config.cmd |= map(select(. != "--feature-gates=+extension.healthcheck.useComponentStatus"))
+    | del(.host.port_bindings[] | select(.port == "8888/tcp"))
+  ' | \
     sha256sum | awk '{print $1}'
 }
 active_runtime_sha256="$(runtime_identity_stable_sha256 "$container_inspect_raw")"
 [[ "$active_runtime_sha256" =~ ^[0-9a-f]{64}$ ]] || fail 'active Collector runtime identity is unavailable'
 
 assert_active_container_unchanged() {
-  local current_json current_id current_image
+  local current_json current_id current_image current_pid current_state current_netns_pin
   current_json="$(bounded_capture 'active Collector identity recheck' "$inspect_timeout_seconds" \
     "${engine[@]}" inspect "$container_name")" || return 1
   current_id="$(jq -r '.[0].Id // ""' <<<"$current_json")" || return 1
   current_image="$(jq -r '.[0].Image // ""' <<<"$current_json")" || return 1
   current_pid="$(jq -r '.[0].State.Pid // 0' <<<"$current_json")" || return 1
-  [[ "$current_id" == "$active_container_id" && "$current_image" == "$active_image_id" ]] || return 1
+  current_state="$(jq -r '.[0].State.Status // "missing"' <<<"$current_json")" || return 1
+  [[ "$current_id" == "$active_container_id" && "$current_image" == "$active_image_id" && \
+     "$current_state" == running ]] || return 1
   [[ -z "$active_pid" || "$current_pid" == "$active_pid" ]] || return 1
+  if [[ -n "$active_pid" ]]; then
+    current_netns_pin="$(network_namespace_pin "$current_pid")" || return 1
+    [[ -n "$active_netns_pin" && "$current_netns_pin" == "$active_netns_pin" ]] || return 1
+  fi
 }
 
 verify_quiescence_approval() {
@@ -1101,7 +1230,7 @@ backup_file "$env_file"
 chmod 600 "$backup_dir/$(basename "$env_file")"
 printf '%s\n' "$container_inspect" >"$backup_dir/container-inspect.json"
 printf '%s\n' "$active_image_id" >"$backup_dir/previous-image-id"
-printf '%s\n' "$expected_config_sha256" >"$backup_dir/previous-config-sha256"
+printf '%s\n' "$active_config_sha256" >"$backup_dir/previous-config-sha256"
 printf '%s\n' "$active_env_sha256" >"$backup_dir/previous-env-sha256"
 printf '%s\n' "$active_full_env_sha256" >"$backup_dir/previous-full-env-sha256"
 printf '%s\n' "$active_runtime_sha256" >"$backup_dir/previous-runtime-sha256"
@@ -1307,6 +1436,7 @@ verify_runtime_state() {
   state_status="$(jq -r '.[0].State.Status // "missing"' <<<"$inspect_json")" || return 1
   [[ "$state_status" == running ]] || return 1
   if [[ "$healthcheck_mode" == candidate ]]; then
+    candidate_command_contract_matches "$inspect_json" || return 1
     healthcheck_contract_matches "$inspect_json" || return 1
   elif [[ "$healthcheck_mode" == baseline ]]; then
     healthcheck_identity_matches "$inspect_json" "$expected_healthcheck_sha256" || return 1
@@ -1317,6 +1447,7 @@ verify_runtime_state() {
 }
 
 verify_source_files_unchanged() {
+  verify_source_tree
   require_hash OTEL_EXPECTED_PROBE_SHA256 "$probe_source"
   require_hash OTEL_EXPECTED_CONFIG_SHA256 "$collector_config"
   require_hash OTEL_EXPECTED_COMPOSE_SHA256 "$compose_file"
@@ -1462,7 +1593,7 @@ restore_materialized_source_if_unchanged"
             if rollback_container_id="$(bounded_capture 'rollback container identity recheck' "$inspect_timeout_seconds" \
                 "${engine[@]}" inspect --format '{{.Id}}' "$container_name")"; then
               if [[ -n "$rollback_container_id" ]] && verify_runtime_state "$active_image_id" \
-                  "$expected_config_sha256" "$active_env_sha256" "$active_full_env_sha256" \
+                  "$active_config_sha256" "$active_env_sha256" "$active_full_env_sha256" \
                 "$active_health" "$active_runtime_sha256" "$rollback_container_id" baseline \
                 "$active_healthcheck_sha256"; then
                 rollback_health_verified=true
@@ -1519,7 +1650,7 @@ built_image_id="$(bounded_capture 'built Collector image inspect' "$inspect_time
   fail 'built image identity does not match OTEL_EXPECTED_BUILT_IMAGE_ID'
 assert_active_container_unchanged || fail 'active Collector identity changed during image build'
 verify_source_files_unchanged || fail 'reviewed source inputs changed during image build'
-verify_runtime_state "$active_image_id" "$expected_config_sha256" "$active_env_sha256" \
+verify_runtime_state "$active_image_id" "$active_config_sha256" "$active_env_sha256" \
   "$active_full_env_sha256" "$active_health" "$active_runtime_sha256" "$active_container_id" baseline \
   "$active_healthcheck_sha256" || \
   fail 'active Collector runtime contract changed during image build'
@@ -1529,7 +1660,7 @@ post_build_live_quiescence="$(observe_live_quiescence 'pre-recreate live Collect
 printf '%s\n' "$post_build_live_quiescence" >"$backup_dir/pre-recreate-live-quiescence.json"
 chmod 600 "$backup_dir/pre-recreate-live-quiescence.json"
 verify_source_files_unchanged || fail 'reviewed source inputs changed before recreation'
-verify_runtime_state "$active_image_id" "$expected_config_sha256" "$active_env_sha256" \
+verify_runtime_state "$active_image_id" "$active_config_sha256" "$active_env_sha256" \
   "$active_full_env_sha256" "$active_health" "$active_runtime_sha256" "$active_container_id" baseline \
   "$active_healthcheck_sha256" || \
   fail 'active Collector runtime contract changed immediately before recreation'

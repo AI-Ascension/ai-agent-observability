@@ -97,9 +97,14 @@ Prometheus samples, non-finite values, and an unavailable endpoint. Its
 machine-readable result is retained in the private installation backup.
 
 The installer compares the exact active traces exporter and receiver sets,
-rendered Compose image reference, bind source/destination/RO mode, mounted
-config hash, intended Collector environment, and a captured hash of the
-existing healthcheck contract before making a fresh verified backup. Set
+rendered Compose image reference, bind source/destination/RO mode, the
+owner-pinned mounted baseline config hash, intended Collector environment,
+and a captured hash of the existing healthcheck contract before making a fresh
+verified backup. Set `OTEL_EXPECTED_ACTIVE_CONFIG_SHA256` to the SHA-256 of the
+config currently mounted by the live baseline, and set
+`OTEL_EXPECTED_CONFIG_SHA256` to the candidate file's SHA-256. These are
+intentionally separate: the legacy deployment may still mount a config without
+the candidate health extension. Set
 `OTEL_EXPECTED_ACTIVE_HEALTHCHECK_SHA256` to the SHA-256 of the canonical
 `jq -cS '.[0].Config.Healthcheck // null'` output from the owner-approved
 baseline container. This baseline may have no native probe; the installer
@@ -116,11 +121,14 @@ series are rejected. When the baseline has a host binding, the observer
 requires that the active container inspect maps `8888/tcp` exactly to
 `127.0.0.1:${OTEL_METRICS_PORT}` before it uses the host endpoint. When the
 baseline binding is absent, it requires a positive `State.Pid` and checks the
-same container ID, image ID, and PID immediately before and after the
+same running `State.Status`, container ID, image ID, PID, and
+`/proc/<State.Pid>/ns/net` device/inode pin immediately before and after the
 namespace read. Any unrelated or malformed `8888/tcp` binding is rejected.
 After recreation, the candidate must own the exact reviewed loopback host
-binding; the stable runtime comparison permits only that new `8888/tcp`
-binding and requires every other runtime field to remain unchanged.
+binding and command (`--feature-gates=+extension.healthcheck.useComponentStatus`
+followed by the reviewed config argument). The stable runtime comparison
+permits only that new `8888/tcp` binding and this one reviewed feature-gate
+argument; every other runtime field and command argument must remain unchanged.
 
 The complete pre-update environment is retained only as a digest and is
 required to match after recreation; the inspect backup removes environment
@@ -157,7 +165,13 @@ those bind-source files in place as well, preserving their inodes. It does not r
 the deployment directory, because replacing a bind-source file or directory
 can leave an already-mounted inode pinned to the old content. The generated
 `deploy/.otel-source-manifest.json` lets the installer admit the non-Git tree
-only when every reviewed source hash and mode matches. If installation later
+only when every reviewed source hash and mode matches. Supply its externally
+captured SHA-256 as `OTEL_EXPECTED_SOURCE_MANIFEST_SHA256`, and retain the
+matching `candidate-source-manifest.json` in the materialization backup; the
+installer rejects a replaced or self-updated manifest and rechecks the full
+manifest before recreation. A Git source must remain at the exact expected
+commit with no tracked or untracked changes, and the same full-tree check is
+repeated after the image build. If installation later
 fails, set `OTEL_MATERIALIZATION_BACKUP_DIR` to that external capture; the
 installer restores the original tree and verifies its bytes, modes, and bind
 inodes before attempting service compensation. The helper's explicit
