@@ -1399,7 +1399,16 @@ verify_runtime_state() {
   [[ "$image_id" == "$expected_image" ]] || return 1
   labels="$(jq -r '.[0].Config.Labels as $l | (($l["com.docker.compose.project"] // "") + "\t" + ($l["com.docker.compose.service"] // ""))' <<<"$inspect_json")" || return 1
   [[ "$labels" == "$project_name"$'\t'otel-collector ]] || return 1
-  metrics_port_binding_contract_matches "$inspect_json" || return 1
+  if [[ "$healthcheck_mode" == baseline && "$metrics_access_mode" == namespace ]]; then
+    local runtime_pid runtime_netns
+    [[ "$(metrics_port_binding_state "$inspect_json")" == missing ]] || return 1
+    runtime_pid="$(jq -r '.[0].State.Pid // 0' <<<"$inspect_json")" || return 1
+    [[ "$runtime_pid" == "$active_pid" ]] || return 1
+    runtime_netns="$(network_namespace_pin "$runtime_pid")" || return 1
+    [[ -n "$active_netns_pin" && "$runtime_netns" == "$active_netns_pin" ]] || return 1
+  else
+    metrics_port_binding_contract_matches "$inspect_json" || return 1
+  fi
   runtime_sha256="$(runtime_identity_stable_sha256 "$inspect_json")" || return 1
   [[ "$runtime_sha256" == "$expected_runtime" ]] || return 1
   mounts="$(jq -r '.[0].Mounts[]? | [.Type,.Source,.Destination,.RW,.Mode] | @tsv' <<<"$inspect_json")" || return 1
