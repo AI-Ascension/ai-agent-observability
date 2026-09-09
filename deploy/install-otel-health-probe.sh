@@ -40,6 +40,10 @@ previous_runtime_sha256=""
 previous_health=""
 image_ref=""
 metrics_url=""
+metrics_access_mode=""
+metrics_binding_state=""
+metrics_reader=(python3)
+active_pid=""
 install_deadline=0
 rollback_deadline=0
 operation_deadline=0
@@ -177,12 +181,12 @@ case "${OTEL_ENGINE:-podman}" in
   podman)
     command -v podman >/dev/null 2>&1 || fail 'podman is required'
     engine=(podman)
-    compose=(podman compose --env-file "$env_file")
+    compose_engine=podman
     ;;
   docker)
     command -v docker >/dev/null 2>&1 || fail 'docker is required'
     engine=(docker)
-    compose=(docker compose --env-file "$env_file")
+    compose_engine=docker
     ;;
   *)
     fail 'OTEL_ENGINE must be podman or docker'
@@ -483,27 +487,6 @@ active_receivers_canonical="$(printf '%s' "$active_receivers_text" | LC_ALL=C so
 expected_receiver_series_canonical="$(canonical_expected_list OTEL_EXPECTED_TRACE_RECEIVER_SERIES)" || \
   fail 'OTEL_EXPECTED_TRACE_RECEIVER_SERIES is malformed'
 
-# Resolve the service image from the rendered model so an override cannot make
-# image verification inspect a tag different from the one Compose builds.
-bounded_run 'Compose model validation' "$inspect_timeout_seconds" \
-  "${compose[@]}" -p "$project_name" -f "$compose_file" config --quiet
-rendered_compose="$(bounded_capture 'Compose model rendering' "$inspect_timeout_seconds" \
-  "${compose[@]}" -p "$project_name" -f "$compose_file" config)"
-image_ref="$(awk '
-  /^  otel-collector:$/ { in_service = 1; next }
-  in_service && /^[^[:space:]]/ { in_service = 0 }
-  in_service && /^[[:space:]]+image:[[:space:]]*/ {
-    value = $0
-    sub(/^[[:space:]]+image:[[:space:]]*/, "", value)
-    count++
-    print value
-  }
-  END { if (count != 1) exit 1 }
-' <<<"$rendered_compose")" || fail 'rendered Compose has no unique otel-collector image'
-if [[ -n "${OTEL_IMAGE_REF:-}" && "$OTEL_IMAGE_REF" != "$image_ref" ]]; then
-  fail 'OTEL_IMAGE_REF does not match the rendered Compose service image'
-fi
-
 dotenv_value() {
   local key="$1"
   local value
@@ -525,6 +508,67 @@ dotenv_value() {
   fi
   printf '%s' "$value"
 }
+
+dotenv_value_optional() {
+  local key="$1"
+  local value
+  value="$(awk -v key="$key" '
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    {
+      line = $0
+      sub(/^[[:space:]]*/, "", line)
+      if (index(line, key "=") == 1) {
+        count++
+        value = substr(line, length(key) + 2)
+      }
+    }
+    END { if (count == 0) exit 1; if (count != 1) exit 2; print value }
+  ' "$env_file")" || return $?
+  if [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]] ||
+     [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]]; then
+    value="${value:1:${#value}-2}"
+  fi
+  printf '%s' "$value"
+}
+
+metrics_bind_address="$(dotenv_value BIND_ADDRESS)"
+[[ "$metrics_bind_address" == 127.0.0.1 ]] || \
+  fail 'BIND_ADDRESS must remain 127.0.0.1 while the Collector metrics observer is enabled'
+metrics_port="${OTEL_METRICS_PORT:-}"
+if [[ -z "$metrics_port" ]]; then
+  if metrics_port_from_env="$(dotenv_value_optional OTEL_METRICS_PORT)"; then
+    metrics_port="$metrics_port_from_env"
+  else
+    status=$?
+    [[ "$status" == 1 ]] || fail 'OTEL_METRICS_PORT is duplicated in the environment file'
+    metrics_port="${OTEL_EXPECTED_METRICS_PORT:-}"
+  fi
+fi
+require_positive_integer OTEL_METRICS_PORT "$metrics_port"
+# Compose must render the reviewed candidate port even when the legacy .env has
+# no OTEL_METRICS_PORT key. The override is process-local and never edits .env.
+compose=(env "OTEL_METRICS_PORT=$metrics_port" "$compose_engine" compose --env-file "$env_file")
+
+# Resolve the service image from the rendered model so an override cannot make
+# image verification inspect a tag different from the one Compose builds.
+bounded_run 'Compose model validation' "$inspect_timeout_seconds" \
+  "${compose[@]}" -p "$project_name" -f "$compose_file" config --quiet
+rendered_compose="$(bounded_capture 'Compose model rendering' "$inspect_timeout_seconds" \
+  "${compose[@]}" -p "$project_name" -f "$compose_file" config)"
+image_ref="$(awk '
+  /^  otel-collector:$/ { in_service = 1; next }
+  in_service && /^[^[:space:]]/ { in_service = 0 }
+  in_service && /^[[:space:]]+image:[[:space:]]*/ {
+    value = $0
+    sub(/^[[:space:]]+image:[[:space:]]*/, "", value)
+    count++
+    print value
+  }
+  END { if (count != 1) exit 1 }
+' <<<"$rendered_compose")" || fail 'rendered Compose has no unique otel-collector image'
+if [[ -n "${OTEL_IMAGE_REF:-}" && "$OTEL_IMAGE_REF" != "$image_ref" ]]; then
+  fail 'OTEL_IMAGE_REF does not match the rendered Compose service image'
+fi
 
 expected_env_names=(MLFLOW_EXPERIMENT_ID LAMINAR_PROJECT_API_KEY)
 declare -A expected_env
@@ -556,15 +600,6 @@ expected_env_lines="$(for env_name in "${expected_env_names[@]}"; do
   printf '%s=%s\n' "$env_name" "${expected_env[$env_name]}"
 done | LC_ALL=C sort)"
 expected_env_sha256="$(printf '%s\n' "$expected_env_lines" | sha256sum | awk '{print $1}')"
-
-metrics_bind_address="$(dotenv_value BIND_ADDRESS)"
-metrics_port="$(dotenv_value OTEL_METRICS_PORT)"
-[[ "$metrics_bind_address" == 127.0.0.1 ]] || \
-  fail 'BIND_ADDRESS must remain 127.0.0.1 while the Collector metrics observer is enabled'
-require_positive_integer OTEL_METRICS_PORT "$metrics_port"
-metrics_url="${OTEL_METRICS_URL:-http://${metrics_bind_address}:${metrics_port}/metrics}"
-[[ "$metrics_url" == "http://127.0.0.1:${metrics_port}/metrics" ]] || \
-  fail 'OTEL_METRICS_URL must be the configured loopback metrics endpoint'
 
 active_image_id="$(bounded_capture 'active Collector image inspect' "$inspect_timeout_seconds" \
   "${engine[@]}" inspect --format '{{.Image}}' "$container_name")"
@@ -724,6 +759,8 @@ healthcheck_contract_matches() {
   ' <<<"$inspect_json" >/dev/null
 }
 
+# The configured loopback metrics endpoint is observed through the host binding
+# or the exact legacy container network namespace before recreation.
 # The existing container is a captured legacy baseline. It may have no
 # healthcheck at all, or an older owner-approved healthcheck. It is checked by
 # identity through the rest of the transaction; the native probe contract is
@@ -737,23 +774,57 @@ healthcheck_identity_matches() {
 
 healthcheck_identity_matches "$container_inspect_raw" "$active_healthcheck_sha256" || \
   fail 'active Collector legacy healthcheck baseline changed during preflight'
-active_runtime_sha256="$(runtime_identity "$container_inspect_raw" | sha256sum | awk '{print $1}')"
-[[ "$active_runtime_sha256" =~ ^[0-9a-f]{64}$ ]] || fail 'active Collector runtime identity is unavailable'
-
-metrics_port_binding_contract_matches() {
+metrics_port_binding_state() {
   local inspect_json="$1"
-  local binding_result
-  binding_result="$(jq -r --arg host_port "$metrics_port" '
+  jq -r --arg host_port "$metrics_port" '
     .[0].HostConfig.PortBindings as $bindings |
-    (($bindings["8888/tcp"] // []) | length) == 1 and
-    (($bindings["8888/tcp"][0].HostIp // "") == "127.0.0.1") and
-    (($bindings["8888/tcp"][0].HostPort // "") == $host_port)
-  ' <<<"$inspect_json")" || return 1
-  [[ "$binding_result" == true ]]
+    (($bindings["8888/tcp"] // []) as $port |
+      if ($port | length) == 0 then "missing"
+      elif ($port | length) == 1 and ($port[0].HostIp // "") == "127.0.0.1" and
+           ($port[0].HostPort // "") == $host_port then "configured"
+      else "invalid"
+      end)
+  ' <<<"$inspect_json"
+}
+metrics_port_binding_contract_matches() {
+  [[ "$(metrics_port_binding_state "$1")" == configured ]]
 }
 
-metrics_port_binding_contract_matches "$container_inspect_raw" || \
-  fail 'active Collector does not own the configured loopback metrics port'
+metrics_binding_state="$(metrics_port_binding_state "$container_inspect_raw")" || \
+  fail 'active Collector metrics port binding state is unavailable'
+case "$metrics_binding_state" in
+  configured)
+    metrics_access_mode=host
+    expected_metrics_url="http://127.0.0.1:${metrics_port}/metrics"
+    ;;
+  missing)
+    # The legacy container has no host 8888 binding. Read its loopback metrics
+    # endpoint inside the exact captured network namespace until the candidate
+    # adds the one reviewed host binding. Any unrelated 8888 binding fails.
+    command -v nsenter >/dev/null 2>&1 || fail 'nsenter is required for the legacy Collector metrics observer'
+    active_pid="$(jq -r '.[0].State.Pid // 0' <<<"$container_inspect_raw")"
+    [[ "$active_pid" =~ ^[1-9][0-9]*$ ]] || fail 'legacy Collector PID is unavailable for namespace metrics observation'
+    metrics_access_mode=namespace
+    metrics_reader=(nsenter --target "$active_pid" --net python3)
+    expected_metrics_url="http://127.0.0.1:8888/metrics"
+    ;;
+  *)
+    fail 'active Collector does not own the configured loopback metrics port or has an unexpected 8888/tcp binding'
+    ;;
+esac
+metrics_url="${OTEL_METRICS_URL:-$expected_metrics_url}"
+[[ "$metrics_url" == "$expected_metrics_url" ]] || \
+  fail 'OTEL_METRICS_URL must be the configured loopback metrics endpoint or the exact legacy namespace endpoint'
+
+runtime_identity_stable_sha256() {
+  # The candidate is allowed exactly one new loopback 8888/tcp binding. Remove
+  # only that port from the comparison; all other ports/resources/security,
+  # networks, mounts, and commands remain required to match the baseline.
+  runtime_identity "$1" | jq -cS 'del(.host.port_bindings[] | select(.port == "8888/tcp"))' | \
+    sha256sum | awk '{print $1}'
+}
+active_runtime_sha256="$(runtime_identity_stable_sha256 "$container_inspect_raw")"
+[[ "$active_runtime_sha256" =~ ^[0-9a-f]{64}$ ]] || fail 'active Collector runtime identity is unavailable'
 
 assert_active_container_unchanged() {
   local current_json current_id current_image
@@ -761,7 +832,9 @@ assert_active_container_unchanged() {
     "${engine[@]}" inspect "$container_name")" || return 1
   current_id="$(jq -r '.[0].Id // ""' <<<"$current_json")" || return 1
   current_image="$(jq -r '.[0].Image // ""' <<<"$current_json")" || return 1
+  current_pid="$(jq -r '.[0].State.Pid // 0' <<<"$current_json")" || return 1
   [[ "$current_id" == "$active_container_id" && "$current_image" == "$active_image_id" ]] || return 1
+  [[ -z "$active_pid" || "$current_pid" == "$active_pid" ]] || return 1
 }
 
 verify_quiescence_approval() {
@@ -813,10 +886,12 @@ PY
 observe_live_quiescence() {
   local label="$1"
   local requested="$2"
+  local observation_status=0
   # The requested interval is the observation window itself. Allow a bounded
   # margin for the initial/final HTTP samples so the outer timeout cannot kill
   # a valid five-second observation at its deadline.
-  bounded_capture "$label" "$((requested + 5))" python3 - "$metrics_url" \
+  assert_active_container_unchanged || fail 'Collector identity or PID changed before live metrics observation'
+  bounded_capture "$label" "$((requested + 5))" "${metrics_reader[@]}" - "$metrics_url" \
     "$quiesce_observation_seconds" "$expected_exporters_canonical" \
     "$expected_receiver_series_canonical" <<'PY'
 import json
@@ -966,6 +1041,9 @@ print(json.dumps({
     "accepted_series": last["accepted_series"],
 }, sort_keys=True, separators=(",", ":")))
 PY
+  observation_status=$?
+  assert_active_container_unchanged || fail 'Collector identity or PID changed after live metrics observation'
+  return "$observation_status"
 }
 
 active_health="$(bounded_capture 'active Collector health inspect' "$inspect_timeout_seconds" \
@@ -974,7 +1052,7 @@ active_health="$(bounded_capture 'active Collector health inspect' "$inspect_tim
 # have no Docker healthcheck at all, in which case the engine reports
 # `missing`; an owner-approved legacy healthcheck must already be healthy.
 case "$active_health" in
-  healthy|missing) ;;
+  healthy|missing|'') ;;
   *) fail "active Collector legacy baseline is not ready (status=$active_health)" ;;
 esac
 
@@ -1193,7 +1271,7 @@ verify_runtime_state() {
   labels="$(jq -r '.[0].Config.Labels as $l | (($l["com.docker.compose.project"] // "") + "\t" + ($l["com.docker.compose.service"] // ""))' <<<"$inspect_json")" || return 1
   [[ "$labels" == "$project_name"$'\t'otel-collector ]] || return 1
   metrics_port_binding_contract_matches "$inspect_json" || return 1
-  runtime_sha256="$(runtime_identity "$inspect_json" | sha256sum | awk '{print $1}')" || return 1
+  runtime_sha256="$(runtime_identity_stable_sha256 "$inspect_json")" || return 1
   [[ "$runtime_sha256" == "$expected_runtime" ]] || return 1
   mounts="$(jq -r '.[0].Mounts[]? | [.Type,.Source,.Destination,.RW,.Mode] | @tsv' <<<"$inspect_json")" || return 1
   while IFS=$'\t' read -r mount_type mount_source mount_target mount_rw mount_mode; do

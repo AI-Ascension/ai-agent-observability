@@ -33,8 +33,11 @@ required = (
     "OTEL_QUIESCE_PROOF",
     "OTEL_ROLLBACK_TIMEOUT_SECONDS",
     "OTEL_METRICS_URL",
-    "OTEL_EXPECTED_TRACE_RECEIVERS",
+    "OTEL_EXPECTED_METRICS_PORT",
+    "metrics_port_binding_state",
+    "runtime_identity_stable_sha256",
     "configured loopback metrics endpoint",
+    "OTEL_EXPECTED_TRACE_RECEIVERS",
     "otelcol_exporter_queue_size",
     "OTEL_EXPECTED_TRACE_RECEIVER_SERIES",
     "metrics_port_binding_contract_matches",
@@ -84,12 +87,14 @@ sed -i "s/^OTEL_METRICS_PORT=.*/OTEL_METRICS_PORT=$metrics_port/" "$env_file"
 collector_config="$repo_root/deploy/otel-collector.yaml"
 expected_mount_source="$(readlink -f "$collector_config")"
 cat >"$state_dir/inspect.json" <<JSON
-[{"Id":"fixture-container-id","Name":"/ai-agent-observability-otel-collector","Image":"sha256:fixture-active","Created":"2026-09-08T00:00:00Z","Config":{"Entrypoint":[],"Cmd":["--feature-gates=+extension.healthcheck.useComponentStatus","--config=/etc/otelcol-contrib/config.yaml"],"ExposedPorts":{"4317/tcp":{},"4318/tcp":{},"8888/tcp":{}},"Env":["MLFLOW_EXPERIMENT_ID=0","LAMINAR_PROJECT_API_KEY=fixture-key"],"Healthcheck":{"Test":["CMD","/usr/local/bin/otel-health-probe"],"Interval":30000000000,"Timeout":5000000000,"Retries":3,"StartPeriod":30000000000},"Labels":{"com.docker.compose.project":"ai-agent-observability","com.docker.compose.service":"otel-collector"},"ReadonlyRootfs":true,"User":"","WorkingDir":"/"},"HostConfig":{"PortBindings":{"4317/tcp":[{"HostIp":"127.0.0.1","HostPort":"14317"}],"4318/tcp":[{"HostIp":"127.0.0.1","HostPort":"14318"}],"8888/tcp":[{"HostIp":"127.0.0.1","HostPort":"$metrics_port"}]},"PublishAllPorts":false,"NetworkMode":"ai-agent-observability_default","ExtraHosts":[],"Devices":[],"DeviceRequests":[],"BlkioWeight":0,"CpuCount":0,"CpuPercent":0,"CpuPeriod":0,"CpuQuota":0,"CpuRealtimePeriod":0,"CpuRealtimeRuntime":0,"CpuShares":0,"CpusetCpus":"","CpusetMems":"","NanoCpus":0,"Memory":0,"MemoryReservation":0,"MemorySwap":0,"MemorySwappiness":0,"OomKillDisable":false,"PidsLimit":0,"Ulimits":[],"ReadonlyRootfs":true,"SecurityOpt":["no-new-privileges:true"],"CapAdd":[],"CapDrop":[],"Privileged":false,"Tmpfs":{"/tmp":"rw"},"RestartPolicy":{"Name":"unless-stopped"}},"NetworkSettings":{"Networks":{"ai-agent-observability_default":{"Aliases":["otel-collector","ai-agent-observability-otel-collector"]}}},"Mounts":[{"Type":"bind","Source":"$expected_mount_source","Destination":"/etc/otelcol-contrib/config.yaml","Mode":"ro","RW":false}],"State":{"Status":"running","Health":{"Status":"healthy","Log":[]}}}]
+[{"Id":"fixture-container-id","Name":"/ai-agent-observability-otel-collector","Image":"sha256:fixture-active","Created":"2026-09-08T00:00:00Z","Config":{"Entrypoint":[],"Cmd":["--feature-gates=+extension.healthcheck.useComponentStatus","--config=/etc/otelcol-contrib/config.yaml"],"ExposedPorts":{"4317/tcp":{},"4318/tcp":{},"8888/tcp":{}},"Env":["MLFLOW_EXPERIMENT_ID=0","LAMINAR_PROJECT_API_KEY=fixture-key"],"Healthcheck":{"Test":["CMD","/usr/local/bin/otel-health-probe"],"Interval":30000000000,"Timeout":5000000000,"Retries":3,"StartPeriod":30000000000},"Labels":{"com.docker.compose.project":"ai-agent-observability","com.docker.compose.service":"otel-collector"},"ReadonlyRootfs":true,"User":"","WorkingDir":"/"},"HostConfig":{"PortBindings":{"4317/tcp":[{"HostIp":"127.0.0.1","HostPort":"14317"}],"4318/tcp":[{"HostIp":"127.0.0.1","HostPort":"14318"}],"8888/tcp":[{"HostIp":"127.0.0.1","HostPort":"$metrics_port"}]},"PublishAllPorts":false,"NetworkMode":"ai-agent-observability_default","ExtraHosts":[],"Devices":[],"DeviceRequests":[],"BlkioWeight":0,"CpuCount":0,"CpuPercent":0,"CpuPeriod":0,"CpuQuota":0,"CpuRealtimePeriod":0,"CpuRealtimeRuntime":0,"CpuShares":0,"CpusetCpus":"","CpusetMems":"","NanoCpus":0,"Memory":0,"MemoryReservation":0,"MemorySwap":0,"MemorySwappiness":0,"OomKillDisable":false,"PidsLimit":0,"Ulimits":[],"ReadonlyRootfs":true,"SecurityOpt":["no-new-privileges:true"],"CapAdd":[],"CapDrop":[],"Privileged":false,"Tmpfs":{"/tmp":"rw"},"RestartPolicy":{"Name":"unless-stopped"}},"NetworkSettings":{"Networks":{"ai-agent-observability_default":{"Aliases":["otel-collector","ai-agent-observability-otel-collector"],"IPAddress":"10.89.0.9"}}},"Mounts":[{"Type":"bind","Source":"$expected_mount_source","Destination":"/etc/otelcol-contrib/config.yaml","Mode":"ro","RW":false}],"State":{"Status":"running","Pid":12345,"Health":{"Status":"healthy","Log":[]}}}]
 JSON
 expected_active_healthcheck_sha256="$(jq -cS '.[0].Config.Healthcheck // null' "$state_dir/inspect.json" | sha256sum | awk '{print $1}')"
 jq '.[0].Config.Healthcheck = null | .[0].State |= del(.Health)' \
   "$state_dir/inspect.json" >"$state_dir/inspect-missing-health.json"
 missing_active_healthcheck_sha256="$(jq -cS '.[0].Config.Healthcheck // null' "$state_dir/inspect-missing-health.json" | sha256sum | awk '{print $1}')"
+jq '.[0].Config.Healthcheck = null | .[0].State.Health.Status = "" | .[0].HostConfig.PortBindings |= with_entries(select(.key != "8888/tcp"))' \
+  "$state_dir/inspect.json" >"$state_dir/inspect-legacy.json"
 
 cat >"$fake_bin/podman" <<'FAKE'
 #!/usr/bin/env bash
@@ -101,7 +106,9 @@ printf '%s\n' "$*" >>"$log_file"
 
 inspect_json() {
   local source="$state_dir/inspect.json"
-  if [[ "${FAKE_MISSING_HEALTH:-}" == yes && ( ! -e "$state_dir/recreated" || -e "$state_dir/rollback-recreated" ) ]]; then
+  if [[ "${FAKE_LEGACY_BASELINE:-}" == yes ]]; then
+    source="$state_dir/inspect-legacy.json"
+  elif [[ "${FAKE_MISSING_HEALTH:-}" == yes && ( ! -e "$state_dir/recreated" || -e "$state_dir/rollback-recreated" ) ]]; then
     source="$state_dir/inspect-missing-health.json"
   fi
   if [[ -e "$state_dir/recreated" ]]; then
@@ -234,7 +241,9 @@ if [[ "${1:-}" == inspect ]]; then
         printf '%s\n' 'MLFLOW_EXPERIMENT_ID=0' 'LAMINAR_PROJECT_API_KEY=fixture-key'
         ;;
       *'.State.Health'*)
-        if [[ "${FAKE_MISSING_HEALTH:-}" == yes && ( ! -e "$state_dir/recreated" || -e "$state_dir/rollback-recreated" ) ]]; then
+        if [[ "${FAKE_LEGACY_BASELINE:-}" == yes && ! -e "$state_dir/recreated" ]]; then
+          printf '%s\n' ''
+        elif [[ "${FAKE_MISSING_HEALTH:-}" == yes && ( ! -e "$state_dir/recreated" || -e "$state_dir/rollback-recreated" ) ]]; then
           printf '%s\n' missing
         else
           printf '%s\n' healthy
@@ -370,6 +379,22 @@ if ! env "${common_env[@]}" \
   exit 1
 fi
 grep -Fq 'no mutation performed' "$test_root/missing-check.out"
+
+legacy_env_file="$test_root/legacy.env"
+grep -v '^OTEL_METRICS_PORT=' "$env_file" >"$legacy_env_file"
+legacy_check_log="$test_root/legacy-check.log"
+: >"$legacy_check_log"
+if ! env "${common_env[@]}" \
+    OTEL_ENV_FILE="$legacy_env_file" OTEL_EXPECTED_METRICS_PORT=18888 \
+    OTEL_METRICS_URL=http://127.0.0.1:8888/metrics \
+    OTEL_EXPECTED_ACTIVE_HEALTHCHECK_SHA256="$missing_active_healthcheck_sha256" \
+    FAKE_LEGACY_BASELINE=yes FAKE_LOG="$legacy_check_log" PATH="$fake_bin:$PATH" \
+    "$installer" --check >"$test_root/legacy-check.out" 2>"$test_root/legacy-check.err"; then
+  cat "$test_root/legacy-check.err" >&2
+  printf '%s\n' 'installer rejected an empty-health legacy baseline without a host metrics binding' >&2
+  exit 1
+fi
+grep -Fq 'no mutation performed' "$test_root/legacy-check.out"
 
 proof="$test_root/quiescence.json"
 refresh_proof() {
