@@ -409,7 +409,42 @@ elif [[ -e "$live_root/deploy/.otel-source-manifest.json" ]]; then
     die 'pending materialization manifest changed before recovery'
 fi
 
-tar --xattrs --acls --no-same-owner --preserve-permissions -C "$live_root" -xpf "$original_tree"
+restore_stage="$(mktemp -d "$backup_dir/restore-stage.XXXXXX")"
+cleanup_restore_stage() {
+  rm -rf -- "$restore_stage"
+}
+trap cleanup_restore_stage EXIT
+tar --xattrs --acls --no-same-owner --preserve-permissions -C "$restore_stage" -xpf "$original_tree"
+# Restore the ordinary tree from the archive, but leave the three existing bind
+# source inodes in place. They may already be mounted into a running service;
+# replacing them with tar extraction would leave that service attached to the
+# candidate inode instead of the restored bytes.
+tar --xattrs --acls --no-same-owner --preserve-permissions \
+  --exclude=./deploy/compose.yaml \
+  --exclude=./deploy/otel-collector.yaml \
+  --exclude=./deploy/.env \
+  -C "$live_root" -xpf "$original_tree"
+python3 - "$restore_stage" "$live_root" "${bind_paths[@]}" <<'PY'
+import os
+import shutil
+import stat
+import sys
+from pathlib import Path
+
+stage, target, *paths = sys.argv[1:]
+stage_root = Path(stage)
+target_root = Path(target)
+for rel in paths:
+    source = stage_root / rel
+    destination = target_root / rel
+    source_stat = source.lstat()
+    destination_stat = destination.lstat()
+    if not stat.S_ISREG(source_stat.st_mode) or not stat.S_ISREG(destination_stat.st_mode):
+        raise SystemExit(f"bind-source restore requires regular files: {rel}")
+    with source.open("rb") as source_stream, destination.open("wb") as target_stream:
+        shutil.copyfileobj(source_stream, target_stream)
+    os.chmod(destination, stat.S_IMODE(source_stat.st_mode), follow_symlinks=False)
+PY
 python3 - "$live_root" "$candidate_manifest" "$original_tree_manifest" <<'PY'
 import json
 import os
