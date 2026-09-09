@@ -320,6 +320,7 @@ stage_root = Path(stage)
 target_root = Path(target)
 manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
 failure_after_text = os.environ.get("OTEL_MATERIALIZATION_TEST_FAIL_AFTER_FILES", "")
+failure_after_path = os.environ.get("OTEL_MATERIALIZATION_TEST_FAIL_AFTER_PATH", "")
 try:
     failure_after = int(failure_after_text) if failure_after_text else 0
 except ValueError:
@@ -360,7 +361,7 @@ for entry in manifest["files"]:
             destination.symlink_to(link_target)
     else:
         raise SystemExit(f"unsupported staged candidate type: {entry['type']}")
-    if failure_after and copied >= failure_after:
+    if (failure_after and copied >= failure_after) or (failure_after_path and rel == failure_after_path):
         raise SystemExit(f"test injected materialization failure after {copied} files")
 PY
   rm -rf -- "$candidate_stage" "$candidate_tree"
