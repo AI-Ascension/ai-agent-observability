@@ -127,21 +127,21 @@ inspect_json() {
       elif [[ "${FAKE_MISSING_HEALTH:-}" == yes ]]; then
         source="$state_dir/inspect-missing-health.json"
       fi
-      sed 's/fixture-container-id/fixture-rollback-id/g; s/sha256:fixture-active/sha256:fixture-active/g' "$source"
+      jq '.[0].Id = "fixture-rollback-id" | .[0].Image = "sha256:fixture-active"' "$source"
     elif [[ "${FAKE_POST_RECREATE_DRIFT:-}" == yes ]]; then
       if [[ "${FAKE_MISSING_HEALTH:-}" == yes ]]; then
         source="$state_dir/inspect-missing-health.json"
       fi
-      sed 's/fixture-container-id/fixture-new-id/g; s/sha256:fixture-active/sha256:fixture-built/g; s/"WorkingDir":"\/"/"WorkingDir":"\/drift"/' "$source"
+      jq '.[0].Id = "fixture-new-id" | .[0].Image = "sha256:fixture-built" | .[0].Config.WorkingDir = "/drift"' "$source"
     else
-      sed 's/fixture-container-id/fixture-new-id/g; s/sha256:fixture-active/sha256:fixture-built/g' "$source"
+      jq '.[0].Id = "fixture-new-id" | .[0].Image = "sha256:fixture-built"' "$source"
     fi
   elif [[ -e "$state_dir/id-changed" ]]; then
-    sed 's/fixture-container-id/fixture-concurrent-id/g' "$source"
+    jq '.[0].Id = "fixture-concurrent-id"' "$source"
   elif [[ -e "$state_dir/runtime-drift" ]]; then
-    sed 's|"WorkingDir":"/"|"WorkingDir":"/drift"|' "$source"
+    jq '.[0].Config.WorkingDir = "/drift"' "$source"
   elif [[ "${FAKE_STOPPED:-}" == yes ]]; then
-    sed 's/"Status":"running"/"Status":"exited"/' "$source"
+    jq '.[0].State.Status = "exited"' "$source"
   else
     if [[ "${FAKE_LEGACY_BASELINE:-}" == yes ]]; then
       source="$state_dir/inspect-legacy.json"
