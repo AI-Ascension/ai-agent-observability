@@ -86,6 +86,7 @@ expected_mount_source="$(readlink -f "$collector_config")"
 cat >"$state_dir/inspect.json" <<JSON
 [{"Id":"fixture-container-id","Name":"/ai-agent-observability-otel-collector","Image":"sha256:fixture-active","Created":"2026-09-08T00:00:00Z","Config":{"Entrypoint":[],"Cmd":["--feature-gates=+extension.healthcheck.useComponentStatus","--config=/etc/otelcol-contrib/config.yaml"],"ExposedPorts":{"4317/tcp":{},"4318/tcp":{},"8888/tcp":{}},"Env":["MLFLOW_EXPERIMENT_ID=0","LAMINAR_PROJECT_API_KEY=fixture-key"],"Healthcheck":{"Test":["CMD","/usr/local/bin/otel-health-probe"],"Interval":30000000000,"Timeout":5000000000,"Retries":3,"StartPeriod":30000000000},"Labels":{"com.docker.compose.project":"ai-agent-observability","com.docker.compose.service":"otel-collector"},"ReadonlyRootfs":true,"User":"","WorkingDir":"/"},"HostConfig":{"PortBindings":{"4317/tcp":[{"HostIp":"127.0.0.1","HostPort":"14317"}],"4318/tcp":[{"HostIp":"127.0.0.1","HostPort":"14318"}],"8888/tcp":[{"HostIp":"127.0.0.1","HostPort":"$metrics_port"}]},"PublishAllPorts":false,"NetworkMode":"ai-agent-observability_default","ExtraHosts":[],"Devices":[],"DeviceRequests":[],"BlkioWeight":0,"CpuCount":0,"CpuPercent":0,"CpuPeriod":0,"CpuQuota":0,"CpuRealtimePeriod":0,"CpuRealtimeRuntime":0,"CpuShares":0,"CpusetCpus":"","CpusetMems":"","NanoCpus":0,"Memory":0,"MemoryReservation":0,"MemorySwap":0,"MemorySwappiness":0,"OomKillDisable":false,"PidsLimit":0,"Ulimits":[],"ReadonlyRootfs":true,"SecurityOpt":["no-new-privileges:true"],"CapAdd":[],"CapDrop":[],"Privileged":false,"Tmpfs":{"/tmp":"rw"},"RestartPolicy":{"Name":"unless-stopped"}},"NetworkSettings":{"Networks":{"ai-agent-observability_default":{"Aliases":["otel-collector","ai-agent-observability-otel-collector"]}}},"Mounts":[{"Type":"bind","Source":"$expected_mount_source","Destination":"/etc/otelcol-contrib/config.yaml","Mode":"ro","RW":false}],"State":{"Status":"running","Health":{"Status":"healthy","Log":[]}}}]
 JSON
+expected_active_healthcheck_sha256="$(jq -cS '.[0].Config.Healthcheck // null' "$state_dir/inspect.json" | sha256sum | awk '{print $1}')"
 
 cat >"$fake_bin/podman" <<'FAKE'
 #!/usr/bin/env bash
@@ -328,6 +329,7 @@ common_env=(
   OTEL_EXPECTED_COMPOSE_SHA256="$(sha256sum "$repo_root/deploy/compose.yaml" | awk '{print $1}')"
   OTEL_EXPECTED_DOCKERFILE_SHA256="$(sha256sum "$repo_root/deploy/Dockerfile.otel" | awk '{print $1}')"
   OTEL_EXPECTED_ACTIVE_IMAGE_ID=sha256:fixture-active
+  OTEL_EXPECTED_ACTIVE_HEALTHCHECK_SHA256="$expected_active_healthcheck_sha256"
   OTEL_EXPECTED_TRACE_EXPORTERS=otlp_http/mlflow,otlp_http/laminar
   OTEL_EXPECTED_TRACE_RECEIVERS=otlp
   OTEL_EXPECTED_TRACE_RECEIVER_SERIES=otlp/http,otlp/grpc

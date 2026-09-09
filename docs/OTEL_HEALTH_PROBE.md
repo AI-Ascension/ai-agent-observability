@@ -91,8 +91,14 @@ machine-readable result is retained in the private installation backup.
 
 The installer compares the exact active traces exporter and receiver sets,
 rendered Compose image reference, bind source/destination/RO mode, mounted
-config hash, and intended Collector environment before making a fresh verified
-backup. The owner supplies `OTEL_EXPECTED_TRACE_EXPORTERS`,
+config hash, intended Collector environment, and a captured hash of the
+existing healthcheck contract before making a fresh verified backup. Set
+`OTEL_EXPECTED_ACTIVE_HEALTHCHECK_SHA256` to the SHA-256 of the canonical
+`jq -cS '.[0].Config.Healthcheck // null'` output from the owner-approved
+baseline container. This baseline may have no native probe; the installer
+checks its captured identity while it is live and requires the reviewed native
+probe contract only after the candidate service has been recreated. The owner
+supplies `OTEL_EXPECTED_TRACE_EXPORTERS`,
 `OTEL_EXPECTED_TRACE_RECEIVERS`, and
 `OTEL_EXPECTED_TRACE_RECEIVER_SERIES`; empty, duplicate, malformed, missing,
 or unexpected values fail closed. The live observer requires exactly one queue
@@ -110,8 +116,9 @@ values and command arguments. The runtime identity digest also covers the
 command, entrypoint, exposed and published ports, network aliases, devices,
 resource limits, security settings, and mounts. After the image build and
 again immediately before recreation, the installer rechecks the active
-container's image, state, exact health contract, mounted config, environment,
-runtime identity, metrics binding, and reviewed source hashes. It then builds
+container's image, state, captured baseline healthcheck identity, mounted
+config, environment, runtime identity, metrics binding, and reviewed source
+hashes. It then builds
 and verifies the wrapper image, recreates only `otel-collector`, waits for its
 health state, and verifies the same identities afterward under one aggregate
 installation deadline (`OTEL_INSTALL_TIMEOUT_SECONDS`, 1200 seconds by
@@ -141,7 +148,12 @@ only when every reviewed source hash and mode matches. If installation later
 fails, set `OTEL_MATERIALIZATION_BACKUP_DIR` to that external capture; the
 installer restores the original tree and verifies its bytes, modes, and bind
 inodes before attempting service compensation. The helper's explicit
-`--rollback` path uses the same checks for a source-only rollback.
+`--rollback` path uses the same checks for a source-only rollback. A pending
+state and the candidate manifest are written before the first copy. If a copy
+is interrupted, `--rollback` accepts that pending state after checking the
+protected `.env` and bind-source identities, restores the archived tree,
+removes candidate-only paths, and records the rollback; a completed state still
+requires the full candidate tree and manifest to be unchanged.
 
 The image and Compose healthcheck use the exact reviewed contract
 `CMD ["/usr/local/bin/otel-health-probe"]`, a 30-second interval, five-second

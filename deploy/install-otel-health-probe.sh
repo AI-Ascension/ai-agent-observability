@@ -627,8 +627,12 @@ rm -rf -- "$mounted_tmp"
 [[ "$mounted_config_sha256" == "$expected_config_sha256" ]] || \
   fail 'active mounted Collector config hash does not match the reviewed config'
 active_healthcheck="$(bounded_capture 'active Collector healthcheck inspect' "$inspect_timeout_seconds" \
-  "${engine[@]}" inspect --format '{{json .Config.Healthcheck.Test}}' "$container_name")"
-grep -Fq "$probe_path" <<<"$active_healthcheck" || fail 'active native probe is unavailable'
+  "${engine[@]}" inspect "$container_name")"
+active_healthcheck_sha256="$(jq -cS '.[0].Config.Healthcheck // null' <<<"$active_healthcheck" | \
+  sha256sum | awk '{print $1}')" || fail 'active Collector healthcheck identity is unavailable'
+need_value OTEL_EXPECTED_ACTIVE_HEALTHCHECK_SHA256
+[[ "$active_healthcheck_sha256" == "$OTEL_EXPECTED_ACTIVE_HEALTHCHECK_SHA256" ]] || \
+  fail 'active Collector healthcheck contract does not match OTEL_EXPECTED_ACTIVE_HEALTHCHECK_SHA256'
 active_env_text="$(bounded_capture 'active container environment inspect' "$inspect_timeout_seconds" \
   "${engine[@]}" inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container_name")"
 verify_env_text "$active_env_text" || fail 'active Collector environment does not match the intended .env'
@@ -719,8 +723,20 @@ healthcheck_contract_matches() {
     ($health.Retries == 3)
   ' <<<"$inspect_json" >/dev/null
 }
-healthcheck_contract_matches "$container_inspect_raw" || \
-  fail 'active Collector healthcheck contract is missing or does not invoke the native probe'
+
+# The existing container is a captured legacy baseline. It may have no
+# healthcheck at all, or an older owner-approved healthcheck. It is checked by
+# identity through the rest of the transaction; the native probe contract is
+# required only after the candidate service has been recreated.
+healthcheck_identity_matches() {
+  local inspect_json="$1"
+  local expected_sha256="$2"
+  [[ "$(jq -cS '.[0].Config.Healthcheck // null' <<<"$inspect_json" | \
+    sha256sum | awk '{print $1}')" == "$expected_sha256" ]]
+}
+
+healthcheck_identity_matches "$container_inspect_raw" "$active_healthcheck_sha256" || \
+  fail 'active Collector legacy healthcheck baseline changed during preflight'
 active_runtime_sha256="$(runtime_identity "$container_inspect_raw" | sha256sum | awk '{print $1}')"
 [[ "$active_runtime_sha256" =~ ^[0-9a-f]{64}$ ]] || fail 'active Collector runtime identity is unavailable'
 
@@ -1068,13 +1084,8 @@ restore_materialized_source_if_unchanged() {
   local archive="$materialization_backup_dir/original-tree.tar"
   local original_manifest="$materialization_backup_dir/original-tree-manifest.json"
   local candidate_manifest="$materialization_backup_dir/candidate-source-manifest.json"
-  local seconds
-  seconds="$(operation_timeout "$recreate_timeout_seconds")" || return 1
-  timeout --kill-after="${timeout_kill_after_seconds}s" "${seconds}s" \
-    tar --xattrs --acls --no-same-owner --preserve-permissions -C "$repo_dir" -xpf "$archive" || return 1
-  seconds="$(operation_timeout "$inspect_timeout_seconds")" || return 1
-  timeout --kill-after="${timeout_kill_after_seconds}s" "${seconds}s" \
-    python3 - "$repo_dir" "$candidate_manifest" "$original_manifest" <<'PY' || return 1
+  tar --xattrs --acls --no-same-owner --preserve-permissions -C "$repo_dir" -xpf "$archive" || return 1
+  python3 - "$repo_dir" "$candidate_manifest" "$original_manifest" <<'PY' || return 1
 import json
 import sys
 from pathlib import Path
@@ -1131,20 +1142,23 @@ PY
 # preflight. This turns an unrelated edit during a long image build into an
 # explicit manual-reconciliation result instead of silently overwriting it.
 restore_backups_if_unchanged() {
+  local restore_backup_dir="$1"
+  local restore_env_file="$2"
+  shift 2
   local source destination source_hash backup_hash
-  for source in "${backup_sources[@]}"; do
-    destination="$backup_dir/$(basename "$source")"
+  for source in "$@"; do
+    destination="$restore_backup_dir/$(basename "$source")"
     [[ -f "$source" && -f "$destination" ]] || return 1
     source_hash="$(sha256_file "$source")" || return 1
     backup_hash="$(sha256_file "$destination")" || return 1
     [[ "$source_hash" == "$backup_hash" ]] || return 1
   done
-  for source in "${backup_sources[@]}"; do
-    destination="$backup_dir/$(basename "$source")"
+  for source in "$@"; do
+    destination="$restore_backup_dir/$(basename "$source")"
     cp -p -- "$destination" "$source" || return 1
     [[ "$(sha256_file "$source")" == "$(sha256_file "$destination")" ]] || return 1
   done
-  chmod 600 "$env_file" || return 1
+  chmod 600 "$restore_env_file" || return 1
 }
 
 verify_runtime_state() {
@@ -1155,6 +1169,8 @@ verify_runtime_state() {
   local expected_health="$5"
   local expected_runtime="$6"
   local expected_container="${7:-}"
+  local healthcheck_mode="${8:-candidate}"
+  local expected_healthcheck_sha256="${9:-$active_healthcheck_sha256}"
   local inspect_json image_id mounts env_text health labels runtime_sha256 cp_seconds state_status
   local mount_count=0
   local temp
@@ -1206,7 +1222,13 @@ verify_runtime_state() {
   [[ "$health" == "$expected_health" ]] || return 1
   state_status="$(jq -r '.[0].State.Status // "missing"' <<<"$inspect_json")" || return 1
   [[ "$state_status" == running ]] || return 1
-  healthcheck_contract_matches "$inspect_json" || return 1
+  if [[ "$healthcheck_mode" == candidate ]]; then
+    healthcheck_contract_matches "$inspect_json" || return 1
+  elif [[ "$healthcheck_mode" == baseline ]]; then
+    healthcheck_identity_matches "$inspect_json" "$expected_healthcheck_sha256" || return 1
+  else
+    return 1
+  fi
   return 0
 }
 
@@ -1259,14 +1281,28 @@ rollback() {
     return "$status"
   }
 
+  restore_source_script="$(declare -f sha256_file restore_backups_if_unchanged)
+set -Eeuo pipefail
+restore_backups_if_unchanged \"\$@\""
+  restore_materialized_script="$(declare -f verify_materialized_source_for_rollback restore_materialized_source_if_unchanged)
+set -Eeuo pipefail
+restore_materialized_source_if_unchanged"
+
   if [[ -z "$backup_dir" || ! -d "$backup_dir" ]]; then
     rollback_ok=false
     phase_status='failed:backup-missing'
-  elif ! restore_backups_if_unchanged; then
+  elif ! rollback_phase 'restore-source-files' "$recreate_timeout_seconds" \
+      bash -c "$restore_source_script" restore-source-files "$backup_dir" "$env_file" \
+      "${backup_sources[@]}"; then
     rollback_ok=false
     phase_status='failed:source-files-changed-or-backup-mismatch'
     [[ -z "$rollback_log" ]] || printf 'phase=restore-source-files result=%s\n' "$phase_status" >>"$rollback_log"
-  elif ! restore_materialized_source_if_unchanged; then
+  elif [[ -n "$materialization_backup_dir" ]] && ! rollback_phase 'restore-materialized-source' \
+      "$recreate_timeout_seconds" env \
+      "repo_dir=$repo_dir" "source_manifest=$source_manifest" \
+      "materialization_backup_dir=$materialization_backup_dir" \
+      "OTEL_EXPECTED_GIT_HEAD=$OTEL_EXPECTED_GIT_HEAD" \
+      bash -c "$restore_materialized_script"; then
     rollback_ok=false
     phase_status='failed:materialized-source-changed-or-backup-mismatch'
     [[ -z "$rollback_log" ]] || printf 'phase=restore-materialized-source result=%s\n' "$phase_status" >>"$rollback_log"
@@ -1343,7 +1379,8 @@ rollback() {
                 "${engine[@]}" inspect --format '{{.Id}}' "$container_name")"; then
               if [[ -n "$rollback_container_id" ]] && verify_runtime_state "$active_image_id" \
                   "$expected_config_sha256" "$active_env_sha256" "$active_full_env_sha256" \
-                  healthy "$active_runtime_sha256" "$rollback_container_id"; then
+                healthy "$active_runtime_sha256" "$rollback_container_id" baseline \
+                "$active_healthcheck_sha256"; then
                 rollback_health_verified=true
                 break
               fi
@@ -1399,7 +1436,8 @@ built_image_id="$(bounded_capture 'built Collector image inspect' "$inspect_time
 assert_active_container_unchanged || fail 'active Collector identity changed during image build'
 verify_source_files_unchanged || fail 'reviewed source inputs changed during image build'
 verify_runtime_state "$active_image_id" "$expected_config_sha256" "$active_env_sha256" \
-  "$active_full_env_sha256" healthy "$active_runtime_sha256" "$active_container_id" || \
+  "$active_full_env_sha256" healthy "$active_runtime_sha256" "$active_container_id" baseline \
+  "$active_healthcheck_sha256" || \
   fail 'active Collector runtime contract changed during image build'
 verify_quiescence_approval "$OTEL_QUIESCE_PROOF" "$active_container_id"
 post_build_live_quiescence="$(observe_live_quiescence 'pre-recreate live Collector quiescence' \
@@ -1408,7 +1446,8 @@ printf '%s\n' "$post_build_live_quiescence" >"$backup_dir/pre-recreate-live-quie
 chmod 600 "$backup_dir/pre-recreate-live-quiescence.json"
 verify_source_files_unchanged || fail 'reviewed source inputs changed before recreation'
 verify_runtime_state "$active_image_id" "$expected_config_sha256" "$active_env_sha256" \
-  "$active_full_env_sha256" healthy "$active_runtime_sha256" "$active_container_id" || \
+  "$active_full_env_sha256" healthy "$active_runtime_sha256" "$active_container_id" baseline \
+  "$active_healthcheck_sha256" || \
   fail 'active Collector runtime contract changed immediately before recreation'
 
 # Recreate exactly one service after the owner has recorded quiescence. No
@@ -1422,8 +1461,9 @@ runtime_container_id="$(bounded_capture 'recreated Collector identity inspect' "
   fail 'Collector recreation did not produce a new container identity'
 runtime_mutation_may_have_changed=true
 last_health='missing'
-ready_deadline=$((SECONDS + ready_timeout_seconds))
-operation_deadline=$ready_deadline
+ready_window_seconds="$(remaining_timeout "$ready_timeout_seconds")" || \
+  fail 'Collector readiness wait has no remaining aggregate timeout budget'
+ready_deadline=$((SECONDS + ready_window_seconds))
 while (( SECONDS < ready_deadline )); do
   health_inspect_timeout="$(operation_timeout "$inspect_timeout_seconds")"
   if health="$(timeout --kill-after="${timeout_kill_after_seconds}s" "${health_inspect_timeout}s" \

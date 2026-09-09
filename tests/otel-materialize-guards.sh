@@ -73,4 +73,30 @@ fi
 grep -Fq 'tree manifest content changed' "$test_root/rollback.err"
 grep -Fq 'unreviewed concurrent edit' "$target_changed/deploy/compose.yaml"
 
+target_partial="$test_root/live-partial"
+backup_partial="$test_root/backups-partial"
+make_target "$target_partial"
+partial_config_inode="$(stat -c '%d:%i' "$target_partial/deploy/otel-collector.yaml")"
+partial_env_inode="$(stat -c '%d:%i' "$target_partial/deploy/.env")"
+partial_env_hash="$(sha256sum "$target_partial/deploy/.env" | awk '{print $1}')"
+if env OTEL_LIVE_SOURCE_DIR="$target_partial" OTEL_MATERIALIZATION_BACKUP_ROOT="$backup_partial" \
+  OTEL_EXPECTED_GIT_HEAD="$head" OTEL_SOURCE_MATERIALIZE_APPROVED=true \
+  OTEL_MATERIALIZATION_TEST_FAIL_AFTER_FILES=1 \
+  "$materializer" --materialize >"$test_root/partial-materialize.out" 2>"$test_root/partial-materialize.err"; then
+  printf '%s\n' 'materializer accepted an injected partial-copy failure' >&2
+  exit 1
+fi
+partial_backup_dir="$(find "$backup_partial" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+[[ -n "$partial_backup_dir" && -f "$partial_backup_dir/materialization-state.json" ]] || exit 1
+[[ "$(jq -r '.status' "$partial_backup_dir/materialization-state.json")" == pending ]] || exit 1
+[[ -f "$target_partial/deploy/.otel-source-manifest.json" ]] || exit 1
+env OTEL_LIVE_SOURCE_DIR="$target_partial" OTEL_MATERIALIZATION_BACKUP_ROOT="$backup_partial" \
+  OTEL_EXPECTED_GIT_HEAD="$head" OTEL_MATERIALIZATION_BACKUP_DIR="$partial_backup_dir" \
+  "$materializer" --rollback
+[[ ! -e "$target_partial/deploy/.otel-source-manifest.json" ]] || exit 1
+[[ "$(cat "$target_partial/deploy/otel-collector.yaml")" == 'original config' ]] || exit 1
+[[ "$(stat -c '%d:%i' "$target_partial/deploy/otel-collector.yaml")" == "$partial_config_inode" ]] || exit 1
+[[ "$(stat -c '%d:%i' "$target_partial/deploy/.env")" == "$partial_env_inode" ]] || exit 1
+[[ "$(sha256sum "$target_partial/deploy/.env" | awk '{print $1}')" == "$partial_env_hash" ]] || exit 1
+
 printf '%s\n' 'OTel source materialization guard fixtures passed.'

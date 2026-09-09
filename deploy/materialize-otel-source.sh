@@ -294,6 +294,15 @@ if [[ "$mode" == --materialize ]]; then
   source_manifest_json "$live_root" "$backup_dir" >"$candidate_manifest"
   chmod 600 "$candidate_manifest"
 
+  jq -n --arg target "$live_root" --arg backup "$backup_dir" --arg manifest "$target_manifest" \
+    '{schema:"otel-source-materialization-state-v1",target_path:$target,backup_dir:$backup,target_manifest:$manifest,status:"pending"}' \
+    >"$state_file"
+  chmod 600 "$state_file"
+  # Publish the pending marker before the first candidate copy. If the copy is
+  # interrupted, --rollback can discover both the backup and the intended
+  # candidate tree and recover the target even when no final state was written.
+  cp -- "$candidate_manifest" "$target_manifest"
+  chmod 0644 "$target_manifest"
   candidate_tree="$backup_dir/candidate-tree.tar"
   tar --xattrs --acls --numeric-owner --exclude=.git --exclude=./.git -C "$candidate_root" -cpf "$candidate_tree" .
   candidate_stage="$(mktemp -d "$backup_dir/candidate-stage.XXXXXX")"
@@ -310,6 +319,14 @@ stage, target, manifest_path = sys.argv[1:]
 stage_root = Path(stage)
 target_root = Path(target)
 manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+failure_after_text = os.environ.get("OTEL_MATERIALIZATION_TEST_FAIL_AFTER_FILES", "")
+try:
+    failure_after = int(failure_after_text) if failure_after_text else 0
+except ValueError:
+    raise SystemExit("OTEL_MATERIALIZATION_TEST_FAIL_AFTER_FILES must be a positive integer")
+if failure_after < 0:
+    raise SystemExit("OTEL_MATERIALIZATION_TEST_FAIL_AFTER_FILES must not be negative")
+copied = 0
 
 for entry in manifest["files"]:
     rel = entry["path"]
@@ -327,6 +344,7 @@ for entry in manifest["files"]:
         with source.open("rb") as source_stream, destination.open("wb") as target_stream:
             shutil.copyfileobj(source_stream, target_stream)
         os.chmod(destination, entry["mode"], follow_symlinks=False)
+        copied += 1
     elif entry["type"] == "symlink":
         link_target = os.readlink(source)
         if destination.is_symlink():
@@ -342,15 +360,14 @@ for entry in manifest["files"]:
             destination.symlink_to(link_target)
     else:
         raise SystemExit(f"unsupported staged candidate type: {entry['type']}")
+    if failure_after and copied >= failure_after:
+        raise SystemExit(f"test injected materialization failure after {copied} files")
 PY
   rm -rf -- "$candidate_stage" "$candidate_tree"
   verify_tree_manifest "$live_root" "$candidate_manifest"
   verify_bind_state "$live_root" "$original_bind_state"
-  cp -- "$candidate_manifest" "$target_manifest"
-  chmod 0644 "$target_manifest"
-  jq -n --arg target "$live_root" --arg backup "$backup_dir" --arg manifest "$target_manifest" \
-    '{schema:"otel-source-materialization-state-v1",target_path:$target,backup_dir:$backup,target_manifest:$manifest,status:"materialized"}' \
-    >"$state_file"
+  jq '.status="materialized"' "$state_file" >"$state_file.tmp"
+  mv -f -- "$state_file.tmp" "$state_file"
   chmod 600 "$state_file"
   printf 'OTel source materialized at %s; original backup=%s\n' "$live_root" "$backup_dir"
   exit 0
@@ -368,13 +385,28 @@ candidate_manifest="$backup_dir/candidate-source-manifest.json"
   die 'materialization backup is incomplete'
 [[ "$(jq -r '.schema // ""' "$state_file")" == otel-source-materialization-state-v1 ]] || die 'materialization state schema is invalid'
 [[ "$(jq -r '.target_path // ""' "$state_file")" == "$live_root" ]] || die 'materialization backup target does not match OTEL_LIVE_SOURCE_DIR'
+state_status="$(jq -r '.status // ""' "$state_file")"
+case "$state_status" in
+  pending|materialized) ;;
+  rolled-back) die 'materialization backup is already rolled back' ;;
+  *) die 'materialization state status is invalid' ;;
+esac
 [[ "$(sha256sum -- "$original_tree" | awk '{print $1}')" == "$(awk '{print $1}' "$backup_dir/original-tree.tar.sha256")" ]] || \
   die 'original tree archive checksum is invalid'
-verify_tree_manifest "$live_root" "$candidate_manifest"
+# A pending state is recoverable even when the candidate copy stopped halfway:
+# validate the protected environment and bind-source inodes, then restore from
+# the original archive. A completed state additionally requires the full
+# candidate manifest and generated target manifest to remain unchanged.
 verify_bind_state "$live_root" "$original_bind_state"
 [[ ! -e "$live_root/.git" ]] || die 'live source target became a Git checkout before rollback'
-cmp -s -- "$live_root/deploy/.otel-source-manifest.json" "$candidate_manifest" || \
-  die 'materialized source manifest changed before rollback'
+if [[ "$state_status" == materialized ]]; then
+  verify_tree_manifest "$live_root" "$candidate_manifest"
+  cmp -s -- "$live_root/deploy/.otel-source-manifest.json" "$candidate_manifest" || \
+    die 'materialized source manifest changed before rollback'
+elif [[ -e "$live_root/deploy/.otel-source-manifest.json" ]]; then
+  cmp -s -- "$live_root/deploy/.otel-source-manifest.json" "$candidate_manifest" || \
+    die 'pending materialization manifest changed before recovery'
+fi
 
 tar --xattrs --acls --no-same-owner --preserve-permissions -C "$live_root" -xpf "$original_tree"
 python3 - "$live_root" "$candidate_manifest" "$original_tree_manifest" <<'PY'
