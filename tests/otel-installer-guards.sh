@@ -447,7 +447,7 @@ grep -v '^OTEL_METRICS_PORT=' "$env_file" >"$legacy_env_file"
 legacy_check_log="$test_root/legacy-check.log"
 : >"$legacy_check_log"
 if ! env "${common_env[@]}" \
-    OTEL_ENV_FILE="$legacy_env_file" OTEL_EXPECTED_METRICS_PORT=18888 \
+    OTEL_ENV_FILE="$legacy_env_file" OTEL_EXPECTED_METRICS_PORT="$metrics_port" \
     OTEL_METRICS_URL=http://127.0.0.1:8888/metrics \
     OTEL_EXPECTED_ACTIVE_CONFIG_SHA256="$legacy_config_sha256" \
     OTEL_EXPECTED_ACTIVE_HEALTHCHECK_SHA256="$missing_active_healthcheck_sha256" \
@@ -491,7 +491,7 @@ install_env=(
 legacy_namespace_log="$test_root/legacy-namespace.log"
 refresh_proof
 if ! env "${install_env[@]}" \
-    OTEL_ENV_FILE="$legacy_env_file" OTEL_EXPECTED_METRICS_PORT=18888 \
+    OTEL_ENV_FILE="$legacy_env_file" OTEL_EXPECTED_METRICS_PORT="$metrics_port" \
     OTEL_METRICS_URL=http://127.0.0.1:8888/metrics \
     OTEL_EXPECTED_ACTIVE_CONFIG_SHA256="$legacy_config_sha256" \
     OTEL_EXPECTED_ACTIVE_HEALTHCHECK_SHA256="$missing_active_healthcheck_sha256" \
