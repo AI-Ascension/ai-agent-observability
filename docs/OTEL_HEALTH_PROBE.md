@@ -89,29 +89,63 @@ queues or in-flight requests, changing accepted-span counters, malformed
 Prometheus samples, non-finite values, and an unavailable endpoint. Its
 machine-readable result is retained in the private installation backup.
 
-The installer compares the exact active traces exporter set, rendered Compose
-image reference, bind source/destination/RO mode, mounted config hash, and
-intended Collector environment before making a fresh verified backup. The
-complete pre-update environment is retained only as a digest and is required
-to match after recreation; the inspect backup removes environment values and
-command arguments. The runtime identity digest also covers the command,
-entrypoint, exposed and published ports, network aliases, devices, resource
-limits, security settings, and mounts. It then builds and verifies the wrapper
-image, recreates only `otel-collector`, waits for its health state, and verifies
-the same identities afterward under one aggregate installation deadline
-(`OTEL_INSTALL_TIMEOUT_SECONDS`, 1200 seconds by default). If the image build
-fails, the prior image tag is restored while the active Collector is left
-untouched because runtime mutation has not begun. If a later runtime mutation
-fails, the installer retags the prior image and recreates the same service only
-when every bounded rollback step can be checked. Rollback has its own aggregate
-deadline (`OTEL_ROLLBACK_TIMEOUT_SECONDS`, 600 seconds by default) so a nearly
-exhausted install budget cannot make compensation unbounded. Each rollback
-phase records a status in a mode-0600 private log; otherwise it reports
-rollback as unknown and requires manual reconciliation. It never uses
-project-wide down, volume deletion, or image pruning.
+The installer compares the exact active traces exporter and receiver sets,
+rendered Compose image reference, bind source/destination/RO mode, mounted
+config hash, and intended Collector environment before making a fresh verified
+backup. The owner supplies `OTEL_EXPECTED_TRACE_EXPORTERS`,
+`OTEL_EXPECTED_TRACE_RECEIVERS`, and
+`OTEL_EXPECTED_TRACE_RECEIVER_SERIES`; empty, duplicate, malformed, missing,
+or unexpected values fail closed. The live observer requires exactly one queue
+and one in-flight series for every expected exporter, and exactly one accepted
+span series for every expected `receiver/transport` pair. Duplicate labels,
+malformed samples, negative counters, and unrelated receiver or exporter
+series are rejected. The observer also requires that the active container
+inspect maps `8888/tcp` exactly to `127.0.0.1:${OTEL_METRICS_PORT}` before it
+uses the host endpoint, so an unrelated loopback listener cannot satisfy the
+quiescence gate.
 
-The image and Compose healthcheck use a 30-second interval, five-second engine
-timeout, 30-second startup grace, and three retries. Podman 4.9.3 cannot add a
+The complete pre-update environment is retained only as a digest and is
+required to match after recreation; the inspect backup removes environment
+values and command arguments. The runtime identity digest also covers the
+command, entrypoint, exposed and published ports, network aliases, devices,
+resource limits, security settings, and mounts. After the image build and
+again immediately before recreation, the installer rechecks the active
+container's image, state, exact health contract, mounted config, environment,
+runtime identity, metrics binding, and reviewed source hashes. It then builds
+and verifies the wrapper image, recreates only `otel-collector`, waits for its
+health state, and verifies the same identities afterward under one aggregate
+installation deadline (`OTEL_INSTALL_TIMEOUT_SECONDS`, 1200 seconds by
+default). The deadline includes every inspector and readiness wait; bounded
+commands reserve their process-kill grace instead of adding it after expiry.
+If the image build fails, the prior image tag is restored while the active
+Collector is left untouched because runtime mutation has not begun. If a later
+runtime mutation fails, the installer retags the prior image and recreates the
+same service only when every bounded rollback step can be checked. Rollback has
+its own aggregate deadline (`OTEL_ROLLBACK_TIMEOUT_SECONDS`, 600 seconds by
+default) so a nearly exhausted install budget cannot make compensation
+unbounded. Each rollback phase records a status in a mode-0600 private log;
+otherwise it reports rollback as unknown and requires manual reconciliation. It
+never uses project-wide down, volume deletion, or image pruning.
+
+The live deployment path is currently a non-Git tree. Before copying a reviewed
+checkout there, run `deploy/materialize-otel-source.sh --materialize` with
+`OTEL_SOURCE_MATERIALIZE_APPROVED=true`, an external
+`OTEL_MATERIALIZATION_BACKUP_ROOT`, and the exact
+`OTEL_EXPECTED_GIT_HEAD`. The helper archives the complete original tree,
+records source modes and bind-source device/inode identities, writes reviewed
+files in place, and leaves the existing `.env` untouched. It does not replace
+the deployment directory, because replacing a bind-source file or directory
+can leave an already-mounted inode pinned to the old content. The generated
+`deploy/.otel-source-manifest.json` lets the installer admit the non-Git tree
+only when every reviewed source hash and mode matches. If installation later
+fails, set `OTEL_MATERIALIZATION_BACKUP_DIR` to that external capture; the
+installer restores the original tree and verifies its bytes, modes, and bind
+inodes before attempting service compensation. The helper's explicit
+`--rollback` path uses the same checks for a source-only rollback.
+
+The image and Compose healthcheck use the exact reviewed contract
+`CMD ["/usr/local/bin/otel-health-probe"]`, a 30-second interval, five-second
+engine timeout, 30-second startup grace, and three retries. Podman 4.9.3 cannot add a
 healthcheck to an existing container in place, so a deployment owner must
 target only this service for recreation after building the wrapper image. The
 existing config bind, ports, OTLP exporters, and persistent data owned by the
