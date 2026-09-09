@@ -296,8 +296,54 @@ if [[ "$mode" == --materialize ]]; then
 
   candidate_tree="$backup_dir/candidate-tree.tar"
   tar --xattrs --acls --numeric-owner --exclude=.git --exclude=./.git -C "$candidate_root" -cpf "$candidate_tree" .
-  tar --xattrs --acls --no-same-owner --preserve-permissions -C "$live_root" -xpf "$candidate_tree"
-  rm -f -- "$candidate_tree"
+  candidate_stage="$(mktemp -d "$backup_dir/candidate-stage.XXXXXX")"
+  tar --xattrs --acls --no-same-owner --preserve-permissions -C "$candidate_stage" -xpf "$candidate_tree"
+  python3 - "$candidate_stage" "$live_root" "$candidate_manifest" <<'PY'
+import json
+import os
+import shutil
+import stat
+import sys
+from pathlib import Path
+
+stage, target, manifest_path = sys.argv[1:]
+stage_root = Path(stage)
+target_root = Path(target)
+manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+
+for entry in manifest["files"]:
+    rel = entry["path"]
+    source = stage_root / rel
+    destination = target_root / rel
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if entry["type"] == "file":
+        source_stat = source.lstat()
+        if not stat.S_ISREG(source_stat.st_mode):
+            raise SystemExit(f"staged candidate file is not regular: {rel}")
+        if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+            raise SystemExit(f"target path cannot be replaced in place: {rel}")
+        # Opening an existing regular file with wb preserves its inode, which
+        # keeps an already-mounted bind source attached to the reviewed bytes.
+        with source.open("rb") as source_stream, destination.open("wb") as target_stream:
+            shutil.copyfileobj(source_stream, target_stream)
+        os.chmod(destination, entry["mode"], follow_symlinks=False)
+    elif entry["type"] == "symlink":
+        link_target = os.readlink(source)
+        if destination.is_symlink():
+            if os.readlink(destination) != link_target:
+                destination.unlink()
+                destination.symlink_to(link_target)
+        elif destination.exists():
+            if destination.is_dir():
+                raise SystemExit(f"target directory cannot be replaced by a symlink: {rel}")
+            destination.unlink()
+            destination.symlink_to(link_target)
+        else:
+            destination.symlink_to(link_target)
+    else:
+        raise SystemExit(f"unsupported staged candidate type: {entry['type']}")
+PY
+  rm -rf -- "$candidate_stage" "$candidate_tree"
   verify_tree_manifest "$live_root" "$candidate_manifest"
   verify_bind_state "$live_root" "$original_bind_state"
   cp -- "$candidate_manifest" "$target_manifest"
