@@ -522,7 +522,14 @@ if [[ "$mode" == --materialize ]]; then
   git -C "$candidate_root" ls-files -z -- . ':(exclude)deploy/.env' |
     tar --null --no-recursion --xattrs --acls --numeric-owner \
       -C "$candidate_root" -cpf "$candidate_tree" --files-from=-
-  tar --xattrs --acls --no-same-owner --preserve-permissions -C "$live_root" -xpf "$candidate_tree"
+  # Bind-mounted source files must keep their inode.  Extract the rest of the
+  # reviewed tree normally, then replace the bound files' bytes in place.
+  tar --xattrs --acls --no-same-owner --preserve-permissions -C "$live_root" \
+    --exclude=deploy/compose.yaml --exclude=deploy/otel-collector.yaml -xpf "$candidate_tree"
+  for bind_relative in deploy/compose.yaml deploy/otel-collector.yaml; do
+    cat -- "$candidate_root/$bind_relative" >"$live_root/$bind_relative"
+    chmod --reference="$candidate_root/$bind_relative" "$live_root/$bind_relative"
+  done
   rm -f -- "$candidate_tree"
   capture_bind_state "$live_root" "$candidate_bind_state"
   chmod 600 "$candidate_bind_state"
