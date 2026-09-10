@@ -331,7 +331,12 @@ services:
     restart: "no"
 
   otel-collector:
-    image: docker.io/otel/opentelemetry-collector-contrib:0.160.0
+    build:
+      context: .
+      dockerfile: Dockerfile.otel
+      args:
+        OTEL_COLLECTOR_VERSION: "0.160.0"
+    image: localhost/ai-ascension/ai-agent-observability/otel-collector:0.160.0
     container_name: ai-agent-observability-otel-collector
     pull_policy: missing
     depends_on:
@@ -339,15 +344,24 @@ services:
         condition: service_healthy
       laminar-bootstrap:
         condition: service_completed_successfully
-    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    command:
+      - "--feature-gates=+extension.healthcheck.useComponentStatus"
+      - "--config=/etc/otelcol-contrib/config.yaml"
     environment:
       MLFLOW_EXPERIMENT_ID: ${MLFLOW_EXPERIMENT_ID}
       LAMINAR_PROJECT_API_KEY: ${LAMINAR_PROJECT_API_KEY}
     ports:
       - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${OTEL_GRPC_PORT:?OTEL_GRPC_PORT is required}:4317"
       - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${OTEL_HTTP_PORT:?OTEL_HTTP_PORT is required}:4318"
+      - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${OTEL_METRICS_PORT:?OTEL_METRICS_PORT is required}:8888"
     volumes:
       - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/otel-health-probe"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     read_only: true
     tmpfs:
       - /tmp

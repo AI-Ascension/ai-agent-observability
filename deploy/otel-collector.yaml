@@ -1,3 +1,19 @@
+extensions:
+  health_check:
+    # v0.160's component-status implementation is selected by the feature
+    # gate passed in compose.yaml. The deprecated pipeline-failure poller is
+    # intentionally absent.
+    http:
+      endpoint: 127.0.0.1:13133
+      status:
+        enabled: true
+        path: /status
+        include_attributes: false
+    component_health:
+      include_permanent_errors: true
+      include_recoverable_errors: true
+      recovery_duration: 30s
+
 receivers:
   otlp:
     protocols:
@@ -49,9 +65,23 @@ exporters:
       queue_size: 1024
 
 service:
+  extensions: [health_check]
   telemetry:
     logs:
       level: warn
+    # The guarded installer reads this loopback-only endpoint through the
+    # published host port. It is read-only and exposes Collector internals
+    # needed to prove that intake has stopped and exporter queues are empty.
+    metrics:
+      level: normal
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+                without_type_suffix: true
+                without_units: true
   pipelines:
     traces:
       receivers: [otlp]

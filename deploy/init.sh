@@ -94,6 +94,7 @@ else
   quickwit_otlp_port="${QUICKWIT_OTLP_PORT:-17281}"
   otel_grpc_port="${OTEL_GRPC_PORT:-14317}"
   otel_http_port="${OTEL_HTTP_PORT:-14318}"
+  otel_metrics_port="${OTEL_METRICS_PORT:-18888}"
   admin_email="${LAMINAR_ADMIN_EMAIL:-admin@ai-agent-observability.local}"
   workspace_id="$(new_uuid)"
   project_id="$(new_uuid)"
@@ -158,6 +159,7 @@ QUICKWIT_HTTP_PORT=$quickwit_http_port
 QUICKWIT_OTLP_PORT=$quickwit_otlp_port
 OTEL_GRPC_PORT=$otel_grpc_port
 OTEL_HTTP_PORT=$otel_http_port
+OTEL_METRICS_PORT=$otel_metrics_port
 OPENAI_API_KEY=
 LLM_PROVIDER=openai
 LLM_BASE_URL=

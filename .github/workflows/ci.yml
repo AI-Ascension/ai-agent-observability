@@ -40,6 +40,9 @@ jobs:
           bash tests/bootstrap.sh
           bash tests/validation-regressions.sh
           bash tests/query-provision-invariants.sh
+          bash tests/otel-health-probe.sh
+          bash tests/otel-installer-guards.sh
+          bash tests/otel-materialize-guards.sh
 
       - name: Check text and secret hygiene
         run: |
@@ -55,3 +58,4 @@ jobs:
         run: |
           docker buildx build --check --file deploy/Dockerfile.mlflow deploy
           docker buildx build --check --file deploy/Dockerfile.laminar deploy
+          docker buildx build --check --file deploy/Dockerfile.otel deploy
