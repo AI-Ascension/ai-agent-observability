@@ -7,10 +7,18 @@ server_pid=""
 dependency_pid=""
 trap 'if [[ -n "$server_pid" ]]; then kill "$server_pid" 2>/dev/null || true; fi; if [[ -n "$dependency_pid" ]]; then kill "$dependency_pid" 2>/dev/null || true; fi; rm -r -- "$test_root"' EXIT
 
-if ! command -v gcc >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
-  printf '%s\n' 'gcc and python3 are required for the Collector probe fixture test.' >&2
+if ! command -v gcc >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1 ||
+   ! command -v timeout >/dev/null 2>&1; then
+  printf '%s\n' 'gcc, python3, and timeout are required for the Collector probe fixture test.' >&2
   exit 1
 fi
+
+monotonic_millis() {
+  python3 - <<'PY'
+import time
+print(time.monotonic_ns() // 1_000_000)
+PY
+}
 
 gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -static -s \
   -o "$test_root/otel-health-probe" "$repo_root/deploy/otel-health-probe.c"
@@ -42,6 +50,8 @@ fi
 grep -Fq 'FROM docker.io/library/gcc:14-bookworm AS probe-builder' "$dockerfile"
 grep -Fq 'FROM docker.io/otel/opentelemetry-collector-contrib:${OTEL_COLLECTOR_VERSION}' "$dockerfile"
 grep -Fq 'HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3' "$dockerfile"
+grep -Fq 'CLOCK_MONOTONIC' "$repo_root/deploy/otel-health-probe.c"
+grep -Fq 'timeout_ms = 2000' "$repo_root/deploy/otel-health-probe.c"
 if grep -Eq 'OTEL_HEALTH_PROBE_(MLFLOW|LAMINAR)_(HOST|PORT)' "$repo_root/deploy/otel-health-probe.c"; then
   printf '%s\n' 'the probe must derive active dependency endpoints from the mounted config' >&2
   exit 1
@@ -77,7 +87,7 @@ if grep -Eq 'compose.*down|down.*-v|volume prune|image prune' "$installer"; then
   printf '%s\n' 'the guarded OTel installer contains a destructive cleanup path' >&2
   exit 1
 fi
-"$repo_root/tests/otel-installer-guards.sh"
+bash "$repo_root/tests/otel-installer-guards.sh"
 
 start_fixture() {
   local mode="$1"
@@ -189,16 +199,16 @@ expect_failure 'invalid raw UTF-8' hex 200 '7b226865616c746879223a747275652c2273
 expect_failure 'non-ASCII escape' hex 200 '7b226865616c746879223a747275652c22737461747573223a225374617475734f4b222c226578747261223a225c7530306539227d'
 
 start_fixture timeout 200 '{}'
-start_seconds="$(date +%s)"
-if "$test_root/otel-health-probe" --port "$(<"$test_root/port")"; then
+start_millis="$(monotonic_millis)"
+if timeout --kill-after=1s 4s "$test_root/otel-health-probe" --port "$(<"$test_root/port")"; then
   status=0
 else
   status=$?
 fi
-elapsed_seconds=$(( $(date +%s) - start_seconds ))
+elapsed_millis=$(( $(monotonic_millis) - start_millis ))
 stop_fixture
-if [[ $status -eq 0 || $elapsed_seconds -gt 4 ]]; then
-  printf 'probe timeout contract failed: status=%s elapsed=%ss\n' "$status" "$elapsed_seconds" >&2
+if [[ $status -eq 0 || $status -eq 124 || $elapsed_millis -gt 4000 ]]; then
+  printf 'probe timeout contract failed: status=%s elapsed=%sms\n' "$status" "$elapsed_millis" >&2
   exit 1
 fi
 
@@ -465,16 +475,16 @@ service:
 YAML
 start_dependency_fixture 200 address 1.2 1.2
 build_dependency_probe "$(<"$test_root/status-port")" "$(<"$test_root/target-port")" "$(<"$test_root/dns-port")"
-start_seconds="$(date +%s)"
-if "$test_root/otel-health-probe-dependencies"; then
+start_millis="$(monotonic_millis)"
+if timeout --kill-after=1s 4s "$test_root/otel-health-probe-dependencies"; then
   status=0
 else
   status=$?
 fi
-elapsed_seconds=$(( $(date +%s) - start_seconds ))
+elapsed_millis=$(( $(monotonic_millis) - start_millis ))
 stop_dependency_fixture
-if [[ "$status" -eq 0 || "$elapsed_seconds" -gt 4 ]]; then
-  printf 'dependency overall deadline failed: status=%s elapsed=%ss\n' "$status" "$elapsed_seconds" >&2
+if [[ "$status" -eq 0 || "$status" -eq 124 || "$elapsed_millis" -gt 4000 ]]; then
+  printf 'dependency overall deadline failed: status=%s elapsed=%sms\n' "$status" "$elapsed_millis" >&2
   exit 1
 fi
 
