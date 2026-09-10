@@ -1501,7 +1501,7 @@ trap 'status=$?; if [[ $status -ne 0 ]]; then rollback "$status"; fi' EXIT
 # Collector container.
 image_tag_mutated=true
 bounded_run 'Collector image build' "$build_timeout_seconds" \
-  "${compose[@]}" -p "$project_name" -f "$compose_file" build otel-collector
+  env BUILDAH_FORMAT=docker "${compose[@]}" -p "$project_name" -f "$compose_file" build otel-collector
 built_image_id="$(bounded_capture 'built Collector image inspect' "$inspect_timeout_seconds" \
   "${engine[@]}" image inspect --format '{{.Id}}' "$image_ref")"
 [[ "$built_image_id" == "$OTEL_EXPECTED_BUILT_IMAGE_ID" ]] || \
