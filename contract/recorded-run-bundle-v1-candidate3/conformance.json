@@ -1,0 +1,174 @@
+{
+  "profile": "recorded-run-bundle-v1",
+  "version": "1.0.0-candidate.3",
+  "schema_sha256": "a6c32127290f4d5e670d8863f97a74a7b8e3e411e735d81394b51fe1578b4eb6",
+  "fixture_provenance": "synthetic",
+  "generator": "tools/recorded-run/generate.mjs",
+  "cases": [
+    {
+      "path": "golden/legacy-failed.zip",
+      "valid": true,
+      "sha256": "5fe3184847f46edf93c661e4b7327c81e50299b71a0787dcf20292c5b1df3a6d"
+    },
+    {
+      "path": "golden/legacy-failed-deflated.zip",
+      "valid": true,
+      "sha256": "8a2454078b1151603a45d24912f598e24d6f35e4a2215d7c574692e0cda7f15d"
+    },
+    {
+      "path": "golden/missing-accounting.zip",
+      "valid": true,
+      "sha256": "d1155e0807cc4d7a34f8b57e2cf0bafbe9618ae7eac3b7f5211e4572796e82c6"
+    },
+    {
+      "path": "golden/source-partial.zip",
+      "valid": true,
+      "sha256": "5687088472d122830774e8af58d62abf093ed8fec33f528cccf8dbb2583cc8d8"
+    },
+    {
+      "path": "golden/optional-unknown.zip",
+      "valid": true,
+      "sha256": "ba3613874e528aae43eb4115ba7c341c0032537fbd770ab0ff596d73ed413cec"
+    },
+    {
+      "path": "golden/completed-gameplay.zip",
+      "valid": true,
+      "sha256": "b15518d01aede945cbb291e45660be9c222287e8600b0c66394eb31ffe2b42c4"
+    },
+    {
+      "path": "golden/optional-profile-punctuation.zip",
+      "valid": true,
+      "sha256": "6a44c081c0025bbb4870efb915c0e0dde45ebbc4e39c6b3bffca86ef0065fef6"
+    },
+    {
+      "path": "golden/owner-identity-alias.zip",
+      "valid": true,
+      "sha256": "240415dfc3b425a676ce2c680fd65ff3ee8b38e74ef90d57863c6175190d6184"
+    },
+    {
+      "path": "invalid/wrong-process-source.zip",
+      "valid": false,
+      "sha256": "61f4341520bb4a18983bd3e8da0cf8d901cdfd9d3a7f7b5aeab428d14626ab5a"
+    },
+    {
+      "path": "invalid/unsupported-event-missing-digest.zip",
+      "valid": false,
+      "sha256": "24c3cbdd94f91befcb83b3314e6c01a4fe2a1b58829404e61c912156ecceca4d"
+    },
+    {
+      "path": "invalid/unsupported-status-missing-digest.zip",
+      "valid": false,
+      "sha256": "b4807ac90cf1f3e8bb2e57a7aada3312b58e46eeb89e81e2b7798b9583f49149"
+    },
+    {
+      "path": "invalid/private-metadata-as-rejected.zip",
+      "valid": false,
+      "sha256": "0a5e6eb1d5ac9b90ab61462cd08aaea6f633d91211ad9ce8cf116ad744c17da5"
+    },
+    {
+      "path": "invalid/unsupported-major.zip",
+      "valid": false,
+      "sha256": "a02eee4b56cae7b7983365b4e6a3e6330a1acf918ed7eb2e0096820233d12032"
+    },
+    {
+      "path": "invalid/unsupported-required.zip",
+      "valid": false,
+      "sha256": "6f565abd7c41cef3a0cf2d592d4c3103bb3cd1e7c81aeeaff10c9871759f4f7c"
+    },
+    {
+      "path": "invalid/workflow-field-invention.zip",
+      "valid": false,
+      "sha256": "f4f516f88738b0d31bebca809358ba803e88ec90e9fc898b2ba7c7e694955479"
+    },
+    {
+      "path": "invalid/raw-rationale.zip",
+      "valid": false,
+      "sha256": "933ed90499f6eff81b4706d1ac1c399c57e16306594462e235cc07d9664ca386"
+    },
+    {
+      "path": "invalid/raw-action-id.zip",
+      "valid": false,
+      "sha256": "19d63c34347b17f2bfdadf519648e5d05851c58a1e4b2c0ec6c22d3d70631e17"
+    },
+    {
+      "path": "invalid/precision-number.zip",
+      "valid": false,
+      "sha256": "e6eee59da801391f33a9866e8e822f0736052e5c374d4f605f7202aa5a3ee34e"
+    },
+    {
+      "path": "invalid/missing-evidence.zip",
+      "valid": false,
+      "sha256": "c867425b4adde5faa948fe2be027a497126316e83d89bcb74219ea46e45fa157"
+    },
+    {
+      "path": "invalid/provider-as-game-success.zip",
+      "valid": false,
+      "sha256": "eaa6b1e4da756222b86af5c9b658d656b474298ceda1dfd9ed0ddfed91c29404"
+    },
+    {
+      "path": "invalid/unknown-action-as-settled.zip",
+      "valid": false,
+      "sha256": "27563b0b56e4168e1480092db84e0b4b77fd36d244f82bc64d48e298c77b23f0"
+    },
+    {
+      "path": "invalid/invented-model-join.zip",
+      "valid": false,
+      "sha256": "d2e21dbefb17ed3f12e5edb607965b0cef4529e08328459a5ecba0cfb0f44716"
+    },
+    {
+      "path": "invalid/unknown-usage-zero.zip",
+      "valid": false,
+      "sha256": "a476a6f4a68ed562c46f4d4ac92a2e9d58d42efb6f208dc95e5f15d8330fc2ff"
+    },
+    {
+      "path": "invalid/omission-arithmetic.zip",
+      "valid": false,
+      "sha256": "91312fcce5d5b71fe231dc54970e475e5c8670c7fb29fdc58ff37bba119e9f84"
+    },
+    {
+      "path": "invalid/overlapping-row-disposition.zip",
+      "valid": false,
+      "sha256": "a8533d6f6416c63001e377013952ffa7a0e8a235fb349405e71e47dea3896919"
+    },
+    {
+      "path": "invalid/duplicate-source-ordinal.zip",
+      "valid": false,
+      "sha256": "f9eb6ba70424627d5d6bd3f483ba5bb84c9df5fd54418a81e22e7151cf3160df"
+    },
+    {
+      "path": "invalid/incomplete-source-as-complete.zip",
+      "valid": false,
+      "sha256": "1de997bb5c7d9b9624fd11039da772fe871d0acb1f2af1526737e51ac1d4f55c"
+    },
+    {
+      "path": "invalid/partial-output.zip",
+      "valid": false,
+      "sha256": "f02666441c628b2730c06e455f751b739c38e85da04c94ffcb97af1bb8af289d"
+    },
+    {
+      "path": "invalid/duplicate-json-key.zip",
+      "valid": false,
+      "sha256": "99bd009b4420d63f49c2a50bf270114afaf744fce19e80b834c569d621f7061c"
+    },
+    {
+      "path": "invalid/unsafe-path.zip",
+      "valid": false,
+      "sha256": "efd66babc673ce2ec293af4a64a2d9c30f18d7966458a06e2d660aab00a4fd73"
+    },
+    {
+      "path": "invalid/undeclared-entry.zip",
+      "valid": false,
+      "sha256": "c0d50588d423f1f29d775a7944e1bfbef23abb57bc841a10af7e40e8ab907f5d"
+    },
+    {
+      "path": "invalid/tampered-content.zip",
+      "valid": false,
+      "sha256": "31fcab81f49a6253c0efa01376ac34c4342a823d8a20b97562ed5935fa06565f"
+    },
+    {
+      "path": "invalid/missing-manifest.zip",
+      "valid": false,
+      "sha256": "642376e1ed0c3fc217f66d52491714107c601f102746e93e6294d757cadcd12b"
+    }
+  ]
+}

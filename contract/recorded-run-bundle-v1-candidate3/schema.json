@@ -1,0 +1,1690 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ai-ascension:recorded-run-bundle:v1:candidate:3",
+  "title": "Recorded-run candidate 1 documents",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/manifest"
+    },
+    {
+      "$ref": "#/$defs/record"
+    },
+    {
+      "$ref": "#/$defs/omissions"
+    }
+  ],
+  "$defs": {
+    "identity": {
+      "type": "object",
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z0-9][a-z0-9_.-]*$"
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        }
+      },
+      "required": [
+        "namespace",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "identities": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/identity"
+        },
+        "session": {
+          "$ref": "#/$defs/identity"
+        },
+        "episode": {
+          "$ref": "#/$defs/identity"
+        },
+        "trajectory": {
+          "$ref": "#/$defs/identity"
+        },
+        "request": {
+          "$ref": "#/$defs/identity"
+        },
+        "action": {
+          "$ref": "#/$defs/identity"
+        },
+        "trace": {
+          "$ref": "#/$defs/identity"
+        },
+        "model_execution": {
+          "$ref": "#/$defs/identity"
+        },
+        "workflow": {
+          "$ref": "#/$defs/identity"
+        },
+        "instance": {
+          "$ref": "#/$defs/identity"
+        },
+        "mcp_session": {
+          "$ref": "#/$defs/identity"
+        },
+        "lease": {
+          "$ref": "#/$defs/identity"
+        },
+        "operation": {
+          "$ref": "#/$defs/identity"
+        },
+        "correlation": {
+          "$ref": "#/$defs/identity"
+        },
+        "provider_request": {
+          "$ref": "#/$defs/identity"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "properties": {
+        "process_exit": {
+          "enum": [
+            "unknown",
+            "completed",
+            "failed"
+          ]
+        },
+        "request": {
+          "enum": [
+            "unknown",
+            "accepted",
+            "rejected"
+          ]
+        },
+        "action": {
+          "enum": [
+            "unknown",
+            "accepted",
+            "settled",
+            "rejected",
+            "cancelled"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "unknown",
+            "observed"
+          ]
+        },
+        "gameplay": {
+          "enum": [
+            "unknown",
+            "episode_failed",
+            "completed"
+          ]
+        }
+      },
+      "required": [
+        "process_exit",
+        "request",
+        "action",
+        "outcome",
+        "gameplay"
+      ],
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "stream": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9][a-z0-9_-]*$"
+        },
+        "record_ordinal": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 25000
+        },
+        "subrecord_ordinal": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 25000
+        },
+        "stream_sequence": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 20,
+          "pattern": "^(0|[1-9][0-9]{0,19})$"
+        }
+      },
+      "required": [
+        "stream",
+        "record_ordinal",
+        "subrecord_ordinal"
+      ],
+      "additionalProperties": false
+    },
+    "payload": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "ai-ascension.sts2.seed-readiness.v1"
+            },
+            "kind": {
+              "const": "seed_start"
+            },
+            "value": {
+              "type": "object",
+              "properties": {
+                "protocol_version": {
+                  "const": "seeded-run-v1"
+                },
+                "schema_digest": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "context_digest": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "generation": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 20,
+                  "pattern": "^(0|[1-9][0-9]{0,19})$"
+                },
+                "run_started": {
+                  "type": "boolean"
+                },
+                "host_ready": {
+                  "type": "boolean"
+                },
+                "effect_kind": {
+                  "enum": [
+                    "run_started",
+                    "unknown"
+                  ]
+                },
+                "requested_seed_digest": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "canonical_seed_digest": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "seed_match": {
+                  "type": "boolean"
+                },
+                "status": {
+                  "enum": [
+                    "accepted",
+                    "settled",
+                    "rejected",
+                    "unknown",
+                    "cancelled"
+                  ]
+                }
+              },
+              "required": [
+                "protocol_version",
+                "schema_digest",
+                "context_digest",
+                "generation",
+                "run_started",
+                "host_ready",
+                "effect_kind",
+                "requested_seed_digest",
+                "canonical_seed_digest",
+                "seed_match",
+                "status"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "profile",
+            "kind",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "ai-ascension.sts2.seed-readiness.v1"
+            },
+            "kind": {
+              "const": "observation_summary"
+            },
+            "value": {
+              "type": "object",
+              "properties": {
+                "generation": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 20,
+                  "pattern": "^(0|[1-9][0-9]{0,19})$"
+                },
+                "state_id_digest": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "observation_digest": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "legal_action_count": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 25000
+                },
+                "player": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [],
+                  "properties": {
+                    "hp": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 20,
+                      "pattern": "^(0|[1-9][0-9]{0,19})$"
+                    },
+                    "max_hp": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 20,
+                      "pattern": "^(0|[1-9][0-9]{0,19})$"
+                    },
+                    "energy": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 20,
+                      "pattern": "^(0|[1-9][0-9]{0,19})$"
+                    },
+                    "gold": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 20,
+                      "pattern": "^(0|[1-9][0-9]{0,19})$"
+                    }
+                  }
+                }
+              },
+              "required": [
+                "generation",
+                "state_id_digest",
+                "observation_digest",
+                "legal_action_count"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "profile",
+            "kind",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "ai-ascension.sts2.seed-readiness.v1"
+            },
+            "kind": {
+              "const": "decision_summary"
+            },
+            "value": {
+              "type": "object",
+              "properties": {
+                "action_id_digests": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "maxItems": 128
+                },
+                "reused_model_execution": {
+                  "type": "boolean"
+                },
+                "observation": {
+                  "type": "object",
+                  "properties": {
+                    "generation": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 20,
+                      "pattern": "^(0|[1-9][0-9]{0,19})$"
+                    },
+                    "state_id_digest": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64,
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "observation_digest": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64,
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "legal_action_count": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 25000
+                    },
+                    "player": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [],
+                      "properties": {
+                        "hp": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 20,
+                          "pattern": "^(0|[1-9][0-9]{0,19})$"
+                        },
+                        "max_hp": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 20,
+                          "pattern": "^(0|[1-9][0-9]{0,19})$"
+                        },
+                        "energy": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 20,
+                          "pattern": "^(0|[1-9][0-9]{0,19})$"
+                        },
+                        "gold": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 20,
+                          "pattern": "^(0|[1-9][0-9]{0,19})$"
+                        }
+                      }
+                    }
+                  },
+                  "required": [
+                    "generation",
+                    "state_id_digest",
+                    "observation_digest",
+                    "legal_action_count"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "action_id_digests"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "profile",
+            "kind",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "ai-ascension.sts2.seed-readiness.v1"
+            },
+            "kind": {
+              "const": "action_outcome"
+            },
+            "value": {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "enum": [
+                    "accepted",
+                    "settled",
+                    "rejected",
+                    "unknown",
+                    "cancelled"
+                  ]
+                },
+                "observation": {
+                  "type": "object",
+                  "properties": {
+                    "generation": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 20,
+                      "pattern": "^(0|[1-9][0-9]{0,19})$"
+                    },
+                    "state_id_digest": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64,
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "observation_digest": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64,
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "legal_action_count": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 25000
+                    },
+                    "player": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [],
+                      "properties": {
+                        "hp": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 20,
+                          "pattern": "^(0|[1-9][0-9]{0,19})$"
+                        },
+                        "max_hp": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 20,
+                          "pattern": "^(0|[1-9][0-9]{0,19})$"
+                        },
+                        "energy": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 20,
+                          "pattern": "^(0|[1-9][0-9]{0,19})$"
+                        },
+                        "gold": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 20,
+                          "pattern": "^(0|[1-9][0-9]{0,19})$"
+                        }
+                      }
+                    }
+                  },
+                  "required": [
+                    "generation",
+                    "state_id_digest",
+                    "observation_digest",
+                    "legal_action_count"
+                  ],
+                  "additionalProperties": false
+                },
+                "from_generation": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 20,
+                  "pattern": "^(0|[1-9][0-9]{0,19})$"
+                },
+                "to_generation": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 20,
+                  "pattern": "^(0|[1-9][0-9]{0,19})$"
+                },
+                "effect_digest": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "status"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "profile",
+            "kind",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "ai-ascension.sts2.seed-readiness.v1"
+            },
+            "kind": {
+              "const": "accounting"
+            },
+            "value": {
+              "type": "object",
+              "properties": {
+                "source_schema": {
+                  "const": "sts2.provider-accounting-v1"
+                },
+                "provider": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:+-]*$"
+                },
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:+-]*$"
+                },
+                "provider_execution_status": {
+                  "enum": [
+                    "completed",
+                    "unknown"
+                  ]
+                },
+                "decision_status": {
+                  "enum": [
+                    "valid",
+                    "unknown"
+                  ]
+                },
+                "provider_request_identity_kind": {
+                  "enum": [
+                    "codex_thread_id",
+                    "unknown"
+                  ]
+                },
+                "provider_request_identity_status": {
+                  "enum": [
+                    "reported",
+                    "unknown"
+                  ]
+                },
+                "request_sha256": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "decision_sha256": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "input_written": {
+                  "type": "boolean"
+                },
+                "counts": {
+                  "type": "object",
+                  "properties": {
+                    "stdout_bytes": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 20,
+                      "pattern": "^(0|[1-9][0-9]{0,19})$"
+                    },
+                    "stderr_bytes": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 20,
+                      "pattern": "^(0|[1-9][0-9]{0,19})$"
+                    },
+                    "event_count": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 20,
+                      "pattern": "^(0|[1-9][0-9]{0,19})$"
+                    },
+                    "turn_count": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 20,
+                      "pattern": "^(0|[1-9][0-9]{0,19})$"
+                    },
+                    "completed_turn_count": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 20,
+                      "pattern": "^(0|[1-9][0-9]{0,19})$"
+                    }
+                  },
+                  "required": [],
+                  "additionalProperties": false
+                },
+                "usage": {
+                  "type": "object",
+                  "properties": {
+                    "input_tokens": {
+                      "type": "object",
+                      "properties": {
+                        "unit": {
+                          "const": "tokens"
+                        },
+                        "scope": {
+                          "const": "model_execution"
+                        },
+                        "value_status": {
+                          "enum": [
+                            "reported",
+                            "measured",
+                            "estimated",
+                            "unknown",
+                            "not_applicable"
+                          ]
+                        },
+                        "value": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 20,
+                              "pattern": "^(0|[1-9][0-9]{0,19})$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "unit",
+                        "scope",
+                        "value_status",
+                        "value"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "output_tokens": {
+                      "type": "object",
+                      "properties": {
+                        "unit": {
+                          "const": "tokens"
+                        },
+                        "scope": {
+                          "const": "model_execution"
+                        },
+                        "value_status": {
+                          "enum": [
+                            "reported",
+                            "measured",
+                            "estimated",
+                            "unknown",
+                            "not_applicable"
+                          ]
+                        },
+                        "value": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 20,
+                              "pattern": "^(0|[1-9][0-9]{0,19})$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "unit",
+                        "scope",
+                        "value_status",
+                        "value"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "cached_input_tokens": {
+                      "type": "object",
+                      "properties": {
+                        "unit": {
+                          "const": "tokens"
+                        },
+                        "scope": {
+                          "const": "model_execution"
+                        },
+                        "value_status": {
+                          "enum": [
+                            "reported",
+                            "measured",
+                            "estimated",
+                            "unknown",
+                            "not_applicable"
+                          ]
+                        },
+                        "value": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 20,
+                              "pattern": "^(0|[1-9][0-9]{0,19})$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "unit",
+                        "scope",
+                        "value_status",
+                        "value"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "cache_write_input_tokens": {
+                      "type": "object",
+                      "properties": {
+                        "unit": {
+                          "const": "tokens"
+                        },
+                        "scope": {
+                          "const": "model_execution"
+                        },
+                        "value_status": {
+                          "enum": [
+                            "reported",
+                            "measured",
+                            "estimated",
+                            "unknown",
+                            "not_applicable"
+                          ]
+                        },
+                        "value": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 20,
+                              "pattern": "^(0|[1-9][0-9]{0,19})$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "unit",
+                        "scope",
+                        "value_status",
+                        "value"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "reasoning_output_tokens": {
+                      "type": "object",
+                      "properties": {
+                        "unit": {
+                          "const": "tokens"
+                        },
+                        "scope": {
+                          "const": "model_execution"
+                        },
+                        "value_status": {
+                          "enum": [
+                            "reported",
+                            "measured",
+                            "estimated",
+                            "unknown",
+                            "not_applicable"
+                          ]
+                        },
+                        "value": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 20,
+                              "pattern": "^(0|[1-9][0-9]{0,19})$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "unit",
+                        "scope",
+                        "value_status",
+                        "value"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "source_schema",
+                "provider_execution_status",
+                "decision_status",
+                "counts",
+                "usage"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "profile",
+            "kind",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "ai-ascension.sts2.seed-readiness.v1"
+            },
+            "kind": {
+              "const": "process_result"
+            },
+            "value": {
+              "type": "object",
+              "properties": {
+                "exit_code": {
+                  "type": "integer",
+                  "minimum": -2147483648,
+                  "maximum": 2147483647
+                }
+              },
+              "required": [
+                "exit_code"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "profile",
+            "kind",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "ai-ascension.sts2.seed-readiness.v1"
+            },
+            "kind": {
+              "const": "diagnostic"
+            },
+            "value": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "enum": [
+                        "unsupported_source_event",
+                        "unsupported_source_status"
+                      ]
+                    },
+                    "value_digest": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64,
+                      "pattern": "^[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "value_digest"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "enum": [
+                        "invalid_source_record",
+                        "partial_final_record",
+                        "operation_wait_completed",
+                        "episode_failed",
+                        "unsupported_profile"
+                      ]
+                    },
+                    "value_digest": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64,
+                      "pattern": "^[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "code"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "required": [
+            "profile",
+            "kind",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "profile",
+            "kind",
+            "value"
+          ],
+          "properties": {
+            "profile": {
+              "const": "ai-ascension.recorded-run.common.v1"
+            },
+            "kind": {
+              "const": "gameplay_result"
+            },
+            "value": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "status",
+                "result",
+                "authority",
+                "source_profile",
+                "source_schema_sha256",
+                "witness_sha256"
+              ],
+              "properties": {
+                "status": {
+                  "const": "completed"
+                },
+                "result": {
+                  "enum": [
+                    "victory",
+                    "defeat",
+                    "completed"
+                  ]
+                },
+                "authority": {
+                  "$ref": "#/$defs/identity"
+                },
+                "source_profile": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:+-]*$"
+                },
+                "source_schema_sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$",
+                  "minLength": 64,
+                  "maxLength": 64
+                },
+                "witness_sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$",
+                  "minLength": 64,
+                  "maxLength": 64
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:+-]*$"
+            },
+            "kind": {
+              "const": "opaque"
+            },
+            "value": {
+              "type": "object",
+              "properties": {
+                "content_digest": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "bytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 16777216
+                },
+                "media_type": {
+                  "const": "application/json"
+                }
+              },
+              "required": [
+                "content_digest",
+                "bytes",
+                "media_type"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "profile",
+            "kind",
+            "value"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "manifest": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "ai-ascension.recorded-run-bundle"
+        },
+        "format_version": {
+          "const": "1.0.0-candidate.3"
+        },
+        "contract_schema_sha256": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "required_profiles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:+-]*$"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "optional_profiles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:+-]*$"
+          },
+          "maxItems": 16,
+          "uniqueItems": true
+        },
+        "bundle_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "recording": {
+          "type": "object",
+          "properties": {
+            "identity": {
+              "$ref": "#/$defs/identity"
+            },
+            "identities": {
+              "$ref": "#/$defs/identities"
+            }
+          },
+          "required": [
+            "identity",
+            "identities"
+          ],
+          "additionalProperties": false
+        },
+        "producer": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:+-]*$"
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:+-]*$"
+            },
+            "source_format": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:+-]*$"
+            }
+          },
+          "required": [
+            "name",
+            "version",
+            "source_format"
+          ],
+          "additionalProperties": false
+        },
+        "adapter": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:+-]*$"
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:+-]*$"
+            },
+            "source_revision": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:+-]*$"
+            }
+          },
+          "required": [
+            "name",
+            "version",
+            "source_revision"
+          ],
+          "additionalProperties": false
+        },
+        "versions": {
+          "type": "object",
+          "properties": {
+            "protocol": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:+-]*$"
+            },
+            "runtime": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:+-]*$"
+            },
+            "game_mod": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:+-]*$"
+            },
+            "game": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:+-]*$"
+            },
+            "provider": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:+-]*$"
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:+-]*$"
+            },
+            "workflow": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:+-]*$"
+            },
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:+-]*$"
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "inspection": {
+              "const": true
+            },
+            "execution_replay": {
+              "const": false
+            },
+            "live_control": {
+              "const": false
+            },
+            "raw_mcp": {
+              "const": false
+            }
+          },
+          "required": [
+            "inspection",
+            "execution_replay",
+            "live_control",
+            "raw_mcp"
+          ],
+          "additionalProperties": false
+        },
+        "completeness": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "enum": [
+                "complete",
+                "partial",
+                "unknown"
+              ]
+            },
+            "source_snapshot": {
+              "enum": [
+                "stable",
+                "unverified"
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "source_snapshot"
+          ],
+          "additionalProperties": false
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "enum": [
+                  "records/events.ndjson",
+                  "records/accounting.ndjson",
+                  "reports/omissions.json"
+                ]
+              },
+              "media_type": {
+                "enum": [
+                  "application/x-ndjson",
+                  "application/json"
+                ]
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 16777216
+              },
+              "sha256": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            },
+            "required": [
+              "path",
+              "media_type",
+              "bytes",
+              "sha256"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 31,
+          "minItems": 2
+        },
+        "integrity": {
+          "type": "object",
+          "properties": {
+            "digest_algorithm": {
+              "const": "sha-256"
+            },
+            "bundle_semantic_digest": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "digest_algorithm",
+            "bundle_semantic_digest"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "format",
+        "format_version",
+        "contract_schema_sha256",
+        "required_profiles",
+        "optional_profiles",
+        "bundle_id",
+        "recording",
+        "producer",
+        "adapter",
+        "versions",
+        "capabilities",
+        "completeness",
+        "evidence",
+        "entries",
+        "integrity"
+      ],
+      "additionalProperties": false
+    },
+    "record": {
+      "type": "object",
+      "properties": {
+        "profile": {
+          "const": "ai-ascension.recorded-run.common.v1"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "time": {
+          "type": "object",
+          "properties": {
+            "unix_ns": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 20,
+              "pattern": "^(0|[1-9][0-9]{0,19})$"
+            }
+          },
+          "required": [
+            "unix_ns"
+          ],
+          "additionalProperties": false
+        },
+        "identities": {
+          "$ref": "#/$defs/identities"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        },
+        "payload": {
+          "$ref": "#/$defs/payload"
+        }
+      },
+      "required": [
+        "profile",
+        "source",
+        "identities",
+        "evidence",
+        "payload"
+      ],
+      "additionalProperties": false
+    },
+    "omissions": {
+      "type": "object",
+      "properties": {
+        "profile": {
+          "const": "ai-ascension.recorded-run.common.v1"
+        },
+        "streams": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "stream": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z0-9][a-z0-9_-]*$"
+              },
+              "state": {
+                "enum": [
+                  "present",
+                  "absent",
+                  "omitted",
+                  "interrupted",
+                  "unsupported",
+                  "unknown"
+                ]
+              },
+              "input_records": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 25000
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "emitted_rows": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 25000
+              },
+              "filtered_rows": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 25000
+              },
+              "unsupported_rows": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 25000
+              },
+              "rejected_rows": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 25000
+              },
+              "output_records": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 25000
+              },
+              "dispositions": {
+                "type": "array",
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "first": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 25000
+                        },
+                        "last": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 25000
+                        },
+                        "disposition": {
+                          "const": "filtered"
+                        },
+                        "reason": {
+                          "enum": [
+                            "raw_mcp_disallowed",
+                            "private_source_metadata"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "first",
+                        "last",
+                        "disposition",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "first": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 25000
+                        },
+                        "last": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 25000
+                        },
+                        "disposition": {
+                          "const": "unsupported"
+                        },
+                        "reason": {
+                          "enum": [
+                            "unsupported_source_event",
+                            "unsupported_source_status"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "first",
+                        "last",
+                        "disposition",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "first": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 25000
+                        },
+                        "last": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 25000
+                        },
+                        "disposition": {
+                          "const": "rejected"
+                        },
+                        "reason": {
+                          "enum": [
+                            "invalid_source_record",
+                            "partial_final_record"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "first",
+                        "last",
+                        "disposition",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "maxItems": 25000
+              },
+              "field_omissions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "rule": {
+                      "enum": [
+                        "raw_mcp_disallowed",
+                        "private_source_metadata",
+                        "raw_observation_disallowed",
+                        "raw_seed_disallowed",
+                        "raw_decision_text_disallowed",
+                        "raw_error_disallowed",
+                        "provider_request_id_disallowed",
+                        "identity_digest_transformation"
+                      ]
+                    },
+                    "affected_rows": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 25000
+                    }
+                  },
+                  "required": [
+                    "rule",
+                    "affected_rows"
+                  ],
+                  "additionalProperties": false
+                },
+                "maxItems": 16
+              },
+              "mcp_redacted_path_count": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 25000
+              }
+            },
+            "required": [
+              "stream",
+              "state",
+              "input_records",
+              "emitted_rows",
+              "filtered_rows",
+              "unsupported_rows",
+              "rejected_rows",
+              "output_records",
+              "dispositions",
+              "field_omissions"
+            ],
+            "additionalProperties": false
+          },
+          "maxItems": 16,
+          "minItems": 1
+        },
+        "fixture_provenance": {
+          "enum": [
+            "synthetic",
+            "sanitized_source_derived"
+          ]
+        }
+      },
+      "required": [
+        "profile",
+        "streams",
+        "fixture_provenance"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

@@ -34,6 +34,17 @@ may proceed directly when they preserve the accepted contract.
 
 ## Static gates
 
+The recorded-run candidate consumer also requires Node 24.16.0 (no npm install):
+
+```bash
+node --test tests/recorded-run-*.test.mjs
+```
+
+These tests verify the entire pinned protocol artifact and exercise the independent
+consumer. The optional real local Collector/MLflow test is documented in
+[`docs/RECORDED_RUN.md`](docs/RECORDED_RUN.md); mocked HTTP tests alone do not
+establish tracking-backend persistence.
+
 ```bash
 for script in deploy/init.sh deploy/laminar/bootstrap-project-key.sh tests/*.sh tests/fixtures/*; do
   bash -n "$script"

@@ -69,6 +69,14 @@ create a new logical deployment.
 
 ## Integration contract
 
+The recorded-run consumer under `deploy/recorded-run/` is an offline import
+adapter within the tracking deployment boundary. It consumes only the pinned
+protocol bundle, stores immutable local import/outbox state, and can send
+inspection-only `recorded.*` spans to the same Collector. It neither parses raw
+harness source files nor owns gameplay/replay semantics. Run snapshots, accounting
+and relative artifact references remain distinct from live runtime spans.
+See [`RECORDED_RUN.md`](RECORDED_RUN.md) for identity, revision and delivery rules.
+
 Agents should normally target the Collector:
 
 ```text

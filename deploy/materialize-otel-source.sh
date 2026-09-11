@@ -429,68 +429,126 @@ for entry in data.get("entries", []):
 PY
 }
 
-restore_original_bound_files() {
+restore_original_tree() {
   local archive="$1"
-  local bind_state="$2"
-  local scratch relative source target metadata mode uid gid
-  scratch="$(mktemp -d)"
-  if ! tar --xattrs --acls --no-same-owner --preserve-permissions \
-      --wildcards --no-anchored -C "$scratch" -xpf "$archive" \
-      'deploy/compose.yaml' 'deploy/otel-collector.yaml'; then
-    rm -rf -- "$scratch"
-    return 1
+  local binds="$2"
+  local staged status=0
+  # The backup is private local state, not an untrusted import. Verify its
+  # recorded checksum and pinned bind identities before any extraction, including
+  # automatic cleanup (which has no completed materialization-state file).
+  [[ -f "$archive" && ! -L "$archive" && -f "$archive.sha256" && ! -L "$archive.sha256" ]] || return 1
+  [[ "$(sha256sum -- "$archive" | awk '{print $1}')" == "$(awk '{print $1}' "$archive.sha256")" ]] || return 1
+  verify_bind_state "$live_root" "$binds" || return 1
+  python3 - "$archive" "$binds" <<'PY' || return 1
+import hashlib
+import json
+import tarfile
+import sys
+from pathlib import PurePosixPath
+
+expected = {e["path"]: e for e in json.load(open(sys.argv[2]))["entries"]}
+if set(expected) != {"deploy/compose.yaml", "deploy/otel-collector.yaml", "deploy/.env"}:
+    raise SystemExit("original bind paths are invalid")
+with tarfile.open(sys.argv[1]) as archive:
+    members = {}
+    for member in archive.getmembers():
+        path = PurePosixPath(member.name)
+        if path.is_absolute() or ".." in path.parts:
+            raise SystemExit("original archive contains an unsafe path")
+        name = str(path)
+        if name in members:
+            raise SystemExit("original archive contains duplicate paths")
+        members[name] = member
+    for name, member in members.items():
+        for parent in PurePosixPath(name).parents:
+            if str(parent) in members and not members[str(parent)].isdir():
+                raise SystemExit("original archive has a non-directory ancestor")
+    for name, entry in expected.items():
+        member = members.get(name)
+        if member is None or not member.isreg() or member.mode != entry["mode"]:
+            raise SystemExit("original archive bind metadata mismatch")
+        if member.uid != entry["uid"] or member.gid != entry["gid"]:
+            raise SystemExit("bind-source uid/gid changed in original archive")
+        with archive.extractfile(member) as source:
+            h = hashlib.file_digest(source, "sha256").hexdigest()
+        if h != entry["sha256"]:
+            raise SystemExit("original archive bind checksum mismatch")
+PY
+  # Normal tar extraction may unlink existing files. Keep all three bind
+  # sources out of it; .env has never changed and must not be rewritten.
+  tar --xattrs --acls --no-same-owner --preserve-permissions -C "$live_root" \
+    --exclude=./deploy/compose.yaml --exclude=./deploy/otel-collector.yaml \
+    --exclude=./deploy/.env -xpf "$archive" || return 1
+  # GNU tar may unlink even with --overwrite when restoring xattrs. Decode
+  # archived ACLs/xattrs only into private staging, never onto live bind paths.
+  staged="$(mktemp -d "${archive%/*}/restore-binds.XXXXXX")" || return 1
+  if tar --xattrs --xattrs-include='*' --acls --no-same-owner --preserve-permissions \
+      -C "$staged" -xpf "$archive" ./deploy/compose.yaml ./deploy/otel-collector.yaml; then
+    python3 - "$live_root" "$staged" "$binds" <<'PY' || status=$?
+import contextlib
+import hashlib
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+root, staged, manifest = sys.argv[1:]
+expected = {e["path"]: e for e in json.load(open(manifest))["entries"]}
+with contextlib.ExitStack() as stack:
+    def opened(path, flags, **kwargs):
+        fd = os.open(path, flags | os.O_NOFOLLOW, **kwargs)
+        stack.callback(os.close, fd)
+        return fd
+    root_fd = opened(root, os.O_RDONLY | os.O_DIRECTORY)
+    deploy_fd = opened("deploy", os.O_RDONLY | os.O_DIRECTORY, dir_fd=root_fd)
+    pending = []
+    # Verify and hold both existing regular descriptors before any bind write.
+    for name in ("compose.yaml", "otel-collector.yaml"):
+        entry = expected["deploy/" + name]
+        source = Path(staged) / "deploy" / name
+        source_stat = source.stat()
+        data = source.read_bytes()
+        if hashlib.sha256(data).hexdigest() != entry["sha256"]:
+            raise SystemExit("staged bind checksum mismatch")
+        attrs = {key: os.getxattr(source, key) for key in os.listxattr(source)}
+        fd = opened(name, os.O_RDWR | os.O_NONBLOCK, dir_fd=deploy_fd)
+        current = os.fstat(fd)
+        if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != (entry["device"], entry["inode"]):
+            raise SystemExit("bind-source inode changed before restoration")
+        pending.append((name, fd, entry, data, attrs, source_stat))
+    for name, fd, entry, data, attrs, source_stat in pending:
+        os.ftruncate(fd, 0)
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise SystemExit("bind restoration write failed")
+            view = view[written:]
+        current = os.fstat(fd)
+        if (current.st_uid, current.st_gid) != (entry["uid"], entry["gid"]):
+            os.fchown(fd, entry["uid"], entry["gid"])
+        os.fchmod(fd, entry["mode"])
+        # Linux exposes the decoded POSIX access ACL as system.posix_acl_access.
+        # Apply it after chmod, which otherwise changes the ACL mask.
+        for key in set(os.listxattr(fd)) - attrs.keys():
+            os.removexattr(fd, key)
+        for key, value in attrs.items():
+            os.setxattr(fd, key, value)
+        os.utime(fd, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
+        os.fsync(fd)
+        if {key: os.getxattr(fd, key) for key in os.listxattr(fd)} != attrs:
+            raise SystemExit("bind restoration metadata mismatch")
+        current = os.stat(name, dir_fd=deploy_fd, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != (entry["device"], entry["inode"]):
+            raise SystemExit("bind-source pathname changed during restoration")
+PY
+  else
+    status=$?
   fi
-  for relative in deploy/compose.yaml deploy/otel-collector.yaml; do
-    source="$scratch/$relative"
-    target="$live_root/$relative"
-    [[ -f "$source" && ! -L "$source" ]] || {
-      rm -rf -- "$scratch"
-      die "original archive bind-source is missing or is a symlink: $relative"
-    }
-    metadata="$(jq -r --arg path "$relative" \
-      '.entries[] | select(.path == $path) | "\(.mode) \(.uid) \(.gid)"' "$bind_state")"
-    read -r mode uid gid <<<"$metadata"
-    [[ "$mode" =~ ^[0-9]+$ && "$uid" =~ ^[0-9]+$ && "$gid" =~ ^[0-9]+$ ]] || {
-      rm -rf -- "$scratch"
-      die "original bind state metadata is invalid: $relative"
-    }
-    cat -- "$source" >"$target"
-    chmod "$(printf '%04o' "$mode")" "$target"
-    chown "$uid:$gid" "$target"
-  done
-  rm -rf -- "$scratch"
-}
-
-verify_original_bind_ownership() {
-  local bind_state="$1"
-  local relative metadata mode uid gid
-  for relative in deploy/compose.yaml deploy/otel-collector.yaml; do
-    metadata="$(jq -r --arg path "$relative" \
-      '.entries[] | select(.path == $path) | "\(.mode) \(.uid) \(.gid)"' "$bind_state")"
-    read -r mode uid gid <<<"$metadata"
-    [[ "$mode" =~ ^[0-9]+$ && "$uid" =~ ^[0-9]+$ && "$gid" =~ ^[0-9]+$ ]] || \
-      die "original bind state metadata is invalid: $relative"
-    [[ "$(stat -c '%u:%g' -- "$live_root/$relative")" == "$uid:$gid" ]] || \
-      die "source/bind metadata changed: $relative"
-  done
-}
-
-extract_original_tree() {
-  local archive="$1"
-  local bind_state="$2"
-  # deploy/.env belongs exclusively to the existing target. It remains in the
-  # protected original archive for recovery custody, but is never extracted
-  # back into the target. Restore only the two other file-bound sources in
-  # place so their inodes remain stable as well. The non-anchored member
-  # patterns accept both ./deploy/... and deploy/... archive spellings without
-  # selecting the target-local secret.
-  verify_original_bind_ownership "$bind_state"
-  tar --xattrs --acls --no-same-owner --preserve-permissions \
-    --exclude='./deploy/compose.yaml' --exclude='deploy/compose.yaml' \
-    --exclude='./deploy/otel-collector.yaml' --exclude='deploy/otel-collector.yaml' \
-    --exclude='./deploy/.env' --exclude='deploy/.env' \
-    -C "$live_root" -xpf "$archive"
-  restore_original_bound_files "$archive" "$bind_state"
+  rm -rf -- "$staged"
+  (( status == 0 )) || return "$status"
+  verify_bind_state "$live_root" "$binds" true
 }
 
 materialization_failure_cleanup() {
@@ -503,8 +561,7 @@ materialization_failure_cleanup() {
     # and explicitly excludes the deployment secret, so this cleanup never
     # needs to read or print candidate secret content.
     set +e
-    if [[ -f "$materialization_original_tree" ]]; then
-      extract_original_tree "$materialization_original_tree" "$materialization_original_bind_state" >/dev/null 2>&1
+    if restore_original_tree "$materialization_original_tree" "$materialization_original_bind_state"; then
       if [[ -f "$materialization_candidate_manifest" && \
             -f "$materialization_original_tree_manifest" ]]; then
         python3 - "$live_root" "$materialization_candidate_manifest" \
@@ -538,6 +595,8 @@ PY
       if [[ -n "$materialization_target_manifest" ]]; then
         rm -f -- "$materialization_target_manifest"
       fi
+    else
+      printf '%s\n' 'otel source materializer: automatic restoration failed; preserve backup for reconciliation' >&2
     fi
     set -e
   fi
@@ -638,7 +697,7 @@ verify_bind_state "$live_root" "$original_bind_state"
 cmp -s -- "$live_root/deploy/.otel-source-manifest.json" "$candidate_manifest" || \
   die 'materialized source manifest changed before rollback'
 
-extract_original_tree "$original_tree" "$original_bind_state"
+restore_original_tree "$original_tree" "$original_bind_state"
 python3 - "$live_root" "$candidate_manifest" "$original_tree_manifest" <<'PY'
 import json
 import os

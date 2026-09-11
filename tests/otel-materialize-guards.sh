@@ -6,24 +6,6 @@ materializer="$repo_root/deploy/materialize-otel-source.sh"
 test_root="$(mktemp -d)"
 candidate_env_path="$repo_root/deploy/.env"
 candidate_env_created=false
-# This fixture creates an ignored candidate .env to prove that materialization
-# never transfers it.  The candidate worktree can be shared by independently
-# launched gates, so hold one cross-process lock before inspecting, creating,
-# or removing that shared ignored file.
-candidate_env_lock_dir="${TMPDIR:-/tmp}/ai-agent-observability-materialize-guards"
-candidate_env_lock_key="$(printf '%s' "$(readlink -f -- "$repo_root")" | sha256sum | awk '{print $1}')"
-mkdir -p -- "$candidate_env_lock_dir"
-[[ -d "$candidate_env_lock_dir" && ! -L "$candidate_env_lock_dir" ]] || {
-  printf '%s\n' 'materializer fixture lock path is not a directory' >&2
-  exit 1
-}
-chmod 0700 -- "$candidate_env_lock_dir"
-[[ "$(stat -c '%a:%u' -- "$candidate_env_lock_dir")" == "700:$UID" ]] || {
-  printf '%s\n' 'materializer fixture lock directory is not private to this user' >&2
-  exit 1
-}
-exec {candidate_env_lock_fd}>"$candidate_env_lock_dir/$candidate_env_lock_key.lock"
-flock "$candidate_env_lock_fd"
 cleanup() {
   rm -rf -- "$test_root"
   if [[ "$candidate_env_created" == true ]]; then
@@ -46,6 +28,42 @@ make_target() {
   printf '%s\n' 'ORIGINAL_SECRET=preserve' >"$target/deploy/.env"
   chmod 0777 "$target/deploy/compose.yaml" "$target/deploy/otel-collector.yaml"
   chmod 0600 "$target/deploy/.env"
+}
+
+bind_metadata_fixture() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import base64
+import hashlib
+import json
+import os
+import stat
+import struct
+import sys
+from pathlib import Path
+
+mode, root, saved = sys.argv[1:]
+root = Path(root)
+paths = [root / "deploy" / name for name in ("compose.yaml", "otel-collector.yaml", ".env")]
+if mode == "seed":
+    # Linux POSIX access ACL: named UID 10002, mask rwx; independent of acl CLI tools.
+    acl = struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *entry) for entry in
+        [(1, 7, 0xffffffff), (2, 4, 10002), (4, 7, 0xffffffff), (16, 7, 0xffffffff), (32, 7, 0xffffffff)])
+    for path in paths:
+        os.setxattr(path, "user.rollback-fixture", b"original\x00\xff")
+        if path.name != ".env":
+            os.setxattr(path, "system.posix_acl_access", acl)
+actual = {}
+for path in paths:
+    st = path.stat()
+    actual[path.name] = dict(inode=st.st_ino, device=st.st_dev, mode=stat.S_IMODE(st.st_mode),
+        uid=st.st_uid, gid=st.st_gid, mtime_ns=st.st_mtime_ns,
+        sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        xattrs={key: base64.b64encode(os.getxattr(path, key)).decode() for key in os.listxattr(path)})
+if mode == "seed":
+    Path(saved).write_text(json.dumps(actual))
+else:
+    assert actual == json.loads(Path(saved).read_text()), "bind inode/content/metadata/secret changed"
+PY
 }
 
 fake_bin="$test_root/bin"
@@ -164,6 +182,7 @@ run_materialize_failure() {
 target="$test_root/live"
 backup_root="$test_root/backups"
 make_target "$target"
+bind_metadata_fixture seed "$target" "$test_root/normal-bind-metadata.json"
 config_inode="$(stat -c '%d:%i' "$target/deploy/otel-collector.yaml")"
 compose_inode="$(stat -c '%d:%i' "$target/deploy/compose.yaml")"
 env_inode="$(stat -c '%d:%i' "$target/deploy/.env")"
@@ -206,75 +225,47 @@ jq -e '[.files[] | select(.path == "deploy/.env")] | length == 0' \
 [[ "$(jq -r '.entries[] | select(.path == "deploy/otel-collector.yaml") | .uid' "$backup_dir/original-bind-state.json")" == "$(stat -c '%u' "$target/deploy/otel-collector.yaml")" ]] || exit 1
 [[ "$(jq -r '.entries[] | select(.path == "deploy/otel-collector.yaml") | .uid' "$backup_dir/candidate-bind-state.json")" == "$(stat -c '%u' "$target/deploy/otel-collector.yaml")" ]] || exit 1
 
-env_replace_bin="$test_root/env-replace-bin"
-mkdir -p -- "$env_replace_bin"
-cat >"$env_replace_bin/tar" <<'FAKE_TAR'
-#!/usr/bin/env bash
-set -Eeuo pipefail
+# A corrupt backup must fail before either ordinary or bound files are restored.
+cp -- "$backup_dir/original-tree.tar" "$test_root/original-tree.saved.tar"
+printf 'corrupt-backup' >>"$backup_dir/original-tree.tar"
+candidate_config_hash="$(sha256sum "$target/deploy/otel-collector.yaml" | awk '{print $1}')"
+if env "${candidate_env[@]}" PATH="$fake_bin:$PATH" OTEL_LIVE_SOURCE_DIR="$target" OTEL_MATERIALIZATION_BACKUP_ROOT="$backup_root" \
+    OTEL_EXPECTED_GIT_HEAD="$head" OTEL_MATERIALIZATION_BACKUP_DIR="$backup_dir" \
+    "$materializer" --rollback >"$test_root/corrupt-backup.out" 2>"$test_root/corrupt-backup.err"; then
+  printf '%s\n' 'rollback accepted a corrupt backup' >&2
+  exit 1
+fi
+grep -Fq 'original tree archive checksum is invalid' "$test_root/corrupt-backup.err"
+[[ "$(sha256sum "$target/deploy/otel-collector.yaml" | awk '{print $1}')" == "$candidate_config_hash" ]] || exit 1
+[[ "$(stat -c '%d:%i' "$target/deploy/.env")" == "$env_inode" ]] || exit 1
+cp -- "$test_root/original-tree.saved.tar" "$backup_dir/original-tree.tar"
 
-real_tar="${OTEL_REAL_TAR:?}"
-target="${OTEL_ENV_ARCHIVE_TARGET:?}"
-saw_extract=false
-saw_env_exclude=false
-selected_env=false
-saw_bound_compose=false
-saw_bound_config=false
-extract_root=''
-args=("$@")
-for ((index=0; index < ${#args[@]}; index++)); do
-  argument="${args[index]}"
-  case "$argument" in
-    -xpf) saw_extract=true ;;
-    --exclude=./deploy/.env|--exclude=deploy/.env) saw_env_exclude=true ;;
-    ./deploy/.env|deploy/.env) selected_env=true ;;
-    ./deploy/compose.yaml|deploy/compose.yaml) saw_bound_compose=true ;;
-    ./deploy/otel-collector.yaml|deploy/otel-collector.yaml) saw_bound_config=true ;;
-    -C)
-      extract_root="${args[index + 1]}"
-      ((index += 1))
-      ;;
-  esac
-done
-if [[ "$saw_extract" == true && "$selected_env" == true ]]; then
-  printf '%s\n' 'recovery tar selected target-local deploy/.env' >&2
-  exit 81
-fi
-if [[ "$saw_extract" == true && "$extract_root" == "$target" && "$saw_env_exclude" != true ]]; then
-  printf '%s\n' 'recovery tar did not exclude target-local deploy/.env' >&2
-  exit 83
-fi
-if [[ "$saw_extract" == true && "$extract_root" != "$target" && \
-      ( "$saw_bound_compose" != true || "$saw_bound_config" != true ) ]]; then
-  printf '%s\n' 'recovery tar did not restrict scratch extraction to strict bind files' >&2
-  exit 82
-fi
-"$real_tar" "$@"
-# Make archive replacement behavior deterministic.  A rollback that fails to
-# exclude target-local .env must fail its final strict bind check; the repaired
-# command never enters this branch.  No secret bytes are emitted.
-if [[ "$saw_extract" == true && "$extract_root" == "$target" && "$saw_env_exclude" != true ]]; then
-  cp -- "$target/deploy/.env" "$target/deploy/.env.fixture-replacement"
-  chmod --reference="$target/deploy/.env" "$target/deploy/.env.fixture-replacement"
-  mv -f -- "$target/deploy/.env.fixture-replacement" "$target/deploy/.env"
-fi
-FAKE_TAR
-chmod +x "$env_replace_bin/tar"
+# Exercise restoration, not merely retention, of user attrs and the ACL mask.
+python3 - "$target" <<'PY'
+import os
+import sys
+from pathlib import Path
+for name in ("compose.yaml", "otel-collector.yaml"):
+    path = Path(sys.argv[1]) / "deploy" / name
+    os.setxattr(path, "user.rollback-fixture", b"candidate")
+    os.setxattr(path, "user.candidate-only", b"remove-on-restore")
+PY
 
-env "${candidate_env[@]}" PATH="$env_replace_bin:$fake_bin:$PATH" \
-  OTEL_REAL_TAR="$(command -v tar)" OTEL_ENV_ARCHIVE_TARGET="$target" \
-  OTEL_LIVE_SOURCE_DIR="$target" OTEL_MATERIALIZATION_BACKUP_ROOT="$backup_root" \
+env "${candidate_env[@]}" PATH="$fake_bin:$PATH" OTEL_LIVE_SOURCE_DIR="$target" OTEL_MATERIALIZATION_BACKUP_ROOT="$backup_root" \
   OTEL_EXPECTED_GIT_HEAD="$head" OTEL_MATERIALIZATION_BACKUP_DIR="$backup_dir" \
   "$materializer" --rollback
 [[ ! -e "$target/deploy/.otel-source-manifest.json" ]] || exit 1
 [[ "$(cat "$target/deploy/otel-collector.yaml")" == 'original config' ]] || exit 1
 [[ "$(cat "$target/deploy/compose.yaml")" == 'original compose' ]] || exit 1
 [[ "$(stat -c '%a' "$target/deploy/otel-collector.yaml")" == 777 ]] || exit 1
+[[ "$(stat -c '%d:%i' "$target/deploy/compose.yaml")" == "$compose_inode" ]] || exit 1
 [[ "$(stat -c '%d:%i' "$target/deploy/otel-collector.yaml")" == "$config_inode" ]] || exit 1
 [[ "$(stat -c '%d:%i' "$target/deploy/.env")" == "$env_inode" ]] || exit 1
 [[ "$(sha256sum "$target/deploy/.env" | awk '{print $1}')" == "$env_hash" ]] || exit 1
 [[ "$(stat -c '%a' "$target/deploy/.env")" == "$env_mode" ]] || exit 1
 [[ "$(stat -c '%u' "$target/deploy/.env")" == "$env_uid" ]] || exit 1
 [[ "$(stat -c '%g' "$target/deploy/.env")" == "$env_gid" ]] || exit 1
+bind_metadata_fixture verify "$target" "$test_root/normal-bind-metadata.json"
 
 # An extraction failure after the candidate tree has been written must restore
 # the original target completely. The ignored candidate .env is present during
@@ -291,6 +282,17 @@ if [[ ! -e "$marker" ]]; then
   for argument in "$@"; do
     if [[ "$argument" == '-xpf' ]]; then
       "$real_tar" "$@"
+      python3 - "$OTEL_LIVE_SOURCE_DIR" <<'PY'
+import os
+import sys
+from pathlib import Path
+for name in ("compose.yaml", "otel-collector.yaml"):
+    path = Path(sys.argv[1]) / "deploy" / name
+    path.write_text("injected partial candidate write")
+    path.chmod(0o600)
+    os.setxattr(path, "user.rollback-fixture", b"candidate")
+    os.setxattr(path, "user.candidate-only", b"remove-on-restore")
+PY
       : >"$marker"
       exit 97
     fi
@@ -302,6 +304,9 @@ chmod +x "$tar_fail_bin/tar"
 target_failed_extract="$test_root/live-failed-extract"
 backup_failed_extract="$test_root/backups-failed-extract"
 make_target "$target_failed_extract"
+bind_metadata_fixture seed "$target_failed_extract" "$test_root/failed-bind-metadata.json"
+failed_config_inode="$(stat -c '%d:%i' "$target_failed_extract/deploy/otel-collector.yaml")"
+failed_compose_inode="$(stat -c '%d:%i' "$target_failed_extract/deploy/compose.yaml")"
 failed_env_inode="$(stat -c '%d:%i' "$target_failed_extract/deploy/.env")"
 failed_env_hash="$(sha256sum "$target_failed_extract/deploy/.env" | awk '{print $1}')"
 failed_env_mode="$(stat -c '%a' "$target_failed_extract/deploy/.env")"
@@ -319,11 +324,15 @@ fi
 [[ -e "$tar_fail_marker" ]] || exit 1
 [[ "$(cat "$target_failed_extract/deploy/compose.yaml")" == 'original compose' ]] || exit 1
 [[ "$(cat "$target_failed_extract/deploy/otel-collector.yaml")" == 'original config' ]] || exit 1
+[[ "$(stat -c '%d:%i' "$target_failed_extract/deploy/otel-collector.yaml")" == "$failed_config_inode" ]] || exit 1
+[[ "$(stat -c '%d:%i' "$target_failed_extract/deploy/compose.yaml")" == "$failed_compose_inode" ]] || exit 1
+[[ "$(stat -c '%a' "$target_failed_extract/deploy/otel-collector.yaml")" == 777 ]] || exit 1
 [[ "$(stat -c '%d:%i' "$target_failed_extract/deploy/.env")" == "$failed_env_inode" ]] || exit 1
 [[ "$(sha256sum "$target_failed_extract/deploy/.env" | awk '{print $1}')" == "$failed_env_hash" ]] || exit 1
 [[ "$(stat -c '%a' "$target_failed_extract/deploy/.env")" == "$failed_env_mode" ]] || exit 1
 [[ "$(stat -c '%u' "$target_failed_extract/deploy/.env")" == "$failed_env_uid" ]] || exit 1
 [[ "$(stat -c '%g' "$target_failed_extract/deploy/.env")" == "$failed_env_gid" ]] || exit 1
+bind_metadata_fixture verify "$target_failed_extract" "$test_root/failed-bind-metadata.json"
 [[ ! -e "$target_failed_extract/deploy/.otel-source-manifest.json" ]] || exit 1
 [[ ! -e "$target_failed_extract/deploy/Dockerfile.otel" ]] || exit 1
 if grep -R --binary-files=without-match -Fq "$candidate_secret" "$target_failed_extract"; then
@@ -417,7 +426,9 @@ output="$(env "${candidate_env[@]}" PATH="$fake_bin:$PATH" \
   OTEL_EXPECTED_GIT_HEAD="$head" OTEL_SOURCE_MATERIALIZE_APPROVED=true \
   "$materializer" --materialize)"
 backup_false_pin_dir="${output##*original backup=}"
-cp -- "$target_false_pin/deploy/otel-collector.yaml" "$target_false_pin/deploy/config-replacement"
+# Isolate inode drift even under a restrictive caller umask; metadata drift has
+# its own fixtures below and must not mask the inode rejection assertion.
+cp -p -- "$target_false_pin/deploy/otel-collector.yaml" "$target_false_pin/deploy/config-replacement"
 mv -- "$target_false_pin/deploy/config-replacement" "$target_false_pin/deploy/otel-collector.yaml"
 if env OTEL_LIVE_SOURCE_DIR="$target_false_pin" OTEL_MATERIALIZATION_BACKUP_ROOT="$backup_false_pin" \
   OTEL_EXPECTED_GIT_HEAD="$head" OTEL_MATERIALIZATION_BACKUP_DIR="$backup_false_pin_dir" \

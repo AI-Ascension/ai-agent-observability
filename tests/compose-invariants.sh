@@ -75,7 +75,7 @@ if git grep -qE "$forbidden_pattern" -- . ':(exclude)tests/compose-invariants.sh
   exit 1
 fi
 
-if find . -type f -not -path './.git/*' -name '*.py' -print -quit | grep -q .; then
+if find . -type f -not -path './.git/*' -not -path './.local-test/*' -name '*.py' -print -quit | grep -q .; then
   printf '%s\n' 'Python application source is outside this repository boundary' >&2
   exit 1
 fi

@@ -1,4 +1,6 @@
 .git
+.local-test
+*.sqlite*
 .env
 .env.*
 !.env.example
