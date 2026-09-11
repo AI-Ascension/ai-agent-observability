@@ -111,7 +111,7 @@ service:
       exporters: [otlp_http/mlflow]
 `;
 writeFileSync(join(dir, 'collector.yaml'), config, { mode: 0o600 });
-const source = process.argv[2] ? resolve(process.argv[2]) : join(root, 'contract/recorded-run-bundle-v1/golden/legacy-failed.zip');
+const source = process.argv[2] ? resolve(process.argv[2]) : join(root, 'contract/recorded-run-bundle-v1-candidate3/golden/legacy-failed.zip');
 const sourceDigest = digest(readFileSync(source));
 const admitted = readBundle(source);
 let mlflow, otel;

@@ -1,0 +1,46 @@
+{
+  "result": "passed",
+  "fixtureProvenance": "synthetic",
+  "mlflowVersion": "3.16.0",
+  "collectorVersion": "0.160.0",
+  "schemaDigest": "a6c32127290f4d5e670d8863f97a74a7b8e3e411e735d81394b51fe1578b4eb6",
+  "wireVersion": "1.0.0-candidate.3",
+  "inventoryDigest": "580c1cf3be4bb3e4eb37b9acd9166808b7386b0eb84286cc0798a0d88e35bb35",
+  "revisionsVerified": 2,
+  "storedSpans": 38,
+  "accountingVerified": true,
+  "identitiesVerified": true,
+  "recordEvidenceVerified": true,
+  "streamCountsVerified": true,
+  "duplicateTraceUnchanged": true,
+  "restartTraceUnchanged": true,
+  "sourceArtifactUnchanged": true,
+  "completeness": {
+    "source_snapshot": "stable",
+    "status": "complete"
+  },
+  "artifactSha256": "5fe3184847f46edf93c661e4b7327c81e50299b71a0787dcf20292c5b1df3a6d",
+  "semanticDigest": "6c325b24886169c04fe2b08c72997d281e39b4ded6833c22ebfd32d5892ac1f9",
+  "logicalRunKey": "2a054f5c7c9d835956d663c8bda9ab1d33dcf2d5dedc123409b857b8fcc7a2fd",
+  "traceId": "tr-1d114b863361bb08647bd309ecfae7b8",
+  "tracesBefore": 1,
+  "tracesAfterRetry": 1,
+  "tracesAfterRestart": 1,
+  "counts": {
+    "event_records": 8,
+    "accounting_records": 1,
+    "unsupported_records": 0,
+    "unknown_action_outcomes": 2,
+    "settled_action_outcomes": 0
+  },
+  "evidence": {
+    "action": "unknown",
+    "gameplay": "episode_failed",
+    "outcome": "unknown",
+    "process_exit": "completed",
+    "request": "unknown"
+  },
+  "mlflowTelemetryDisabled": true,
+  "laminar": "unverified",
+  "topology": "loopback-collector-to-mlflow"
+}

@@ -49,7 +49,7 @@ Caddy routes.
 
 The independent recorded-run consumer validates portable ZIP recordings, stores
 immutable local snapshot revisions, and can deliver admitted tracking metadata
-through the existing Collector. It supports `1.0.0-candidate.2`; release admission
+through the existing Collector. It supports `1.0.0-candidate.3`; release admission
 and real Train interoperability remain separate gates.
 
 ```sh

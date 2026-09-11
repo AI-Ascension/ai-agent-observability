@@ -9,6 +9,17 @@ export const unknownEvidence = () => ({ process_exit: 'unknown', request: 'unkno
   action: 'unknown', outcome: 'unknown', gameplay: 'unknown' });
 const same = (a, b) => canonical(a) === canonical(b);
 const sorted = values => values.every((v, i) => i === 0 || values[i - 1] < v);
+const sourceStreams = ['trajectory', 'decisions', 'mcp', 'provider-accounting', 'result', 'manifest'];
+const kindStreams = { seed_start: ['trajectory'], observation_summary: ['trajectory'],
+  action_outcome: ['trajectory'], decision_summary: ['trajectory', 'decisions'],
+  accounting: ['provider-accounting'], process_result: ['result'] };
+const diagnosticStreams = { operation_wait_completed: ['trajectory'], episode_failed: ['trajectory'],
+  unsupported_source_event: ['trajectory'], unsupported_source_status: ['trajectory', 'provider-accounting'],
+  invalid_source_record: sourceStreams, partial_final_record: sourceStreams, unsupported_profile: sourceStreams };
+const reasonRules = { raw_mcp_disallowed: ['filtered', ['mcp']],
+  private_source_metadata: ['filtered', ['manifest']], unsupported_source_event: ['unsupported', ['trajectory']],
+  unsupported_source_status: ['unsupported', ['trajectory', 'provider-accounting']],
+  invalid_source_record: ['rejected', null], partial_final_record: ['rejected', null] };
 function identityPrivacy(identities) {
   for (const [key, namespace] of [['action', 'ai-ascension.action.sha256'],
     ['provider_request', 'ai-ascension.provider-request.sha256']]) {
@@ -39,6 +50,10 @@ function recordSemantics(record, manifest) {
     return;
   }
   check(kind !== 'opaque', 'known_profile_opaque');
+  check((kind === 'diagnostic' ? diagnosticStreams[value.code] : kindStreams[kind])
+    ?.includes(record.source.stream), 'profile_source_stream');
+  if (kind === 'diagnostic' && ['unsupported_source_event', 'unsupported_source_status'].includes(value.code))
+    check(typeof value.value_digest === 'string' && /^[a-f0-9]{64}$/.test(value.value_digest), 'diagnostic_digest');
   if (kind === 'process_result') evidence.process_exit = value.exit_code === 0 ? 'completed' : 'failed';
   if (kind === 'diagnostic' && value.code === 'episode_failed') evidence.gameplay = 'episode_failed';
   if (kind === 'seed_start') {
@@ -53,7 +68,7 @@ function recordSemantics(record, manifest) {
     check(value.seed_match === (value.requested_seed_digest === value.canonical_seed_digest), 'seed_match');
   }
   if (kind === 'action_outcome') {
-    // Actual Train receipts are Unknown with null effects. Candidate 1 admits
+    // Actual Train receipts are Unknown with null effects. This profile admits
     // no settled action receipt, irrespective of provider/process completion.
     check(value.status === 'unknown' && !value.observation && !value.from_generation
       && !value.to_generation && !value.effect_digest, 'unadmitted_action_settlement');
@@ -93,6 +108,10 @@ function reconcile(manifest, report, records) {
     check([...covered].every(n => n < stream.input_records), 'source_ordinal');
     let last = -1;
     for (const range of stream.dispositions) {
+      const rule = reasonRules[range.reason];
+      check(rule && range.disposition === rule[0] && (!rule[1] || rule[1].includes(stream.stream)), 'disposition_reason');
+      if (range.reason === 'partial_final_record') check(stream.state === 'interrupted'
+        && range.first === range.last && range.last === stream.input_records - 1, 'partial_tail_disposition');
       check(range.first <= range.last && range.first > last && range.last < stream.input_records, 'disposition_range');
       last = range.last;
       for (let n = range.first; n <= range.last; n++) {
@@ -151,6 +170,20 @@ export function validateBundle(bytes) {
   }
   const omissions = parseCanonical(entries.get('reports/omissions.json'), LIMITS.omissions);
   validateDocument(omissions, 'omissions');
+  // Scan both files before materializing any record, using one aggregate budget.
+  let preflightCount = 0;
+  for (const path of ['records/events.ndjson', 'records/accounting.ndjson']) {
+    const data = entries.get(path) ?? Buffer.alloc(0);
+    check(!data.length || data.at(-1) === 10, 'partial_final_record');
+    let start = 0;
+    for (let end = 0; end < data.length; end++) {
+      check(end - start <= LIMITS.line, 'json_byte_limit');
+      if (data[end] === 10) {
+        check(end > start && ++preflightCount <= LIMITS.records, 'record_limit');
+        start = end + 1;
+      }
+    }
+  }
   let count = 0;
   function records(path) {
     const data = entries.get(path) ?? Buffer.alloc(0), result = [];

@@ -5,17 +5,17 @@ import { digest } from './store.mjs';
 export const LIMITS = Object.freeze({ archive: 16 * 1024 ** 2, total: 32 * 1024 ** 2,
   entry: 16 * 1024 ** 2, manifest: 256 * 1024, omissions: 1024 ** 2,
   line: 64 * 1024, records: 25000, depth: 32, nodes: 100000 });
-export const SCHEMA_DIGEST = 'd5098e5f969d99707d3ad1d97acdbc803285b93f1eb1dcfe5dc3f63c534192af';
-export const WIRE_VERSION = '1.0.0-candidate.2';
-export const INVENTORY_DIGEST = '41d760f8c41064c4e6b49a48dbe6e1a6c8f2a9958afbc50374986a54858fd598';
-const contractRoot = new URL('../../contract/recorded-run-bundle-v1/', import.meta.url);
+export const SCHEMA_DIGEST = 'a6c32127290f4d5e670d8863f97a74a7b8e3e411e735d81394b51fe1578b4eb6';
+export const WIRE_VERSION = '1.0.0-candidate.3';
+export const INVENTORY_DIGEST = '580c1cf3be4bb3e4eb37b9acd9166808b7386b0eb84286cc0798a0d88e35bb35';
+const contractRoot = new URL('../../contract/recorded-run-bundle-v1-candidate3/', import.meta.url);
 const inventory = readFileSync(new URL('SHA256SUMS', contractRoot));
 if (digest(inventory) !== INVENTORY_DIGEST) throw new Error('contract_inventory_mismatch');
 for (const line of inventory.toString('utf8').trim().split('\n')) {
   const [expected, name] = line.split(/\s+/);
   if (digest(readFileSync(new URL(name, contractRoot))) !== expected) throw new Error('contract_file_mismatch');
 }
-const schemaBytes = readFileSync(new URL('../../contract/recorded-run-bundle-v1/schema.json', import.meta.url));
+const schemaBytes = readFileSync(new URL('schema.json', contractRoot));
 if (digest(schemaBytes) !== SCHEMA_DIGEST) throw new Error('contract_pin_mismatch');
 const schema = JSON.parse(schemaBytes);
 export function requireThat(condition, code) { if (!condition) throw new Error(code); }
@@ -113,7 +113,10 @@ export function validateDocument(value, kind) {
 }
 
 export function readZip(bytes) {
-  requireThat(bytes.length >= 22 && bytes.length <= LIMITS.archive, 'archive_byte_limit');
+  requireThat(bytes instanceof Uint8Array && !(bytes.buffer instanceof SharedArrayBuffer), 'archive_byte_type');
+  requireThat(bytes.byteLength >= 22 && bytes.byteLength <= LIMITS.archive, 'archive_byte_limit');
+  // Bound the supplied view before conversion; never copy a larger backing store.
+  bytes = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   // Candidate subset: no comments, descriptors, ZIP64, extras, or split disks.
   const end = bytes.length - 22;
   requireThat(bytes.readUInt32LE(end) === 0x06054b50, 'zip_end');

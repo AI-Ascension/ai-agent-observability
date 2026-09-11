@@ -1,6 +1,6 @@
 # Recorded-run consumer
 
-Status: implemented against proposed `1.0.0-candidate.2`; not an admitted release.
+Status: implemented against proposed `1.0.0-candidate.3`; not an admitted release.
 The protocol owner supplies the portable format and the harness supplies sanitized
 exports. This consumer does not read Train recording directories, derive producer
 semantics from raw logs, fetch artifact URLs, or execute imported content.
@@ -8,15 +8,30 @@ semantics from raw logs, fetch artifact URLs, or execute imported content.
 ## Exact pins and execution
 
 Node 24.16.0 supplies the CLI, bounded decompressor and SQLite. No npm dependencies.
-The complete protocol artifact is vendored in `contract/recorded-run-bundle-v1/`.
+The active protocol artifact is vendored in `contract/recorded-run-bundle-v1-candidate3/`.
 The independent implementation checks the inventory and all bound files at startup.
 
 | Pin | Value |
 | --- | --- |
-| Wire version | `1.0.0-candidate.2` |
-| Schema SHA-256 | `d5098e5f969d99707d3ad1d97acdbc803285b93f1eb1dcfe5dc3f63c534192af` |
-| SHA256SUMS SHA-256 | `41d760f8c41064c4e6b49a48dbe6e1a6c8f2a9958afbc50374986a54858fd598` |
-| Synthetic golden ZIP SHA-256 | `a4f7b97df3ee55c35bb42c97ef57518e7a634c700c332025e08db4a3af785c1c` |
+| Wire version | `1.0.0-candidate.3` |
+| Schema SHA-256 | `a6c32127290f4d5e670d8863f97a74a7b8e3e411e735d81394b51fe1578b4eb6` |
+| SHA256SUMS SHA-256 | `580c1cf3be4bb3e4eb37b9acd9166808b7386b0eb84286cc0798a0d88e35bb35` |
+| Synthetic golden ZIP SHA-256 | `5fe3184847f46edf93c661e4b7327c81e50299b71a0787dcf20292c5b1df3a6d` |
+
+Candidate 2's complete artifact remains unchanged in `contract/recorded-run-bundle-v1/`.
+Its synthetic and actual Train backend proofs remain in `docs/evidence/`; commit
+`4c4486b5a6a691268c4f7e4b47c2be425082be85` retains the runnable candidate 2 consumer.
+The active CLI admits only candidate 3. Existing SQLite revisions remain readable;
+no old bundle is rewritten or silently upgraded.
+
+Candidate 3 binds STS2 payload kinds and diagnostics to their documented source
+streams, requires digests for unsupported source event/status diagnostics, and
+checks disposition reason classes, source streams and interrupted final tails.
+Opaque optional profiles retain the full manifest grammar, including uppercase,
+colon and plus. Coincident identity tuples remain valid without implying a join.
+The byte reader bounds Buffer/Uint8Array views before conversion and rejects shared
+backing buffers. Both NDJSON files are scanned against one 25,000-record limit and
+the 64-KiB line limit before any record JSON is materialized.
 
 From the repository root, supply a validated-format portable ZIP and a private
 operator-owned destination directory for the import database:
@@ -95,7 +110,7 @@ busy timeout; a newly created DB is mode 0600. Use an operator-owned parent fold
 node --test tests/recorded-run-*.test.mjs
 ```
 
-Tests cover six shared valid ZIPs, 21 invalid ZIPs, canonical JSON ambiguity,
+Tests cover eight shared valid ZIPs, 25 invalid ZIPs, canonical JSON ambiguity,
 bounds, archive/header safety, precision, privacy sentinels, truthful evidence,
 durable duplicates/revisions and uncertain-delivery handling. The synthetic Train
 shapes contain two unknown action outcomes and an episode failure, with independent
@@ -157,7 +172,7 @@ and that the source ZIP hash is unchanged. Generated evidence contains only
 digests, counts, evidence enums and verification results; full trace data remains
 in the ignored local test directory.
 
-The coordinator's sanitized Train candidate 2 artifact passed this probe with
+Historical evidence: the coordinator's sanitized Train candidate 2 artifact passed this probe with
 SHA256 `2575de7ba78baa30d1036233a0fc234a5b0e1e6d8988e10df62c139aaee37f8b`.
 The privacy-safe result is [recorded-run-train-local-tracking.json](evidence/recorded-run-train-local-tracking.json):
 one persistent trace, 19 spans, eight events and one accounting record. Both action
@@ -165,7 +180,13 @@ outcomes remain unknown, gameplay is `episode_failed`, and process exit is
 `failed`. Source completeness remains partial/unverified. The supplied artifact
 was unchanged; duplicate import and backend restart preserved the complete trace.
 This proves local backend interoperability for these sanitized bytes. Independent
-review and organization-wide candidate admission remain coordinator-owned.
+review and organization-wide candidate admission remain coordinator-owned. Candidate
+3 requires a fresh Train export; the historical proof does not attest candidate 3.
+
+Candidate 3's synthetic backend regression is recorded separately in
+[recorded-run-candidate3-local-tracking.json](evidence/recorded-run-candidate3-local-tracking.json).
+It verifies one trace with two revisions and 38 spans, unchanged duplicate import,
+and full trace persistence across MLflow restart using the new golden bytes.
 
 OTLP acknowledgement semantics follow the [OTLP specification](https://opentelemetry.io/docs/specs/otlp/).
 The test inspected installed MLflow 3.16.0 `server/otel_api.py` and
