@@ -46,10 +46,10 @@ consumer. The optional real local Collector/MLflow test is documented in
 establish tracking-backend persistence.
 
 ```bash
-for script in deploy/init.sh deploy/laminar/bootstrap-project-key.sh tests/*.sh tests/fixtures/*; do
+for script in deploy/init.sh deploy/materialize-otel-source.sh deploy/ai-agent-observability-reviewed-upgrade deploy/install-reviewed-upgrade-root-packet.sh deploy/laminar/bootstrap-project-key.sh deploy/laminar/provision-query-readonly.sh tests/*.sh tests/fixtures/*; do
   bash -n "$script"
 done
-shellcheck --severity=warning deploy/init.sh deploy/laminar/bootstrap-project-key.sh tests/*.sh tests/fixtures/*
+shellcheck --severity=warning deploy/init.sh deploy/materialize-otel-source.sh deploy/ai-agent-observability-reviewed-upgrade deploy/install-reviewed-upgrade-root-packet.sh deploy/laminar/bootstrap-project-key.sh deploy/laminar/provision-query-readonly.sh tests/*.sh tests/fixtures/*
 git diff --check
 bash tests/validation-regressions.sh
 bash tests/compose-invariants.sh
