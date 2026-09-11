@@ -165,7 +165,15 @@ if [[ "$mode" != --rollback ]]; then
   verify_candidate_config_readable
 fi
 
-mkdir -p -m 700 -- "$backup_root"
+ensure_private_backup_root() {
+  [[ ! -e "$backup_root" || -d "$backup_root" ]] || die 'materialization backup root exists but is not a directory'
+  # `mkdir -p -m` only applies its mode to the final component.  A scoped
+  # umask makes every newly-created ancestor private without chmodding an
+  # existing parent outside the reviewed backup boundary.
+  (umask 077; mkdir -p -- "$backup_root") || die 'could not create materialization backup root'
+  [[ "$(stat -c '%a' "$backup_root")" == 700 ]] || die 'materialization backup root must be mode 0700'
+}
+ensure_private_backup_root
 exec {lock_fd}>"$backup_root/materialize.lock"
 flock -n "$lock_fd" || die 'another OTel source materialization is already running'
 
