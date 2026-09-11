@@ -180,7 +180,9 @@ run_materialize_failure() {
 }
 
 target="$test_root/live"
-backup_root="$test_root/backups"
+backup_parent="$test_root/existing-parent"
+mkdir -m 0755 -- "$backup_parent"
+backup_root="$backup_parent/nested/backups"
 make_target "$target"
 bind_metadata_fixture seed "$target" "$test_root/normal-bind-metadata.json"
 config_inode="$(stat -c '%d:%i' "$target/deploy/otel-collector.yaml")"
@@ -202,6 +204,8 @@ materialize_env=(
 output="$(env "${materialize_env[@]}" "$materializer" --materialize)"
 backup_dir="${output##*original backup=}"
 [[ -d "$backup_dir" ]] || { printf '%s\n' 'materialization backup path was not emitted' >&2; exit 1; }
+[[ "$(stat -c '%a' "$backup_parent")" == 755 ]] || { printf '%s\n' 'materializer changed an existing backup ancestor mode' >&2; exit 1; }
+[[ "$(stat -c '%a' "$backup_parent/nested")" == 700 && "$(stat -c '%a' "$backup_root")" == 700 ]] || { printf '%s\n' 'new nested backup paths are not private' >&2; exit 1; }
 [[ "$(stat -c '%d:%i' "$target/deploy/otel-collector.yaml")" == "$config_inode" ]] || exit 1
 [[ "$(stat -c '%d:%i' "$target/deploy/compose.yaml")" == "$compose_inode" ]] || exit 1
 [[ "$(stat -c '%d:%i' "$target/deploy/.env")" == "$env_inode" ]] || exit 1

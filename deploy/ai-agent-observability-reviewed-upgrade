@@ -1,0 +1,418 @@
+#!/bin/bash -p
+set -Eeuo pipefail
+
+# Installed unchanged as /usr/local/sbin/ai-agent-observability-reviewed-upgrade.
+# This is a narrow root-owned operation, not a general container engine wrapper.
+# Callers cannot replace installation-time policy through argv/env.  The
+# root-owned config is parsed as data, never sourced as shell code.  It is the
+# only place an installer may pin a host-specific source/candidate/backup path.
+readonly install_config='/etc/ai-agent-observability-reviewed-upgrade.conf'
+readonly project_name='ai-agent-observability'
+readonly candidate_image='localhost/ai-ascension/ai-agent-observability/otel-collector:0.160.0'
+readonly operation_timeout_seconds=900
+readonly compose_timeout_seconds=300
+readonly volume_timeout_seconds=300
+readonly -a services=(mlflow-postgres mlflow-storage mlflow-create-bucket mlflow laminar-postgres laminar-clickhouse laminar-rabbitmq laminar-quickwit laminar-app-server laminar-frontend laminar-bootstrap otel-collector-storage-init otel-collector)
+readonly -a volumes=(mlflow-postgres-data mlflow-storage-data laminar-clickhouse-data laminar-clickhouse-logs laminar-postgres-data laminar-quickwit-data laminar-rabbitmq-data otel-collector-data)
+readonly -a networks=(net)
+# The root-reviewed source declaration is a migration baseline: the last
+# service and last two volumes are deliberately absent before the update.
+readonly -a baseline_services=(mlflow-postgres mlflow-storage mlflow-create-bucket mlflow laminar-postgres laminar-clickhouse laminar-rabbitmq laminar-quickwit laminar-app-server laminar-frontend laminar-bootstrap otel-collector)
+readonly -a baseline_volumes=(mlflow-postgres-data mlflow-storage-data laminar-clickhouse-data laminar-clickhouse-logs laminar-postgres-data laminar-quickwit-data)
+
+# The caller's PATH and Git environment must not influence trust checks.
+PATH='/usr/sbin:/usr/bin:/sbin:/bin'
+export PATH
+readonly PATH
+
+die() { printf 'reviewed upgrade: %s\n' "$1" >&2; exit 1; }
+usage() {
+  printf '%s\n' "usage: $0 --candidate-head <40-lowercase-hex> --candidate-compose-sha256 <64-lowercase-hex> --candidate-collector-sha256 <64-lowercase-hex> --candidate-dockerfile-sha256 <64-lowercase-hex>" >&2
+  exit 64
+}
+require_hash() { [[ "$1" =~ ^[0-9a-f]{$3}$ ]] || die "$2 must be lowercase hexadecimal"; }
+sha256_file() { sha256sum -- "$1" | awk '{print $1}'; }
+readonly git_bin='/usr/bin/git'
+clean_git() { env -i PATH="$PATH" HOME=/nonexistent "$git_bin" "$@"; }
+run_python() { env -i PATH="$PATH" HOME=/nonexistent /usr/bin/python3 -I "$@"; }
+
+trusted_regular() {
+  [[ -f "$1" && ! -L "$1" ]] || return 1
+  [[ "$(stat -c '%u:%a' "$1")" =~ ^0:([0-7]*[0-5][0-5])$ ]]
+}
+trusted_directory() {
+  [[ -d "$1" && ! -L "$1" ]] || return 1
+  [[ "$(stat -c '%u:%a' "$1")" =~ ^0:[0-7]*[0-5][0-5]$ ]]
+}
+trusted_path() {
+  local input="$1" canonical component current='' owner mode
+  [[ "$input" == /* && -e "$input" && ! -L "$input" ]] || return 1
+  canonical="$(readlink -e -- "$input")" || return 1
+  [[ "$canonical" == "$input" ]] || return 1
+  IFS=/ read -r -a components <<<"${input#/}"
+  for component in "${components[@]}"; do
+    current="${current}/$component"
+    [[ -e "$current" && ! -L "$current" ]] || return 1
+    owner="$(stat -c '%u' -- "$current")"; mode="$(stat -c '%a' -- "$current")"
+    [[ "$owner" == 0 && "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
+    (( (8#$mode & 8#022) == 0 )) || return 1
+  done
+}
+trusted_candidate_tree() {
+  local untrusted
+  trusted_directory "$candidate_root" || return 1
+  # Do not skip mounted descendants: the materializer can read them as part of
+  # the candidate tree, so they must meet the same ownership/mode boundary.
+  untrusted="$(find "$candidate_root" \( ! -user root -o -perm /022 \) -print -quit 2>/dev/null)" || return 1
+  [[ -z "$untrusted" ]] || return 1
+}
+non_overlapping_paths() {
+  local left="$1" right="$2"
+  [[ "$left" != "$right" && "$left/" != "$right/"* && "$right/" != "$left/"* ]]
+}
+
+# Do not relay raw engine output: it can contain host paths or image metadata.
+bounded_capture() {
+  local seconds="$1"; shift
+  local capture out err status
+  capture="$(mktemp -d "$backup_root/.run.XXXXXX")" || die 'could not allocate bounded command capture'
+  out="$capture/stdout"; err="$capture/stderr"
+  set +e
+  (ulimit -f 128; env -i PATH="$PATH" timeout --preserve-status --kill-after=5s "${seconds}s" "$@" >"$out" 2>"$err")
+  status=$?
+  set -e
+  (( $(wc -c <"$out") <= 4096 && $(wc -c <"$err") <= 4096 )) || status=1
+  [[ "$status" -eq 0 ]] && cat "$out"
+  rm -rf -- "$capture"
+  return "$status"
+}
+bounded() {
+  local capture
+  capture="$(mktemp -d "$backup_root/.run.XXXXXX")" || die 'could not allocate bounded command capture'
+  set +e
+  (ulimit -f 128; env -i PATH="$PATH" timeout --preserve-status --kill-after=5s "${1}s" "${@:2}" >"$capture/stdout" 2>"$capture/stderr")
+  local status=$?
+  set -e
+  (( $(wc -c <"$capture/stdout") <= 4096 && $(wc -c <"$capture/stderr") <= 4096 )) || status=1
+  rm -rf -- "$capture"
+  return "$status"
+}
+
+deployment_root=''; candidate_root=''; backup_root=''; engine_bin=''; reader_image_id=''; reviewed_baseline_compose_sha256=''
+trusted_path "$(dirname -- "$install_config")" && trusted_regular "$install_config" && [[ "$(stat -c '%a' "$install_config")" == 600 ]] || die 'root-owned installation configuration is missing or unsafe'
+while IFS='=' read -r key value || [[ -n "$key" ]]; do
+  [[ "$key" =~ ^(DEPLOYMENT_ROOT|CANDIDATE_ROOT|BACKUP_ROOT|ENGINE_BIN|READER_IMAGE_ID|BASELINE_COMPOSE_SHA256)$ && "$value" =~ ^[^[:space:]]+$ ]] || die 'installation configuration is malformed'
+  case "$key" in
+    DEPLOYMENT_ROOT) [[ -z "$deployment_root" ]] || die 'installation configuration duplicates DEPLOYMENT_ROOT'; deployment_root="$value" ;;
+    CANDIDATE_ROOT) [[ -z "$candidate_root" ]] || die 'installation configuration duplicates CANDIDATE_ROOT'; candidate_root="$value" ;;
+    BACKUP_ROOT) [[ -z "$backup_root" ]] || die 'installation configuration duplicates BACKUP_ROOT'; backup_root="$value" ;;
+    ENGINE_BIN) [[ -z "$engine_bin" ]] || die 'installation configuration duplicates ENGINE_BIN'; engine_bin="$value" ;;
+    READER_IMAGE_ID) [[ -z "$reader_image_id" ]] || die 'installation configuration duplicates READER_IMAGE_ID'; reader_image_id="$value" ;;
+    BASELINE_COMPOSE_SHA256) [[ -z "$reviewed_baseline_compose_sha256" ]] || die 'installation configuration duplicates BASELINE_COMPOSE_SHA256'; reviewed_baseline_compose_sha256="$value" ;;
+  esac
+done <"$install_config"
+[[ -n "$deployment_root" && -n "$candidate_root" && -n "$backup_root" && -n "$engine_bin" && "$reader_image_id" =~ ^sha256:[0-9a-f]{64}$ && "$reviewed_baseline_compose_sha256" =~ ^[0-9a-f]{64}$ ]] || die 'installation configuration is incomplete or pinned identity is unsafe'
+[[ "$engine_bin" == /usr/bin/podman ]] || die 'installation configuration must pin /usr/bin/podman'
+readonly deployment_root candidate_root backup_root engine_bin reader_image_id reviewed_baseline_compose_sha256
+readonly deployment_dir="$deployment_root/deploy"
+readonly compose_file="$deployment_dir/compose.yaml"
+readonly env_file="$deployment_dir/.env"
+readonly materializer="$candidate_root/deploy/materialize-otel-source.sh"
+
+candidate_head=''; candidate_compose_sha256=''; candidate_collector_sha256=''; candidate_dockerfile_sha256=''
+[[ "$#" -eq 8 ]] || usage
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --candidate-head) candidate_head="$2" ;;
+    --candidate-compose-sha256) candidate_compose_sha256="$2" ;;
+    --candidate-collector-sha256) candidate_collector_sha256="$2" ;;
+    --candidate-dockerfile-sha256) candidate_dockerfile_sha256="$2" ;;
+    *) usage ;;
+  esac
+  shift 2
+done
+require_hash "$candidate_head" 'candidate head' 40
+require_hash "$candidate_compose_sha256" 'candidate Compose SHA-256' 64
+require_hash "$candidate_collector_sha256" 'candidate Collector SHA-256' 64
+require_hash "$candidate_dockerfile_sha256" 'candidate Dockerfile SHA-256' 64
+
+[[ "$(id -u)" -eq 0 ]] || die 'must run as root through the reviewed root-owned installation'
+trusted_regular "$engine_bin" && [[ -x "$engine_bin" ]] || die 'fixed Podman binary is unavailable or unsafe'
+trusted_path "$deployment_root" && trusted_path "$deployment_dir" && trusted_path "$candidate_root" && trusted_path "$backup_root" || die 'configured path lacks a root-owned non-writable component boundary'
+[[ -d "$deployment_root" && -d "$deployment_dir" && -d "$candidate_root" ]] || die 'fixed deployment or candidate directory is unavailable'
+[[ ! -e "$deployment_root/.git" ]] || die 'deployment root must remain a non-Git source tree'
+trusted_path "$env_file" && trusted_regular "$env_file" && [[ "$(stat -c '%a' "$env_file")" == 600 ]] || die 'target .env must be root-owned, regular, and mode 0600'
+trusted_path "$compose_file" && trusted_regular "$compose_file" || die 'target Compose file is missing or unsafe'
+trusted_candidate_tree || die 'candidate tree is not exclusively root-owned and non-writable'
+trusted_regular "$materializer" && [[ -x "$materializer" ]] || die 'reviewed materializer is missing or unsafe'
+trusted_regular "$git_bin" && [[ -x "$git_bin" ]] || die 'fixed Git binary is unavailable or unsafe'
+[[ -d "$candidate_root/.git" && ! -L "$candidate_root/.git" ]] || die 'candidate must have an in-tree Git directory'
+trusted_candidate_tree || die 'candidate Git metadata is not exclusively root-owned and non-writable'
+[[ "$(clean_git -C "$candidate_root" rev-parse HEAD 2>/dev/null || true)" == "$candidate_head" ]] || die 'candidate HEAD does not match approved identity'
+[[ -z "$(clean_git -C "$candidate_root" status --porcelain=v1 --untracked-files=all)" ]] || die 'candidate checkout is dirty'
+for item in compose.yaml otel-collector.yaml Dockerfile.otel; do
+  [[ -f "$candidate_root/deploy/$item" && ! -L "$candidate_root/deploy/$item" ]] || die "candidate file is missing or unsafe: deploy/$item"
+done
+[[ "$(sha256_file "$candidate_root/deploy/compose.yaml")" == "$candidate_compose_sha256" ]] || die 'candidate Compose SHA-256 does not match approved identity'
+[[ "$(sha256_file "$candidate_root/deploy/otel-collector.yaml")" == "$candidate_collector_sha256" ]] || die 'candidate Collector SHA-256 does not match approved identity'
+[[ "$(sha256_file "$candidate_root/deploy/Dockerfile.otel")" == "$candidate_dockerfile_sha256" ]] || die 'candidate Dockerfile SHA-256 does not match approved identity'
+
+umask 077
+[[ "$(stat -c '%u:%a' "$backup_root")" == 0:700 ]] || die 'fixed backup root must be root-owned mode 0700'
+deployment_real="$(readlink -f -- "$deployment_root")"
+candidate_real="$(readlink -f -- "$candidate_root")"
+backup_real="$(readlink -f -- "$backup_root")"
+non_overlapping_paths "$candidate_real" "$deployment_real" || die 'trusted candidate and deployment paths must not overlap'
+non_overlapping_paths "$backup_real" "$deployment_real" || die 'backup and deployment paths must not overlap'
+non_overlapping_paths "$candidate_real" "$backup_real" || die 'trusted candidate and backup paths must not overlap'
+exec 9>"$backup_root/upgrade.lock"; flock -n 9 || die 'another reviewed upgrade is already running'
+backup_dir="$backup_root/$(date -u +%Y%m%dT%H%M%SZ)-$$"
+mkdir -m 700 -- "$backup_dir"; mkdir -m 700 -- "$backup_dir/volumes"
+
+reader_actual_id="$(bounded_capture 30 "$engine_bin" image inspect --format '{{.Id}}' "$reader_image_id")" || die 'fixed reader image is unavailable'
+[[ "$reader_actual_id" == "$reader_image_id" ]] || die 'fixed reader image identity does not match root-owned configuration'
+
+contains() { local needle="$1"; shift; local item; for item in "$@"; do [[ "$item" == "$needle" ]] && return 0; done; return 1; }
+[[ "$(sha256_file "$compose_file")" == "$reviewed_baseline_compose_sha256" ]] || die 'live Compose source is not the reviewed migration baseline'
+# Inventory is deliberately before materialization. Candidate-only objects must
+# be absent or their ownership and data provenance is ambiguous.
+: >"$backup_dir/baseline-containers.tsv"; : >"$backup_dir/baseline-volumes.tsv"; : >"$backup_dir/baseline-networks.tsv"
+project_objects="$(bounded_capture 30 "$engine_bin" ps -a --filter "label=com.docker.compose.project=$project_name" --format '{{.Names}}')" || die 'project-container inventory failed'
+while IFS= read -r object; do
+  [[ -z "$object" ]] && continue; service="${object#"$project_name-"}"
+  [[ "$object" == "$project_name-"* ]] && contains "$service" "${baseline_services[@]}" || die 'unexpected or candidate-only container carries the fixed project label'
+done <<<"$project_objects"
+for service in "${baseline_services[@]}"; do
+  container="${project_name}-${service}"
+  identity="$(bounded_capture 30 "$engine_bin" container inspect --format '{{.Id}}|{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}' "$container")" || die "required baseline container is unavailable: $container"
+  [[ "$identity" =~ ^[0-9a-f]{64}\|$project_name\|$service$ ]] || die "baseline container identity is invalid: $container"
+  printf '%s\n' "$service|$identity" >>"$backup_dir/baseline-containers.tsv"
+done
+for service in "${services[@]}"; do
+  contains "$service" "${baseline_services[@]}" && continue
+  if bounded_capture 30 "$engine_bin" container inspect --format '{{.Id}}' "${project_name}-${service}" >/dev/null; then die "candidate-only container exists before migration: $service"; fi
+done
+project_volumes="$(bounded_capture 30 "$engine_bin" volume ls --filter "label=com.docker.compose.project=$project_name" --format '{{.Name}}')" || die 'project-volume inventory failed'
+while IFS= read -r volume_name; do
+  [[ -z "$volume_name" ]] && continue; volume="${volume_name#"$project_name-"}"
+  [[ "$volume_name" == "$project_name-"* ]] && contains "$volume" "${baseline_volumes[@]}" || die 'unexpected or candidate-only volume carries the fixed project label'
+done <<<"$project_volumes"
+for volume in "${baseline_volumes[@]}"; do
+  volume_name="${project_name}-${volume}"
+  identity="$(bounded_capture 30 "$engine_bin" volume inspect --format '{{.Name}}' "$volume_name")" || die "required baseline volume is unavailable: $volume_name"
+  [[ "$identity" == "$volume_name" ]] || die "baseline volume identity is invalid: $volume_name"
+  printf '%s\n' "$volume|$identity" >>"$backup_dir/baseline-volumes.tsv"
+done
+for volume in "${volumes[@]}"; do
+  contains "$volume" "${baseline_volumes[@]}" && continue
+  if bounded_capture 30 "$engine_bin" volume inspect --format '{{.Name}}' "${project_name}-${volume}" >/dev/null; then die "candidate-only volume exists before migration: $volume"; fi
+done
+project_networks="$(bounded_capture 30 "$engine_bin" network ls --filter "label=com.docker.compose.project=$project_name" --format '{{.Name}}')" || die 'project-network inventory failed'
+while IFS= read -r network_name; do
+  [[ -z "$network_name" ]] && continue; network="${network_name#"$project_name-"}"
+  [[ "$network_name" == "$project_name-"* ]] && contains "$network" "${networks[@]}" || die 'unexpected project network carries the fixed project label'
+done <<<"$project_networks"
+for network in "${networks[@]}"; do
+  network_name="$project_name-$network"
+  identity="$(bounded_capture 30 "$engine_bin" network inspect --format '{{.Id}}|{{.Name}}' "$network_name")" || die "required project network is unavailable: $network_name"
+  [[ "$identity" =~ ^[0-9a-f]{64}\|$network_name$ ]] || die "network identity is invalid: $network_name"
+  printf '%s\n' "$network|$identity" >>"$backup_dir/baseline-networks.tsv"
+done
+run_python - "$backup_dir/baseline-objects.json" "$candidate_head" "$candidate_compose_sha256" "$candidate_collector_sha256" "$candidate_dockerfile_sha256" "$project_name" "$reviewed_baseline_compose_sha256" "$backup_dir" <<'PY'
+import json, sys
+path, head, compose, collector, dockerfile, project, baseline_sha, directory = sys.argv[1:]
+def records(name):
+    with open(f"{directory}/baseline-{name}.tsv", encoding="utf-8") as source:
+        return [{"name": line.rstrip("\n").split("|", 1)[0], "identity": line.rstrip("\n").split("|", 1)[1]} for line in source]
+with open(path, "w", encoding="utf-8") as output:
+    json.dump({"schema":"ai-agent-observability-reviewed-upgrade-v2", "candidate_head":head, "compose_sha256":compose, "collector_sha256":collector, "dockerfile_sha256":dockerfile, "project":project, "baseline_compose_sha256":baseline_sha, "preexisting":{"containers":records("containers"), "volumes":records("volumes"), "networks":records("networks")}, "created":{"containers":[],"volumes":[],"networks":[]}, "status":"preflight-verified"}, output, sort_keys=True, separators=(",", ":"))
+    output.write("\n")
+PY
+chmod 600 "$backup_dir/baseline-objects.json" "$backup_dir"/baseline-*.tsv
+
+materialization_backup_root="$backup_dir/source"
+materialization_backup_dir=''
+materialized=false
+operation_complete=false
+declare -A baseline_container_ids=()
+while IFS='|' read -r service container_id container_project container_service; do
+  [[ "$container_id" =~ ^[0-9a-f]{64}$ && "$container_project" == "$project_name" && "$container_service" == "$service" ]] || die 'baseline container journal is malformed'
+  baseline_container_ids["$service"]="$container_id"
+done <"$backup_dir/baseline-containers.tsv"
+discover_materialization_backup() {
+  [[ -n "$materialization_backup_dir" ]] && return 0
+  materialization_backup_dir="$(find "$materialization_backup_root" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null || true)"
+  [[ -n "$materialization_backup_dir" && -f "$materialization_backup_dir/materialization-state.json" ]]
+}
+rollback_source_only() {
+  # Data archives are never restored automatically: recovery requires separate
+  # quiesced authorization. Do not start the former drifted Compose tree.
+  discover_materialization_backup || return 1
+  bounded "$operation_timeout_seconds" env -i PATH='/usr/sbin:/usr/bin:/sbin:/bin' OTEL_LIVE_SOURCE_DIR="$deployment_root" OTEL_MATERIALIZATION_BACKUP_ROOT="$materialization_backup_root" OTEL_MATERIALIZATION_BACKUP_DIR="$materialization_backup_dir" OTEL_EXPECTED_GIT_HEAD="$candidate_head" OTEL_EXPECTED_CANDIDATE_CONFIG_USER=10001:10001 "$materializer" --rollback
+}
+stop_and_verify_baseline() {
+  local container running identity service
+  for service in "${baseline_services[@]}"; do
+    container="$project_name-$service"
+    identity="$(bounded_capture 30 "$engine_bin" container inspect --format '{{.Id}}|{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}' "$container")" || return 1
+    [[ "$identity" == "${baseline_container_ids[$service]}|$project_name|$service" ]] || return 1
+    bounded 30 "$engine_bin" container stop "$container" || return 1
+    running="$(bounded_capture 30 "$engine_bin" container inspect --format '{{.State.Running}}' "$container")" || return 1
+    [[ "$running" == false ]] || return 1
+  done
+}
+record_created_objects() {
+  local service volume identity
+  : >"$backup_dir/created-containers.tsv"; : >"$backup_dir/created-volumes.tsv"
+  for service in "${services[@]}"; do
+    contains "$service" "${baseline_services[@]}" && continue
+    if identity="$(bounded_capture 30 "$engine_bin" container inspect --format '{{.Id}}|{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}' "${project_name}-${service}")"; then
+      [[ "$identity" =~ ^[0-9a-f]{64}\|$project_name\|$service$ ]] || return 1
+      printf '%s\n' "$service|$identity" >>"$backup_dir/created-containers.tsv"
+    fi
+  done
+  for volume in "${volumes[@]}"; do
+    contains "$volume" "${baseline_volumes[@]}" && continue
+    if identity="$(bounded_capture 30 "$engine_bin" volume inspect --format '{{.Name}}' "${project_name}-${volume}")"; then
+      [[ "$identity" == "${project_name}-${volume}" ]] || return 1
+      printf '%s\n' "$volume|$identity" >>"$backup_dir/created-volumes.tsv"
+    fi
+  done
+  chmod 600 "$backup_dir"/created-*.tsv
+  run_python - "$backup_dir/baseline-objects.json" "$backup_dir" <<'PY'
+import json, sys
+path, directory = sys.argv[1:]
+def records(name):
+    with open(f"{directory}/created-{name}.tsv", encoding="utf-8") as source:
+        return [{"name": line.rstrip("\n").split("|", 1)[0], "identity": line.rstrip("\n").split("|", 1)[1]} for line in source]
+with open(path, encoding="utf-8") as source: data = json.load(source)
+data["created"] = {"containers": records("containers"), "volumes": records("volumes"), "networks": []}
+with open(path, "w", encoding="utf-8") as output: output.write(json.dumps(data, sort_keys=True, separators=(",", ":")) + "\n")
+PY
+  chmod 600 "$backup_dir/baseline-objects.json"
+}
+remove_recorded_created_containers() {
+  local service id project label identity
+  [[ -f "$backup_dir/created-containers.tsv" ]] || return 0
+  while IFS='|' read -r service id project label; do
+    [[ "$id" =~ ^[0-9a-f]{64}$ && "$project" == "$project_name" && "$label" == "$service" ]] || return 1
+    if identity="$(bounded_capture 30 "$engine_bin" container inspect --format '{{.Id}}|{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}' "${project_name}-${service}")"; then
+      [[ "$identity" == "$id|$project_name|$service" ]] || return 1
+      bounded 30 "$engine_bin" container rm -f "${project_name}-${service}" || return 1
+    fi
+  done <"$backup_dir/created-containers.tsv"
+}
+reconcile_failure() {
+  local status="$1"
+  trap - EXIT INT TERM
+  # Existing volumes are never removed.  Candidate-only volumes are journaled
+  # for a separately authorized recovery; this wrapper has no volume-delete path.
+  record_created_objects || true
+  stop_and_verify_baseline || true
+  remove_recorded_created_containers || true
+  rollback_source_only || true
+  run_python - "$backup_dir/reconcile.json" "$status" <<'PY' >/dev/null 2>&1 || true
+import json, sys
+json.dump({"schema":"ai-agent-observability-reviewed-upgrade-v1","status":"manual-reconcile-required","exit_status":sys.argv[2]}, open(sys.argv[1],"w"))
+PY
+  exit "$status"
+}
+trap 'status=$?; if [[ "${operation_complete:-false}" != true && "${materialized:-false}" == true ]]; then reconcile_failure "$status"; fi' EXIT
+trap 'reconcile_failure 130' INT
+trap 'reconcile_failure 143' TERM
+# Set the recovery state before starting the mutating child. A signal between
+# the child's first write and its return must still quiesce and reconcile.
+materialized=true
+if ! bounded "$operation_timeout_seconds" env -i PATH='/usr/sbin:/usr/bin:/sbin:/bin' OTEL_LIVE_SOURCE_DIR="$deployment_root" OTEL_MATERIALIZATION_BACKUP_ROOT="$materialization_backup_root" OTEL_EXPECTED_GIT_HEAD="$candidate_head" OTEL_CANDIDATE_IMAGE_REF="$candidate_image" OTEL_CANDIDATE_READER_IMAGE="$reader_image_id" OTEL_CANDIDATE_READER_ENGINE="$engine_bin" OTEL_EXPECTED_CANDIDATE_CONFIG_USER=10001:10001 OTEL_SOURCE_MATERIALIZE_APPROVED=true "$materializer" --materialize; then
+  die 'approved source materialization failed before service quiescence'
+fi
+discover_materialization_backup || die 'materializer did not create a recorded rollback point'
+[[ "$(sha256_file "$compose_file")" == "$candidate_compose_sha256" ]] || die 'materialized Compose SHA-256 does not match approved identity'
+[[ "$(sha256_file "$deployment_dir/otel-collector.yaml")" == "$candidate_collector_sha256" ]] || die 'materialized Collector SHA-256 does not match approved identity'
+[[ "$(sha256_file "$deployment_dir/Dockerfile.otel")" == "$candidate_dockerfile_sha256" ]] || die 'materialized Dockerfile SHA-256 does not match approved identity'
+trusted_regular "$compose_file" || die 'materialized Compose source is not root-owned and trusted'
+run_python - "$candidate_root" "$deployment_root" <<'PY' || { rollback_source_only || die 'materialized-tree reconciliation and source rollback failed; manual reconciliation required'; die 'materialized tree contains untrusted or mismatched build-context files'; }
+import hashlib
+import os
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+candidate, live = map(Path, sys.argv[1:])
+paths = subprocess.check_output(["/usr/bin/git", "-C", str(candidate), "ls-files", "-z"], env={"PATH":"/usr/bin:/bin", "HOME":"/nonexistent"})
+expected_files = set(item.decode() for item in paths.split(b"\0") if item)
+expected_dirs = set()
+for rel in expected_files:
+    parent = Path(rel).parent
+    while parent != Path("."):
+        expected_dirs.add(parent.as_posix())
+        parent = parent.parent
+expected = expected_files | expected_dirs
+allowed_live_only = {"deploy/.env", "deploy/.otel-source-manifest.json"}
+actual = set()
+for base, dirs, files in os.walk(live, topdown=True, followlinks=False):
+    dirs[:] = sorted(dirs)
+    files[:] = sorted(files)
+    for name in dirs + files:
+        path = Path(base) / name
+        actual.add(path.relative_to(live).as_posix())
+if actual - expected - allowed_live_only:
+    raise SystemExit("materialized tree has unexpected entries")
+for rel in expected_files:
+    source = candidate / rel
+    target = live / rel
+    if not target.exists() and not target.is_symlink():
+        raise SystemExit("materialized tree is missing a candidate entry")
+    source_stat, target_stat = source.lstat(), target.lstat()
+    if stat.S_IFMT(source_stat.st_mode) != stat.S_IFMT(target_stat.st_mode):
+        raise SystemExit("materialized tree entry type differs")
+    if stat.S_IMODE(source_stat.st_mode) != stat.S_IMODE(target_stat.st_mode):
+        raise SystemExit("materialized tree entry mode differs")
+    if stat.S_ISREG(source_stat.st_mode):
+        source_value = hashlib.sha256(source.read_bytes()).digest()
+        target_value = hashlib.sha256(target.read_bytes()).digest()
+    elif stat.S_ISLNK(source_stat.st_mode):
+        source_value, target_value = os.readlink(source), os.readlink(target)
+    else:
+        raise SystemExit("candidate has unsupported tracked source type")
+    if source_value != target_value:
+        raise SystemExit("materialized tree entry content differs")
+    if target_stat.st_uid != 0 or stat.S_IMODE(target_stat.st_mode) & 0o022:
+        raise SystemExit("materialized tree entry is not root-owned and non-writable")
+for base, dirs, _ in os.walk(live, topdown=True, followlinks=False):
+    for name in dirs:
+        path = Path(base) / name
+        target_stat = path.lstat()
+        if stat.S_ISLNK(target_stat.st_mode):
+            raise SystemExit("materialized tree contains a symlinked directory")
+        if target_stat.st_uid != 0 or stat.S_IMODE(target_stat.st_mode) & 0o022:
+            raise SystemExit("materialized tree directory is not root-owned and non-writable")
+PY
+if ! stop_and_verify_baseline; then
+  rollback_source_only || die 'project quiescence and source rollback failed; manual reconciliation required'
+  die 'project quiescence failed; source rollback completed and services were not updated'
+fi
+for volume in "${baseline_volumes[@]}"; do
+  volume_name="${project_name}-${volume}"; archive="$backup_dir/volumes/$volume_name.tar"
+  if ! bounded "$volume_timeout_seconds" "$engine_bin" run --rm --pull=never --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --volume "$volume_name:/source:ro" --volume "$backup_dir/volumes:/backup:rw" "$reader_image_id" tar --numeric-owner -C /source -cpf "/backup/$volume_name.tar" .; then
+    rollback_source_only || die 'volume snapshot and source rollback failed; manual reconciliation required'
+    die 'volume snapshot failed; source rollback completed and services remain stopped'
+  fi
+  [[ -s "$archive" ]] || { rollback_source_only || die 'empty volume archive and source rollback failed'; die 'volume archive is empty'; }
+  sha256sum -- "$archive" >>"$backup_dir/volumes/SHA256SUMS"
+done
+chmod 600 "$backup_dir/volumes"/*
+bounded "$compose_timeout_seconds" "$engine_bin" compose --env-file "$env_file" -p "$project_name" -f "$compose_file" up -d --build || die 'approved update failed; reconciliation is required'
+record_created_objects || die 'could not record candidate-only objects after approved update'
+run_python - "$backup_dir/baseline-objects.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as source: data = json.load(source)
+data["status"] = "compose-update-started"
+with open(path, "w", encoding="utf-8") as output: output.write(json.dumps(data, sort_keys=True, separators=(",", ":")) + "\n")
+PY
+chmod 600 "$backup_dir/baseline-objects.json"
+operation_complete=true
+trap - EXIT INT TERM
+printf 'reviewed upgrade started: candidate=%s project=%s backup=%s\n' "$candidate_head" "$project_name" "$backup_dir"
