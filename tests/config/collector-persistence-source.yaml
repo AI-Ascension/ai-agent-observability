@@ -1,0 +1,57 @@
+# Test-only source configuration. It sends to a sink that is intentionally
+# started after the source is killed, so the queue must survive process death.
+extensions:
+  file_storage:
+    directory: /var/lib/otelcol/storage
+    timeout: 10s
+    max_size: 16777216
+    fsync: true
+    create_directory: true
+    directory_permissions: "0750"
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    send_batch_size: 1
+    timeout: 100ms
+
+exporters:
+  otlp_http:
+    endpoint: http://sink:4318
+    timeout: 1s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 1s
+      max_elapsed_time: 0s
+    sending_queue:
+      enabled: true
+      num_consumers: 1
+      queue_size: 8
+      sizer: requests
+      block_on_overflow: false
+      storage: file_storage
+
+service:
+  telemetry:
+    logs:
+      level: warn
+    metrics:
+      level: normal
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp_http]
+  extensions: [file_storage]

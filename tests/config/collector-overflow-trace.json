@@ -1,0 +1,14 @@
+{
+  "resourceSpans": [{
+    "scopeSpans": [{
+      "spans": [{
+        "traceId": "03030303030303030303030303030303",
+        "spanId": "0404040404040404",
+        "name": "synthetic-overflow-probe",
+        "kind": 1,
+        "startTimeUnixNano": "1000000000",
+        "endTimeUnixNano": "1000000001"
+      }]
+    }]
+  }]
+}

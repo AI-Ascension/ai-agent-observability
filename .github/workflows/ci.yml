@@ -56,6 +56,7 @@ jobs:
           bash tests/query-provision-invariants.sh
           bash tests/otel-health-probe.sh
           COLLECTOR_PERSISTENCE_RUNTIME=required bash tests/collector-persistence-invariants.sh
+          COLLECTOR_PERSISTENCE_RUNTIME=required bash tests/collector-persistence.sh
           bash tests/reviewed-upgrade-plan.sh
           bash tests/reviewed-upgrade-wrapper.sh
           bash tests/otel-installer-guards.sh
