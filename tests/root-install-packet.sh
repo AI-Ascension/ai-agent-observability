@@ -75,6 +75,10 @@ fi
 # Exercise the installed program itself in a root-owned disposable namespace.
 # No production prefix, engine, image inspection, or service operation is used.
 command -v unshare >/dev/null 2>&1 || { printf '%s\n' 'root packet lifecycle fixture requires unshare'; exit 77; }
+# `unshare` can be installed while the kernel still forbids the mapping (for
+# example Ubuntu 24.04's AppArmor unprivileged-userns restriction). Probe the
+# actual capability so the fixture reports a skip instead of a raw failure.
+unshare -Ur true >/dev/null 2>&1 || { printf '%s\n' 'root packet lifecycle fixture requires a permitted unprivileged user namespace (unshare -Ur)'; exit 77; }
 lifecycle_root="$(mktemp -d /tmp/root-packet-test.XXXXXX)"
 trap 'rm -rf -- "$test_root" "$lifecycle_root"' EXIT
 chmod 0700 "$lifecycle_root"
