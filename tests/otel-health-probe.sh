@@ -22,8 +22,18 @@ PY
 
 gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -static -s \
   -o "$test_root/otel-health-probe" "$repo_root/deploy/otel-health-probe.c"
-if ! file "$test_root/otel-health-probe" | grep -Fq 'statically linked'; then
-  printf '%s\n' 'the probe is not statically linked for the distroless runtime' >&2
+if command -v file >/dev/null 2>&1; then
+  if ! file "$test_root/otel-health-probe" | grep -Fq 'statically linked'; then
+    printf '%s\n' 'the probe is not statically linked for the distroless runtime' >&2
+    exit 1
+  fi
+elif command -v readelf >/dev/null 2>&1; then
+  if readelf -l "$test_root/otel-health-probe" | grep -Fq 'INTERP'; then
+    printf '%s\n' 'the probe has a dynamic interpreter and cannot run in the distroless runtime' >&2
+    exit 1
+  fi
+else
+  printf '%s\n' 'file or readelf is required to verify static linking' >&2
   exit 1
 fi
 
