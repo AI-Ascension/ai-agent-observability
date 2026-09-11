@@ -78,15 +78,18 @@ command -v unshare >/dev/null 2>&1 || { printf '%s\n' 'root packet lifecycle fix
 lifecycle_root="$(mktemp -d /tmp/root-packet-test.XXXXXX)"
 trap 'rm -rf -- "$test_root" "$lifecycle_root"' EXIT
 chmod 0700 "$lifecycle_root"
-mkdir -p "$lifecycle_root/home/completetrain" "$lifecycle_root/srv" \
+legacy_source="$lifecycle_root/home/completetrain/ai-agent-observability"
+legacy_parent="$(dirname -- "$legacy_source")"
+legacy_home="$(dirname -- "$legacy_parent")"
+mkdir -p "$legacy_parent" "$lifecycle_root/srv" \
   "$lifecycle_root/var/backups" "$lifecycle_root/usr/local/sbin" "$lifecycle_root/etc"
-chmod 0700 "$lifecycle_root" "$lifecycle_root/home" "$lifecycle_root/home/completetrain" \
+chmod 0700 "$lifecycle_root" "$legacy_home" "$legacy_parent" \
   "$lifecycle_root/srv" "$lifecycle_root/var" "$lifecycle_root/var/backups" \
   "$lifecycle_root/usr" "$lifecycle_root/usr/local" "$lifecycle_root/usr/local/sbin" "$lifecycle_root/etc"
-git clone --no-local --no-hardlinks --quiet "$repo_root" "$lifecycle_root/home/completetrain/ai-agent-observability"
-printf '%s\n' 'fixture-only-secret' >"$lifecycle_root/home/completetrain/ai-agent-observability/deploy/.env"
+git clone --no-local --no-hardlinks --quiet "$repo_root" "$legacy_source"
+printf '%s\n' 'fixture-only-secret' >"$legacy_source/deploy/.env"
 packet_hash="$(sha256sum "$installer" | awk '{print $1}')"
-synthetic_baseline="$(sha256sum "$lifecycle_root/home/completetrain/ai-agent-observability/deploy/compose.yaml" | awk '{print $1}')"
+synthetic_baseline="$(sha256sum "$legacy_source/deploy/compose.yaml" | awk '{print $1}')"
 run_packet() {
   unshare -Ur env ROOT_PACKET_TEST_MODE=hermetic ROOT_PACKET_TEST_ROOT="$lifecycle_root" \
     READER_IMAGE_ID="sha256:$(printf '0%.0s' {1..64})" REVIEWED_PACKET_SHA256="$packet_hash" \
@@ -157,7 +160,7 @@ rm -rf -- "$lifecycle_root/srv/ai-agent-observability-reviewed" \
 
 # A post-create baseline failure must retain the durable journal and every
 # created root for manual identity reconciliation rather than deleting them.
-printf '%s\n' '# intentional baseline mismatch' >>"$lifecycle_root/home/completetrain/ai-agent-observability/deploy/compose.yaml"
+printf '%s\n' '# intentional baseline mismatch' >>"$legacy_source/deploy/compose.yaml"
 if run_packet --install >/dev/null 2>&1; then
   printf '%s\n' 'installer accepted a changed baseline' >&2; exit 1
 fi

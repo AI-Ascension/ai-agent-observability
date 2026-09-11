@@ -69,11 +69,13 @@ fi
 grep -Fxq '.env' deploy/.dockerignore
 grep -Fxq '.env.*' deploy/.dockerignore
 
-forbidden_pattern='anime[0-9]+|BEGIN (OPENSSH|RSA|EC|DSA) PRIVATE KEY|/mnt/c/Users/|/home/[a-z_][a-z0-9_-]*/|/Users/[a-z_][a-z0-9_-]*/'
+forbidden_pattern='anime[0-9]+|BEGIN (OPENSSH|RSA|EC|DSA) PRIVATE KEY|/mnt/c/Users/'
 if git grep -qE "$forbidden_pattern" -- . ':(exclude)tests/compose-invariants.sh'; then
   printf '%s\n' 'repository contains a forbidden credential or personal path' >&2
   exit 1
 fi
+
+bash tests/repository-path-policy.sh
 
 if find . -type f -not -path './.git/*' -not -path './.local-test/*' -name '*.py' -print -quit | grep -q .; then
   printf '%s\n' 'Python application source is outside this repository boundary' >&2
