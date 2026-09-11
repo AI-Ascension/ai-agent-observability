@@ -573,7 +573,52 @@ verify_bind_state "$live_root" "$original_bind_state"
 cmp -s -- "$live_root/deploy/.otel-source-manifest.json" "$candidate_manifest" || \
   die 'materialized source manifest changed before rollback'
 
-tar --xattrs --acls --no-same-owner --preserve-permissions -C "$live_root" -xpf "$original_tree"
+rollback_restore_root="$(mktemp -d "$backup_dir/rollback-tree.XXXXXX")"
+rollback_cleanup() {
+  local status=$?
+  trap - EXIT
+  rm -rf -- "$rollback_restore_root"
+  exit "$status"
+}
+trap rollback_cleanup EXIT
+
+# Stage the original archive first. The three bind sources are restored from
+# this staging tree in place below; extracting them directly into the live tree
+# would replace their inodes and invalidate the bind-mounted deployment.
+tar --xattrs --acls --no-same-owner --preserve-permissions \
+  -C "$rollback_restore_root" -xpf "$original_tree"
+verify_tree_manifest "$rollback_restore_root" "$original_tree_manifest"
+
+tar --xattrs --acls --no-same-owner --preserve-permissions \
+  --exclude=./deploy/compose.yaml --exclude=./deploy/otel-collector.yaml \
+  --exclude=./deploy/.env --exclude=deploy/compose.yaml \
+  --exclude=deploy/otel-collector.yaml --exclude=deploy/.env \
+  -C "$live_root" -xpf "$original_tree"
+for bind_relative in deploy/compose.yaml deploy/otel-collector.yaml deploy/.env; do
+  cat -- "$rollback_restore_root/$bind_relative" >"$live_root/$bind_relative"
+done
+python3 - "$live_root" "$original_bind_state" <<'PY'
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve()
+data = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+for entry in data.get("entries", []):
+    path = root / entry["path"]
+    current = path.lstat()
+    if not stat.S_ISREG(current.st_mode):
+        raise SystemExit(f"rollback bind source is not a regular file: {entry['path']}")
+    os.chmod(path, entry["mode"])
+    try:
+        os.chown(path, entry["uid"], entry["gid"])
+    except PermissionError:
+        current = path.stat()
+        if current.st_uid != entry["uid"] or current.st_gid != entry["gid"]:
+            raise SystemExit(f"rollback bind source ownership could not be restored: {entry['path']}")
+PY
 python3 - "$live_root" "$candidate_manifest" "$original_tree_manifest" <<'PY'
 import json
 import os
