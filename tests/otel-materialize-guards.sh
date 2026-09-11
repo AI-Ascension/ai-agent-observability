@@ -30,6 +30,42 @@ make_target() {
   chmod 0600 "$target/deploy/.env"
 }
 
+bind_metadata_fixture() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import base64
+import hashlib
+import json
+import os
+import stat
+import struct
+import sys
+from pathlib import Path
+
+mode, root, saved = sys.argv[1:]
+root = Path(root)
+paths = [root / "deploy" / name for name in ("compose.yaml", "otel-collector.yaml", ".env")]
+if mode == "seed":
+    # Linux POSIX access ACL: named UID 10002, mask rwx; independent of acl CLI tools.
+    acl = struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *entry) for entry in
+        [(1, 7, 0xffffffff), (2, 4, 10002), (4, 7, 0xffffffff), (16, 7, 0xffffffff), (32, 7, 0xffffffff)])
+    for path in paths:
+        os.setxattr(path, "user.rollback-fixture", b"original\x00\xff")
+        if path.name != ".env":
+            os.setxattr(path, "system.posix_acl_access", acl)
+actual = {}
+for path in paths:
+    st = path.stat()
+    actual[path.name] = dict(inode=st.st_ino, device=st.st_dev, mode=stat.S_IMODE(st.st_mode),
+        uid=st.st_uid, gid=st.st_gid, mtime_ns=st.st_mtime_ns,
+        sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        xattrs={key: base64.b64encode(os.getxattr(path, key)).decode() for key in os.listxattr(path)})
+if mode == "seed":
+    Path(saved).write_text(json.dumps(actual))
+else:
+    assert actual == json.loads(Path(saved).read_text()), "bind inode/content/metadata/secret changed"
+PY
+}
+
 fake_bin="$test_root/bin"
 fake_state="$test_root/fake-state"
 mkdir -p -- "$fake_bin" "$fake_state"
@@ -146,6 +182,7 @@ run_materialize_failure() {
 target="$test_root/live"
 backup_root="$test_root/backups"
 make_target "$target"
+bind_metadata_fixture seed "$target" "$test_root/normal-bind-metadata.json"
 config_inode="$(stat -c '%d:%i' "$target/deploy/otel-collector.yaml")"
 compose_inode="$(stat -c '%d:%i' "$target/deploy/compose.yaml")"
 env_inode="$(stat -c '%d:%i' "$target/deploy/.env")"
@@ -203,6 +240,17 @@ grep -Fq 'original tree archive checksum is invalid' "$test_root/corrupt-backup.
 [[ "$(stat -c '%d:%i' "$target/deploy/.env")" == "$env_inode" ]] || exit 1
 cp -- "$test_root/original-tree.saved.tar" "$backup_dir/original-tree.tar"
 
+# Exercise restoration, not merely retention, of user attrs and the ACL mask.
+python3 - "$target" <<'PY'
+import os
+import sys
+from pathlib import Path
+for name in ("compose.yaml", "otel-collector.yaml"):
+    path = Path(sys.argv[1]) / "deploy" / name
+    os.setxattr(path, "user.rollback-fixture", b"candidate")
+    os.setxattr(path, "user.candidate-only", b"remove-on-restore")
+PY
+
 env "${candidate_env[@]}" PATH="$fake_bin:$PATH" OTEL_LIVE_SOURCE_DIR="$target" OTEL_MATERIALIZATION_BACKUP_ROOT="$backup_root" \
   OTEL_EXPECTED_GIT_HEAD="$head" OTEL_MATERIALIZATION_BACKUP_DIR="$backup_dir" \
   "$materializer" --rollback
@@ -217,6 +265,7 @@ env "${candidate_env[@]}" PATH="$fake_bin:$PATH" OTEL_LIVE_SOURCE_DIR="$target" 
 [[ "$(stat -c '%a' "$target/deploy/.env")" == "$env_mode" ]] || exit 1
 [[ "$(stat -c '%u' "$target/deploy/.env")" == "$env_uid" ]] || exit 1
 [[ "$(stat -c '%g' "$target/deploy/.env")" == "$env_gid" ]] || exit 1
+bind_metadata_fixture verify "$target" "$test_root/normal-bind-metadata.json"
 
 # An extraction failure after the candidate tree has been written must restore
 # the original target completely. The ignored candidate .env is present during
@@ -233,6 +282,17 @@ if [[ ! -e "$marker" ]]; then
   for argument in "$@"; do
     if [[ "$argument" == '-xpf' ]]; then
       "$real_tar" "$@"
+      python3 - "$OTEL_LIVE_SOURCE_DIR" <<'PY'
+import os
+import sys
+from pathlib import Path
+for name in ("compose.yaml", "otel-collector.yaml"):
+    path = Path(sys.argv[1]) / "deploy" / name
+    path.write_text("injected partial candidate write")
+    path.chmod(0o600)
+    os.setxattr(path, "user.rollback-fixture", b"candidate")
+    os.setxattr(path, "user.candidate-only", b"remove-on-restore")
+PY
       : >"$marker"
       exit 97
     fi
@@ -244,6 +304,7 @@ chmod +x "$tar_fail_bin/tar"
 target_failed_extract="$test_root/live-failed-extract"
 backup_failed_extract="$test_root/backups-failed-extract"
 make_target "$target_failed_extract"
+bind_metadata_fixture seed "$target_failed_extract" "$test_root/failed-bind-metadata.json"
 failed_config_inode="$(stat -c '%d:%i' "$target_failed_extract/deploy/otel-collector.yaml")"
 failed_compose_inode="$(stat -c '%d:%i' "$target_failed_extract/deploy/compose.yaml")"
 failed_env_inode="$(stat -c '%d:%i' "$target_failed_extract/deploy/.env")"
@@ -271,6 +332,7 @@ fi
 [[ "$(stat -c '%a' "$target_failed_extract/deploy/.env")" == "$failed_env_mode" ]] || exit 1
 [[ "$(stat -c '%u' "$target_failed_extract/deploy/.env")" == "$failed_env_uid" ]] || exit 1
 [[ "$(stat -c '%g' "$target_failed_extract/deploy/.env")" == "$failed_env_gid" ]] || exit 1
+bind_metadata_fixture verify "$target_failed_extract" "$test_root/failed-bind-metadata.json"
 [[ ! -e "$target_failed_extract/deploy/.otel-source-manifest.json" ]] || exit 1
 [[ ! -e "$target_failed_extract/deploy/Dockerfile.otel" ]] || exit 1
 if grep -R --binary-files=without-match -Fq "$candidate_secret" "$target_failed_extract"; then

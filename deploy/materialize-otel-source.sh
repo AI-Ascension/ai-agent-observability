@@ -432,6 +432,7 @@ PY
 restore_original_tree() {
   local archive="$1"
   local binds="$2"
+  local staged status=0
   # The backup is private local state, not an untrusted import. Verify its
   # recorded checksum and pinned bind identities before any extraction, including
   # automatic cleanup (which has no completed materialization-state file).
@@ -478,10 +479,75 @@ PY
   tar --xattrs --acls --no-same-owner --preserve-permissions -C "$live_root" \
     --exclude=./deploy/compose.yaml --exclude=./deploy/otel-collector.yaml \
     --exclude=./deploy/.env -xpf "$archive" || return 1
-  # --overwrite opens these already verified regular files in place, restoring
-  # bytes, permissions, ACLs and xattrs without unlinking the bound inodes.
-  tar --overwrite --xattrs --acls --no-same-owner --preserve-permissions \
-    -C "$live_root" -xpf "$archive" ./deploy/compose.yaml ./deploy/otel-collector.yaml || return 1
+  # GNU tar may unlink even with --overwrite when restoring xattrs. Decode
+  # archived ACLs/xattrs only into private staging, never onto live bind paths.
+  staged="$(mktemp -d "${archive%/*}/restore-binds.XXXXXX")" || return 1
+  if tar --xattrs --xattrs-include='*' --acls --no-same-owner --preserve-permissions \
+      -C "$staged" -xpf "$archive" ./deploy/compose.yaml ./deploy/otel-collector.yaml; then
+    python3 - "$live_root" "$staged" "$binds" <<'PY' || status=$?
+import contextlib
+import hashlib
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+root, staged, manifest = sys.argv[1:]
+expected = {e["path"]: e for e in json.load(open(manifest))["entries"]}
+with contextlib.ExitStack() as stack:
+    def opened(path, flags, **kwargs):
+        fd = os.open(path, flags | os.O_NOFOLLOW, **kwargs)
+        stack.callback(os.close, fd)
+        return fd
+    root_fd = opened(root, os.O_RDONLY | os.O_DIRECTORY)
+    deploy_fd = opened("deploy", os.O_RDONLY | os.O_DIRECTORY, dir_fd=root_fd)
+    pending = []
+    # Verify and hold both existing regular descriptors before any bind write.
+    for name in ("compose.yaml", "otel-collector.yaml"):
+        entry = expected["deploy/" + name]
+        source = Path(staged) / "deploy" / name
+        source_stat = source.stat()
+        data = source.read_bytes()
+        if hashlib.sha256(data).hexdigest() != entry["sha256"]:
+            raise SystemExit("staged bind checksum mismatch")
+        attrs = {key: os.getxattr(source, key) for key in os.listxattr(source)}
+        fd = opened(name, os.O_RDWR | os.O_NONBLOCK, dir_fd=deploy_fd)
+        current = os.fstat(fd)
+        if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != (entry["device"], entry["inode"]):
+            raise SystemExit("bind-source inode changed before restoration")
+        pending.append((name, fd, entry, data, attrs, source_stat))
+    for name, fd, entry, data, attrs, source_stat in pending:
+        os.ftruncate(fd, 0)
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise SystemExit("bind restoration write failed")
+            view = view[written:]
+        current = os.fstat(fd)
+        if (current.st_uid, current.st_gid) != (entry["uid"], entry["gid"]):
+            os.fchown(fd, entry["uid"], entry["gid"])
+        os.fchmod(fd, entry["mode"])
+        # Linux exposes the decoded POSIX access ACL as system.posix_acl_access.
+        # Apply it after chmod, which otherwise changes the ACL mask.
+        for key in set(os.listxattr(fd)) - attrs.keys():
+            os.removexattr(fd, key)
+        for key, value in attrs.items():
+            os.setxattr(fd, key, value)
+        os.utime(fd, ns=(source_stat.st_atime_ns, source_stat.st_mtime_ns))
+        os.fsync(fd)
+        if {key: os.getxattr(fd, key) for key in os.listxattr(fd)} != attrs:
+            raise SystemExit("bind restoration metadata mismatch")
+        current = os.stat(name, dir_fd=deploy_fd, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != (entry["device"], entry["inode"]):
+            raise SystemExit("bind-source pathname changed during restoration")
+PY
+  else
+    status=$?
+  fi
+  rm -rf -- "$staged"
+  (( status == 0 )) || return "$status"
   verify_bind_state "$live_root" "$binds" true
 }
 
