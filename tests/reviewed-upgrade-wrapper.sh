@@ -31,6 +31,9 @@ grep -Fq 'record_created_objects()' "$wrapper"
 grep -Fq 'remove_recorded_created_containers()' "$wrapper"
 grep -Fq 'container rm -f' "$wrapper"
 grep -Fq 'for volume in "${baseline_volumes[@]}"; do' "$wrapper"
+grep -Fq 'declare -A baseline_container_ids=()' "$wrapper"
+grep -Fq '"${baseline_container_ids[$service]}|$project_name|$service"' "$wrapper"
+grep -Fq 'while parent != Path("."):' "$wrapper"
 if rg -n 'volume rm|compose .* down|down -v' "$wrapper"; then
   printf '%s\n' 'wrapper must not delete volumes or use project-wide down' >&2
   exit 1

@@ -234,6 +234,11 @@ materialization_backup_root="$backup_dir/source"
 materialization_backup_dir=''
 materialized=false
 operation_complete=false
+declare -A baseline_container_ids=()
+while IFS='|' read -r service container_id container_project container_service; do
+  [[ "$container_id" =~ ^[0-9a-f]{64}$ && "$container_project" == "$project_name" && "$container_service" == "$service" ]] || die 'baseline container journal is malformed'
+  baseline_container_ids["$service"]="$container_id"
+done <"$backup_dir/baseline-containers.tsv"
 discover_materialization_backup() {
   [[ -n "$materialization_backup_dir" ]] && return 0
   materialization_backup_dir="$(find "$materialization_backup_root" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null || true)"
@@ -250,7 +255,7 @@ stop_and_verify_baseline() {
   for service in "${baseline_services[@]}"; do
     container="$project_name-$service"
     identity="$(bounded_capture 30 "$engine_bin" container inspect --format '{{.Id}}|{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}' "$container")" || return 1
-    [[ "$identity" =~ ^[0-9a-f]{64}\|$project_name\|$service$ ]] || return 1
+    [[ "$identity" == "${baseline_container_ids[$service]}|$project_name|$service" ]] || return 1
     bounded 30 "$engine_bin" container stop "$container" || return 1
     running="$(bounded_capture 30 "$engine_bin" container inspect --format '{{.State.Running}}' "$container")" || return 1
     [[ "$running" == false ]] || return 1
@@ -337,7 +342,13 @@ from pathlib import Path
 candidate, live = map(Path, sys.argv[1:])
 paths = subprocess.check_output(["/usr/bin/git", "-C", str(candidate), "ls-files", "-z"], env={"PATH":"/usr/bin:/bin", "HOME":"/nonexistent"})
 expected_files = set(item.decode() for item in paths.split(b"\0") if item)
-expected = expected_files | {str(Path(rel).parent) for rel in expected_files if Path(rel).parent != Path(".")}
+expected_dirs = set()
+for rel in expected_files:
+    parent = Path(rel).parent
+    while parent != Path("."):
+        expected_dirs.add(parent.as_posix())
+        parent = parent.parent
+expected = expected_files | expected_dirs
 allowed_live_only = {"deploy/.env", "deploy/.otel-source-manifest.json"}
 actual = set()
 for base, dirs, files in os.walk(live, topdown=True, followlinks=False):
