@@ -6,6 +6,15 @@ materializer="$repo_root/deploy/materialize-otel-source.sh"
 test_root="$(mktemp -d)"
 candidate_env_path="$repo_root/deploy/.env"
 candidate_env_created=false
+# This fixture creates an ignored candidate .env to prove that materialization
+# never transfers it.  The candidate worktree can be shared by independently
+# launched gates, so hold one cross-process lock before inspecting, creating,
+# or removing that shared ignored file.
+candidate_env_lock_dir="${TMPDIR:-/tmp}/ai-agent-observability-materialize-guards"
+candidate_env_lock_key="$(printf '%s' "$(readlink -f -- "$repo_root")" | sha256sum | awk '{print $1}')"
+mkdir -p -m 700 -- "$candidate_env_lock_dir"
+exec {candidate_env_lock_fd}>"$candidate_env_lock_dir/$candidate_env_lock_key.lock"
+flock "$candidate_env_lock_fd"
 cleanup() {
   rm -rf -- "$test_root"
   if [[ "$candidate_env_created" == true ]]; then
@@ -188,7 +197,63 @@ jq -e '[.files[] | select(.path == "deploy/.env")] | length == 0' \
 [[ "$(jq -r '.entries[] | select(.path == "deploy/otel-collector.yaml") | .uid' "$backup_dir/original-bind-state.json")" == "$(stat -c '%u' "$target/deploy/otel-collector.yaml")" ]] || exit 1
 [[ "$(jq -r '.entries[] | select(.path == "deploy/otel-collector.yaml") | .uid' "$backup_dir/candidate-bind-state.json")" == "$(stat -c '%u' "$target/deploy/otel-collector.yaml")" ]] || exit 1
 
-env "${candidate_env[@]}" PATH="$fake_bin:$PATH" OTEL_LIVE_SOURCE_DIR="$target" OTEL_MATERIALIZATION_BACKUP_ROOT="$backup_root" \
+env_replace_bin="$test_root/env-replace-bin"
+mkdir -p -- "$env_replace_bin"
+cat >"$env_replace_bin/tar" <<'FAKE_TAR'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+real_tar="${OTEL_REAL_TAR:?}"
+target="${OTEL_ENV_ARCHIVE_TARGET:?}"
+saw_extract=false
+saw_env_exclude=false
+selected_env=false
+saw_bound_compose=false
+saw_bound_config=false
+extract_root=''
+args=("$@")
+for ((index=0; index < ${#args[@]}; index++)); do
+  argument="${args[index]}"
+  case "$argument" in
+    -xpf) saw_extract=true ;;
+    --exclude=./deploy/.env|--exclude=deploy/.env) saw_env_exclude=true ;;
+    ./deploy/.env|deploy/.env) selected_env=true ;;
+    ./deploy/compose.yaml|deploy/compose.yaml) saw_bound_compose=true ;;
+    ./deploy/otel-collector.yaml|deploy/otel-collector.yaml) saw_bound_config=true ;;
+    -C)
+      extract_root="${args[index + 1]}"
+      ((index += 1))
+      ;;
+  esac
+done
+if [[ "$saw_extract" == true && "$selected_env" == true ]]; then
+  printf '%s\n' 'recovery tar selected target-local deploy/.env' >&2
+  exit 81
+fi
+if [[ "$saw_extract" == true && "$extract_root" == "$target" && "$saw_env_exclude" != true ]]; then
+  printf '%s\n' 'recovery tar did not exclude target-local deploy/.env' >&2
+  exit 83
+fi
+if [[ "$saw_extract" == true && "$extract_root" != "$target" && \
+      ( "$saw_bound_compose" != true || "$saw_bound_config" != true ) ]]; then
+  printf '%s\n' 'recovery tar did not restrict scratch extraction to strict bind files' >&2
+  exit 82
+fi
+"$real_tar" "$@"
+# Make archive replacement behavior deterministic.  A rollback that fails to
+# exclude target-local .env must fail its final strict bind check; the repaired
+# command never enters this branch.  No secret bytes are emitted.
+if [[ "$saw_extract" == true && "$extract_root" == "$target" && "$saw_env_exclude" != true ]]; then
+  cp -- "$target/deploy/.env" "$target/deploy/.env.fixture-replacement"
+  chmod --reference="$target/deploy/.env" "$target/deploy/.env.fixture-replacement"
+  mv -f -- "$target/deploy/.env.fixture-replacement" "$target/deploy/.env"
+fi
+FAKE_TAR
+chmod +x "$env_replace_bin/tar"
+
+env "${candidate_env[@]}" PATH="$env_replace_bin:$fake_bin:$PATH" \
+  OTEL_REAL_TAR="$(command -v tar)" OTEL_ENV_ARCHIVE_TARGET="$target" \
+  OTEL_LIVE_SOURCE_DIR="$target" OTEL_MATERIALIZATION_BACKUP_ROOT="$backup_root" \
   OTEL_EXPECTED_GIT_HEAD="$head" OTEL_MATERIALIZATION_BACKUP_DIR="$backup_dir" \
   "$materializer" --rollback
 [[ ! -e "$target/deploy/.otel-source-manifest.json" ]] || exit 1
