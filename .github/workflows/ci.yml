@@ -36,6 +36,10 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+          # The root-packet lifecycle fixture clones this checkout and verifies
+          # that it contains the reviewed candidate commit, so the full history
+          # must be present rather than a single-commit shallow checkout.
+          fetch-depth: 0
 
       - name: Install shellcheck
         run: |
@@ -44,10 +48,20 @@ jobs:
 
       - name: Check shell syntax and style
         run: |
-          for script in deploy/init.sh deploy/materialize-otel-source.sh deploy/ai-agent-observability-reviewed-upgrade deploy/laminar/bootstrap-project-key.sh deploy/laminar/provision-query-readonly.sh tests/*.sh tests/fixtures/*; do
+          for script in deploy/init.sh deploy/materialize-otel-source.sh deploy/ai-agent-observability-reviewed-upgrade deploy/install-reviewed-upgrade-root-packet.sh deploy/laminar/bootstrap-project-key.sh deploy/laminar/provision-query-readonly.sh tests/*.sh tests/fixtures/*; do
             bash -n "$script"
           done
-          shellcheck --severity=warning deploy/init.sh deploy/materialize-otel-source.sh deploy/ai-agent-observability-reviewed-upgrade deploy/laminar/bootstrap-project-key.sh deploy/laminar/provision-query-readonly.sh tests/*.sh tests/fixtures/*
+          shellcheck --severity=warning deploy/init.sh deploy/materialize-otel-source.sh deploy/ai-agent-observability-reviewed-upgrade deploy/install-reviewed-upgrade-root-packet.sh deploy/laminar/bootstrap-project-key.sh deploy/laminar/provision-query-readonly.sh tests/*.sh tests/fixtures/*
+
+      - name: Enable unprivileged user namespaces
+        run: |
+          # The root-packet lifecycle fixture maps its user to root with
+          # `unshare -Ur`. Ubuntu 24.04 restricts unprivileged user namespaces
+          # through AppArmor; lift that restriction for this disposable runner so
+          # the fixture can exercise the real root-owned installation path.
+          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          fi
 
       - name: Test bootstrap without a container runtime
         run: |
@@ -59,6 +73,15 @@ jobs:
           COLLECTOR_PERSISTENCE_RUNTIME=required bash tests/collector-persistence.sh
           bash tests/reviewed-upgrade-plan.sh
           bash tests/reviewed-upgrade-wrapper.sh
+          # Exit 77 means the fixture cannot run because this environment forbids
+          # unprivileged user namespaces; report that as a skip, not a failure.
+          root_packet_status=0
+          bash tests/root-install-packet.sh || root_packet_status=$?
+          if (( root_packet_status == 77 )); then
+            echo 'root-install-packet lifecycle fixture skipped: unprivileged user namespaces are unavailable.'
+          elif (( root_packet_status != 0 )); then
+            exit "$root_packet_status"
+          fi
           bash tests/otel-installer-guards.sh
           bash tests/otel-materialize-guards.sh
 

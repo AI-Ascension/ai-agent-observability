@@ -8,6 +8,12 @@ mkdir -p "$test_root/bin" "$test_root/repo/tests/fixtures" "$test_root/repo/depl
 cp "$repo_root/tests/fixtures/docker-compose-config" "$test_root/bin/docker"
 chmod +x "$test_root/bin/docker"
 export PATH="$test_root/bin:$PATH"
+bash "$repo_root/tests/repository-path-policy.sh" --self-test
+if bash "$repo_root/tests/repository-path-policy.sh" --self-test unexpected >"$test_root/output" 2>&1; then
+  printf '%s\n' 'Repository path policy accepted unexpected self-test arguments.' >&2
+  exit 1
+fi
+grep -Fq 'usage: repository-path-policy.sh [--self-test]' "$test_root/output"
 TEST_BINDING=loopback bash "$repo_root/tests/compose-invariants.sh" >"$test_root/output" 2>&1
 for binding in omitted 0.0.0.0 192.0.2.1 '"::"' '"::1"'; do
   if TEST_BINDING="$binding" bash "$repo_root/tests/compose-invariants.sh" >"$test_root/output" 2>&1; then
