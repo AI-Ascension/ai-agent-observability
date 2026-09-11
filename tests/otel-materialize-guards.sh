@@ -12,7 +12,16 @@ candidate_env_created=false
 # or removing that shared ignored file.
 candidate_env_lock_dir="${TMPDIR:-/tmp}/ai-agent-observability-materialize-guards"
 candidate_env_lock_key="$(printf '%s' "$(readlink -f -- "$repo_root")" | sha256sum | awk '{print $1}')"
-mkdir -p -m 700 -- "$candidate_env_lock_dir"
+mkdir -p -- "$candidate_env_lock_dir"
+[[ -d "$candidate_env_lock_dir" && ! -L "$candidate_env_lock_dir" ]] || {
+  printf '%s\n' 'materializer fixture lock path is not a directory' >&2
+  exit 1
+}
+chmod 0700 -- "$candidate_env_lock_dir"
+[[ "$(stat -c '%a:%u' -- "$candidate_env_lock_dir")" == "700:$UID" ]] || {
+  printf '%s\n' 'materializer fixture lock directory is not private to this user' >&2
+  exit 1
+}
 exec {candidate_env_lock_fd}>"$candidate_env_lock_dir/$candidate_env_lock_key.lock"
 flock "$candidate_env_lock_fd"
 cleanup() {
