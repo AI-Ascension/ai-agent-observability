@@ -149,9 +149,23 @@ test environment only. The importer has no Python application dependency.
 
 An optional positional argument selects a coordinator-supplied portable failed-run
 bundle for the same local runtime probe. It validates the known failed-run evidence
-and skips the synthetic revision mutation. Real Train acceptance still requires
-the coordinator to export and reconcile the original recording, validate it with
-protocol's oracle, and use those identical bytes in Studio and this consumer.
+and skips the synthetic revision mutation. The probe compares admitted record
+identities, payloads (including accounting status, unit, scope and exact values),
+evidence and stream counts with stored MLflow attributes. It checks that duplicate
+import leaves the full trace unchanged, that MLflow retains it across restart,
+and that the source ZIP hash is unchanged. Generated evidence contains only
+digests, counts, evidence enums and verification results; full trace data remains
+in the ignored local test directory.
+
+The coordinator's sanitized Train candidate 2 artifact passed this probe with
+SHA256 `2575de7ba78baa30d1036233a0fc234a5b0e1e6d8988e10df62c139aaee37f8b`.
+The privacy-safe result is [recorded-run-train-local-tracking.json](evidence/recorded-run-train-local-tracking.json):
+one persistent trace, 19 spans, eight events and one accounting record. Both action
+outcomes remain unknown, gameplay is `episode_failed`, and process exit is
+`failed`. Source completeness remains partial/unverified. The supplied artifact
+was unchanged; duplicate import and backend restart preserved the complete trace.
+This proves local backend interoperability for these sanitized bytes. Independent
+review and organization-wide candidate admission remain coordinator-owned.
 
 OTLP acknowledgement semantics follow the [OTLP specification](https://opentelemetry.io/docs/specs/otlp/).
 The test inspected installed MLflow 3.16.0 `server/otel_api.py` and
