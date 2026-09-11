@@ -57,7 +57,11 @@ if [[ "$mode" != --rollback ]]; then
       command -v "$candidate_reader_engine" >/dev/null 2>&1 || \
         die "$candidate_reader_engine is required for candidate validation"
       ;;
-    *) die 'OTEL_CANDIDATE_READER_ENGINE must be podman or docker' ;;
+    /usr/bin/podman)
+      [[ -f "$candidate_reader_engine" && ! -L "$candidate_reader_engine" && -x "$candidate_reader_engine" ]] || \
+        die 'OTEL_CANDIDATE_READER_ENGINE /usr/bin/podman is unavailable or unsafe'
+      ;;
+    *) die 'OTEL_CANDIDATE_READER_ENGINE must be podman, docker, or /usr/bin/podman' ;;
   esac
 fi
 [[ "$expected_candidate_config_user" == 10001:10001 ]] || \

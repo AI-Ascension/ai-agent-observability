@@ -1,0 +1,6 @@
+DEPLOYMENT_ROOT=/srv/ai-agent-observability-live
+CANDIDATE_ROOT=/var/lib/ai-agent-observability-reviewed-candidate
+BACKUP_ROOT=/var/backups/ai-agent-observability-reviewed-upgrade
+ENGINE_BIN=/usr/bin/podman
+READER_IMAGE_ID=sha256:0000000000000000000000000000000000000000000000000000000000000000
+BASELINE_COMPOSE_SHA256=6a4f31c411d03e54a6d0d88ef0bc6d65fc18061e1adafc7af94d8f08c6dd7b6f
