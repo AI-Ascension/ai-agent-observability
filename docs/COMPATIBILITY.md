@@ -30,7 +30,10 @@ revalidated before an upgrade or redistribution.
   from the static CI checks). Other architectures depend on the upstream
   images publishing a compatible manifest and are `unverified` until tested.
 - Host ports must be free or explicitly overridden in `.env`.
-- A persistent filesystem is required for all six named volumes.
+- A persistent filesystem is required for all eight named volumes. The
+  `laminar-rabbitmq-data` volume preserves Laminar's durable broker state, and
+  `otel-collector-queue-data` preserves the Collector's bounded exporter WAL.
+  The latter must be writable by the pinned Collector user `10001:10001`.
 
 ## Upgrade rules
 

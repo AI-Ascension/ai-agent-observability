@@ -22,8 +22,18 @@ PY
 
 gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -static -s \
   -o "$test_root/otel-health-probe" "$repo_root/deploy/otel-health-probe.c"
-if ! file "$test_root/otel-health-probe" | grep -Fq 'statically linked'; then
-  printf '%s\n' 'the probe is not statically linked for the distroless runtime' >&2
+if command -v file >/dev/null 2>&1; then
+  if ! file "$test_root/otel-health-probe" | grep -Fq 'statically linked'; then
+    printf '%s\n' 'the probe is not statically linked for the distroless runtime' >&2
+    exit 1
+  fi
+elif command -v readelf >/dev/null 2>&1; then
+  if readelf -l "$test_root/otel-health-probe" | grep -Fq 'INTERP'; then
+    printf '%s\n' 'the probe has a dynamic interpreter and cannot run in the distroless runtime' >&2
+    exit 1
+  fi
+else
+  printf '%s\n' 'file or readelf is required to verify static linking' >&2
   exit 1
 fi
 
@@ -36,6 +46,10 @@ grep -Fq 'endpoint: 127.0.0.1:13133' "$config"
 grep -Fq 'component_health:' "$config"
 grep -Fq 'include_recoverable_errors: true' "$config"
 grep -Fq 'recovery_duration: 30s' "$config"
+grep -Fq 'file_storage/telemetry:' "$config"
+grep -Fq 'storage: file_storage/telemetry' "$config"
+grep -Fq 'fsync: true' "$config"
+grep -Fq 'otel-collector-queue-data:/var/lib/otelcol/file_storage' "$compose"
 if grep -Fq 'check_collector_pipeline' "$config"; then
   printf '%s\n' 'the deprecated pipeline health poller must not be configured' >&2
   exit 1
@@ -49,6 +63,8 @@ if grep -Eq 'published:.*13133|:13133:' "$compose"; then
 fi
 grep -Fq 'FROM docker.io/library/gcc:14-bookworm AS probe-builder' "$dockerfile"
 grep -Fq 'FROM docker.io/otel/opentelemetry-collector-contrib:${OTEL_COLLECTOR_VERSION}' "$dockerfile"
+grep -Fq 'install -d -o 10001 -g 10001 -m 0750 /otel-storage/file_storage' "$dockerfile"
+grep -Fq 'COPY --from=probe-builder --chown=10001:10001 /otel-storage /var/lib/otelcol' "$dockerfile"
 grep -Fq 'HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3' "$dockerfile"
 grep -Fq 'CLOCK_MONOTONIC' "$repo_root/deploy/otel-health-probe.c"
 grep -Fq 'timeout_ms = 2000' "$repo_root/deploy/otel-health-probe.c"

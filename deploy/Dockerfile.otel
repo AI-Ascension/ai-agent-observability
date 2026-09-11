@@ -10,8 +10,10 @@ WORKDIR /src
 COPY otel-health-probe.c .
 RUN gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -static -s \
     -o /otel-health-probe otel-health-probe.c
+RUN install -d -o 10001 -g 10001 -m 0750 /otel-storage/file_storage
 
 FROM docker.io/otel/opentelemetry-collector-contrib:${OTEL_COLLECTOR_VERSION}
 COPY --from=probe-builder /otel-health-probe /usr/local/bin/otel-health-probe
+COPY --from=probe-builder --chown=10001:10001 /otel-storage /var/lib/otelcol
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD ["/usr/local/bin/otel-health-probe"]

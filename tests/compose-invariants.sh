@@ -37,6 +37,28 @@ for service_name in "${required_services[@]}"; do
   fi
 done
 
+required_volumes=(
+  ai-agent-observability-mlflow-postgres-data
+  ai-agent-observability-mlflow-storage-data
+  ai-agent-observability-laminar-clickhouse-data
+  ai-agent-observability-laminar-clickhouse-logs
+  ai-agent-observability-laminar-postgres-data
+  ai-agent-observability-laminar-quickwit-data
+  ai-agent-observability-laminar-rabbitmq-data
+  ai-agent-observability-otel-collector-queue-data
+)
+for volume_name in "${required_volumes[@]}"; do
+  if ! grep -Fq "name: $volume_name" <<<"$compose_output"; then
+    printf 'missing rendered named volume: %s\n' "$volume_name" >&2
+    exit 1
+  fi
+done
+
+collector_config="$repo_root/deploy/otel-collector.yaml"
+grep -Fq 'file_storage/telemetry:' "$collector_config"
+grep -Fq 'storage: file_storage/telemetry' "$collector_config"
+grep -Fq 'fsync: true' "$collector_config"
+
 # Compose renders one host_ip and published field for each explicit host bind.
 # Check all bindings, including omitted host_ip (an all-interface default).
 if ! awk '

@@ -18,7 +18,10 @@ endpoint's pipeline query.
 The image is a small wrapper around the same upstream Collector image. A static
 C probe is compiled in a disposable GCC builder stage and copied into the
 distroless runtime at `/usr/local/bin/otel-health-probe`; the runtime image
-does not need curl, a shell, or a dynamically linked library. The probe's
+does not need curl, a shell, or a dynamically linked library. The same builder
+stage creates `/var/lib/otelcol/file_storage` with ownership `10001:10001`, so
+an empty named volume inherits a writable directory for the non-root Collector
+user. The probe's
 production invocation has no arguments and performs this bounded request:
 
 ```text
@@ -91,8 +94,9 @@ machine-readable result is retained in the private installation backup.
 
 The installer compares the exact active traces exporter and receiver sets,
 rendered Compose image reference, bind source/destination/RO mode, mounted
-config hash, and intended Collector environment before making a fresh verified
-backup. The owner supplies `OTEL_EXPECTED_TRACE_EXPORTERS`,
+config hash, intended Collector environment, and the exact writable
+`ai-agent-observability-otel-collector-queue-data` volume mount before making a
+fresh verified backup. The owner supplies `OTEL_EXPECTED_TRACE_EXPORTERS`,
 `OTEL_EXPECTED_TRACE_RECEIVERS`, and
 `OTEL_EXPECTED_TRACE_RECEIVER_SERIES`; empty, duplicate, malformed, missing,
 or unexpected values fail closed. The live observer requires exactly one queue
@@ -151,7 +155,8 @@ target only this service for recreation after building the wrapper image. The
 existing config bind, ports, OTLP exporters, and persistent data owned by the
 rest of the stack remain unchanged. A rollback restores the prior image and
 collector config, then recreates only this service after preserving the exact
-old container identity and source/runtime evidence.
+old container identity and source/runtime evidence. The Collector queue
+volume is deliberately retained across that recreation; do not use `down -v`.
 
 This source change proves configuration, image build inputs, and probe
 semantics. It does not claim live health, recurring timer execution, display

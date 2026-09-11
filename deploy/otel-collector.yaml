@@ -13,6 +13,23 @@ extensions:
       include_permanent_errors: true
       include_recoverable_errors: true
       recovery_duration: 30s
+  file_storage/telemetry:
+    # Exporter sending queues use this bbolt-backed WAL. The directory is a
+    # dedicated named volume in Compose and is pre-created for UID 10001 by
+    # the wrapper image before the volume is initialized.
+    directory: /var/lib/otelcol/file_storage
+    create_directory: true
+    max_size: 134217728
+    fsync: true
+    recreate: false
+    compaction:
+      on_start: true
+      on_rebound: true
+      cleanup_on_start: true
+      directory: /var/lib/otelcol/file_storage/compaction
+      rebound_needed_threshold_mib: 96
+      rebound_trigger_threshold_mib: 16
+      check_interval: 5s
 
 receivers:
   otlp:
@@ -47,6 +64,7 @@ exporters:
       enabled: true
       num_consumers: 2
       queue_size: 1024
+      storage: file_storage/telemetry
 
   otlp_http/laminar:
     endpoint: http://laminar-app-server:8000
@@ -63,9 +81,10 @@ exporters:
       enabled: true
       num_consumers: 2
       queue_size: 1024
+      storage: file_storage/telemetry
 
 service:
-  extensions: [health_check]
+  extensions: [health_check, file_storage/telemetry]
   telemetry:
     logs:
       level: warn

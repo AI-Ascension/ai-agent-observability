@@ -47,6 +47,10 @@ required = (
     "restored bind-source uid/gid mismatch",
     "restored bind-source content mismatch",
     "healthcheck_contract_matches",
+    "file_storage/telemetry:",
+    "storage: file_storage/telemetry",
+    "otel-collector-queue-data:/var/lib/otelcol/file_storage",
+    "queue_mount_matches",
     "restore_backups_if_unchanged",
     "runtime_mutation_attempted",
     "runtime_mutation_may_have_changed",
@@ -90,7 +94,7 @@ sed -i "s/^OTEL_METRICS_PORT=.*/OTEL_METRICS_PORT=$metrics_port/" "$env_file"
 collector_config="$repo_root/deploy/otel-collector.yaml"
 expected_mount_source="$(readlink -f "$collector_config")"
 cat >"$state_dir/inspect.json" <<JSON
-[{"Id":"fixture-container-id","Name":"/ai-agent-observability-otel-collector","Image":"sha256:fixture-active","Created":"2026-09-08T00:00:00Z","Config":{"Entrypoint":[],"Cmd":["--feature-gates=+extension.healthcheck.useComponentStatus","--config=/etc/otelcol-contrib/config.yaml"],"ExposedPorts":{"4317/tcp":{},"4318/tcp":{},"8888/tcp":{}},"Env":["MLFLOW_EXPERIMENT_ID=0","LAMINAR_PROJECT_API_KEY=fixture-key"],"Healthcheck":{"Test":["CMD","/usr/local/bin/otel-health-probe"],"Interval":30000000000,"Timeout":5000000000,"Retries":3,"StartPeriod":30000000000},"Labels":{"com.docker.compose.project":"ai-agent-observability","com.docker.compose.service":"otel-collector"},"ReadonlyRootfs":true,"User":"","WorkingDir":"/"},"HostConfig":{"PortBindings":{"4317/tcp":[{"HostIp":"127.0.0.1","HostPort":"14317"}],"4318/tcp":[{"HostIp":"127.0.0.1","HostPort":"14318"}],"8888/tcp":[{"HostIp":"127.0.0.1","HostPort":"$metrics_port"}]},"PublishAllPorts":false,"NetworkMode":"ai-agent-observability_default","ExtraHosts":[],"Devices":[],"DeviceRequests":[],"BlkioWeight":0,"CpuCount":0,"CpuPercent":0,"CpuPeriod":0,"CpuQuota":0,"CpuRealtimePeriod":0,"CpuRealtimeRuntime":0,"CpuShares":0,"CpusetCpus":"","CpusetMems":"","NanoCpus":0,"Memory":0,"MemoryReservation":0,"MemorySwap":0,"MemorySwappiness":0,"OomKillDisable":false,"PidsLimit":0,"Ulimits":[],"ReadonlyRootfs":true,"SecurityOpt":["no-new-privileges:true"],"CapAdd":[],"CapDrop":[],"Privileged":false,"Tmpfs":{"/tmp":"rw"},"RestartPolicy":{"Name":"unless-stopped"}},"NetworkSettings":{"Networks":{"ai-agent-observability_default":{"Aliases":["otel-collector","ai-agent-observability-otel-collector"]}}},"Mounts":[{"Type":"bind","Source":"$expected_mount_source","Destination":"/etc/otelcol-contrib/config.yaml","Mode":"ro","RW":false}],"State":{"Status":"running","Health":{"Status":"healthy","Log":[]}}}]
+[{"Id":"fixture-container-id","Name":"/ai-agent-observability-otel-collector","Image":"sha256:fixture-active","Created":"2026-09-08T00:00:00Z","Config":{"Entrypoint":[],"Cmd":["--feature-gates=+extension.healthcheck.useComponentStatus","--config=/etc/otelcol-contrib/config.yaml"],"ExposedPorts":{"4317/tcp":{},"4318/tcp":{},"8888/tcp":{}},"Env":["MLFLOW_EXPERIMENT_ID=0","LAMINAR_PROJECT_API_KEY=fixture-key"],"Healthcheck":{"Test":["CMD","/usr/local/bin/otel-health-probe"],"Interval":30000000000,"Timeout":5000000000,"Retries":3,"StartPeriod":30000000000},"Labels":{"com.docker.compose.project":"ai-agent-observability","com.docker.compose.service":"otel-collector"},"ReadonlyRootfs":true,"User":"","WorkingDir":"/"},"HostConfig":{"PortBindings":{"4317/tcp":[{"HostIp":"127.0.0.1","HostPort":"14317"}],"4318/tcp":[{"HostIp":"127.0.0.1","HostPort":"14318"}],"8888/tcp":[{"HostIp":"127.0.0.1","HostPort":"$metrics_port"}]},"PublishAllPorts":false,"NetworkMode":"ai-agent-observability_default","ExtraHosts":[],"Devices":[],"DeviceRequests":[],"BlkioWeight":0,"CpuCount":0,"CpuPercent":0,"CpuPeriod":0,"CpuQuota":0,"CpuRealtimePeriod":0,"CpuRealtimeRuntime":0,"CpuShares":0,"CpusetCpus":"","CpusetMems":"","NanoCpus":0,"Memory":0,"MemoryReservation":0,"MemorySwap":0,"MemorySwappiness":0,"OomKillDisable":false,"PidsLimit":0,"Ulimits":[],"ReadonlyRootfs":true,"SecurityOpt":["no-new-privileges:true"],"CapAdd":[],"CapDrop":[],"Privileged":false,"Tmpfs":{"/tmp":"rw"},"RestartPolicy":{"Name":"unless-stopped"}},"NetworkSettings":{"Networks":{"ai-agent-observability_default":{"Aliases":["otel-collector","ai-agent-observability-otel-collector"]}}},"Mounts":[{"Type":"bind","Source":"$expected_mount_source","Destination":"/etc/otelcol-contrib/config.yaml","Mode":"ro","RW":false},{"Type":"volume","Name":"ai-agent-observability-otel-collector-queue-data","Source":"/var/lib/docker/volumes/ai-agent-observability-otel-collector-queue-data/_data","Destination":"/var/lib/otelcol/file_storage","Mode":"rw","RW":true}],"State":{"Status":"running","Health":{"Status":"healthy","Log":[]}}}]
 JSON
 
 jq '.[0].Config.Healthcheck = null | .[0].State |= del(.Health)' \
@@ -234,6 +238,9 @@ if [[ "${1:-}" == inspect ]]; then
         ;;
       *'.Mounts'*)
         printf 'bind\t%s\t%s\tfalse\tro\n' "${FAKE_MOUNT_SOURCE:?}" '/etc/otelcol-contrib/config.yaml'
+        printf 'volume\t%s\t%s\ttrue\trw\n' \
+          '/var/lib/docker/volumes/ai-agent-observability-otel-collector-queue-data/_data' \
+          '/var/lib/otelcol/file_storage'
         ;;
       *'Healthcheck.Test'*)
         printf '%s\n' '["CMD","/usr/local/bin/otel-health-probe"]'

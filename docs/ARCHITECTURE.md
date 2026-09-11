@@ -39,7 +39,7 @@ change the internal protocol contract.
 | Boundary | Owner | Stored or served data |
 | --- | --- | --- |
 | Agent/harness | Calling repository | Run/episode identity and agent-produced spans |
-| Collector | This repository | Bounded buffering and authenticated fan-out |
+| Collector | This repository | Bounded persistent WAL buffering and authenticated fan-out |
 | MLflow | Upstream MLflow | Experiments, runs, metrics, parameters, artifacts |
 | Laminar | Upstream Laminar | Traces, spans, evaluation/debugging records |
 | MLflow PostgreSQL | MLflow deployment | Tracking metadata |
@@ -60,7 +60,10 @@ change the internal protocol contract.
    ingest-only project key hash, and a pending invitation for the configured
    local operator email. It exits successfully and does not persist the
    plaintext key in PostgreSQL.
-7. The Collector starts and fans out accepted traces to both backends.
+7. The Collector starts and fans out accepted traces to both backends. Its
+   exporter queues use the named `otel-collector-queue-data` volume and a
+   bounded file-storage WAL; the queue is telemetry buffering, not an
+   authoritative experiment journal.
 
 The one-shot initializers are idempotent for the generated deployment identity;
 Laminar's database changes are committed together or rolled back together.

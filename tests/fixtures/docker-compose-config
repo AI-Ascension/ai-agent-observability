@@ -7,6 +7,11 @@ for service in mlflow-postgres mlflow-storage mlflow laminar-postgres \
   laminar-frontend laminar-bootstrap otel-collector; do
   printf 'container_name: ai-agent-observability-%s\n' "$service"
 done
+for volume in mlflow-postgres-data mlflow-storage-data laminar-clickhouse-data \
+  laminar-clickhouse-logs laminar-postgres-data laminar-quickwit-data \
+  laminar-rabbitmq-data otel-collector-queue-data; do
+  printf 'name: ai-agent-observability-%s\n' "$volume"
+done
 for port in 15000 15667 14317 14318 18888; do
   if [[ $port != 14318 || ${TEST_BINDING:-loopback} == loopback ]]; then
     printf 'host_ip: 127.0.0.1\n'

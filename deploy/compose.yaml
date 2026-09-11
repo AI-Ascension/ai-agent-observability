@@ -118,6 +118,8 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+    volumes:
+      - laminar-rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
       interval: 10s
@@ -356,6 +358,7 @@ services:
       - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${OTEL_METRICS_PORT:?OTEL_METRICS_PORT is required}:8888"
     volumes:
       - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - otel-collector-queue-data:/var/lib/otelcol/file_storage
     healthcheck:
       test: ["CMD", "/usr/local/bin/otel-health-probe"]
       interval: 30s
@@ -382,6 +385,10 @@ volumes:
     name: ai-agent-observability-laminar-postgres-data
   laminar-quickwit-data:
     name: ai-agent-observability-laminar-quickwit-data
+  laminar-rabbitmq-data:
+    name: ai-agent-observability-laminar-rabbitmq-data
+  otel-collector-queue-data:
+    name: ai-agent-observability-otel-collector-queue-data
 
 networks:
   default:

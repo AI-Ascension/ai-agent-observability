@@ -109,10 +109,13 @@ before first initialization if a different operator identity is required.
 
 ## Backups and upgrades
 
-Back up the six named volumes with a host-approved, quiesced procedure before
-upgrading. At minimum, preserve Laminar PostgreSQL, ClickHouse, Quickwit, and
-MLflow PostgreSQL/RustFS data. Record the image tags and Compose commit with
-each backup. Never use `down -v` as a backup or rollback mechanism.
+Back up all eight named volumes with a host-approved, quiesced procedure before
+upgrading. At minimum, preserve Laminar PostgreSQL, RabbitMQ, ClickHouse,
+Quickwit, and MLflow PostgreSQL/RustFS data, plus the Collector's
+`otel-collector-queue-data` WAL volume. Stop or quiesce telemetry producers
+before copying the Collector volume so the snapshot is self-consistent. Record
+the image tags and Compose commit with each backup. Never use `down -v` as a
+backup or rollback mechanism.
 
 For an upgrade, change one pinned version, run the static CI gates, pull/build
 only the affected image, and use `docker compose up -d` for this project. Check
@@ -122,15 +125,25 @@ delete live volumes to force a migration.
 
 ## Failure boundaries
 
-The Collector's sending queues are in memory; its acknowledgement is not proof
-that both backends have durably stored a trace. Export retries can duplicate
-delivery, and queue overflow, retry exhaustion, or process replacement can lose
-pending spans. RabbitMQ has no named persistent volume in this initial stack;
-container recreation can lose queued ingest work. The six named volumes preserve
-the configured databases, artifacts, search data, and ClickHouse logs, not all
-in-flight telemetry. Quiesce producers and verify both downstream records before
-using restart survival as experimental evidence. Durable ingestion across
-outages requires a separately validated queue/storage design.
+The Collector's sending queues use a file-storage WAL in the named
+`otel-collector-queue-data` volume. Each exporter queue is bounded to 1024
+batches and its bbolt file is capped at 128 MiB; `fsync` is enabled and online
+rebound compaction is configured. A Collector restart can resume batches that
+were already committed to the WAL, but this is not an exactly-once guarantee:
+crash recovery or downstream retry can duplicate delivery. Disk-full/I/O
+failure, queue capacity, or retry expiry after 300 seconds can still drop
+pending spans; inspect the queue and send-failure metrics and preserve the
+drop-accounting evidence. The Collector WAL is not an authoritative watchdog,
+gateway, or experiment journal.
+
+RabbitMQ now has the named `laminar-rabbitmq-data` volume, so broker state can
+survive container recreation when the declared queues are durable. It is not
+transactionally coupled to Laminar PostgreSQL, ClickHouse, or Quickwit, so
+restore and replay remain an operator procedure. The eight named volumes
+preserve the configured databases, artifacts, search data, broker state, and
+bounded in-flight telemetry, not an end-to-end exactly-once trace. Quiesce
+producers and verify both downstream records before using restart survival as
+experimental evidence.
 
 The Laminar bootstrap applies workspace/project creation, collector-key
 replacement, and invitation creation in one PostgreSQL transaction. A failed

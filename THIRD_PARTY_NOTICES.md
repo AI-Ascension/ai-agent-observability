@@ -9,7 +9,7 @@ before redistribution.
 | MLflow | `ghcr.io/mlflow/mlflow:v3.16.0` | [MLflow repository](https://github.com/mlflow/mlflow), Apache-2.0 project license |
 | Laminar app/frontend | `ghcr.io/lmnr-ai/app-server:v0.2.3`, `ghcr.io/lmnr-ai/frontend:v0.2.3` | [Laminar repository](https://github.com/lmnr-ai/lmnr), Apache-2.0 project license |
 | Laminar ClickHouse XML | release source at `v0.2.3` | Adapted into `deploy/laminar/`; retain this attribution and the upstream license |
-| OpenTelemetry Collector | `otel/opentelemetry-collector-contrib:0.160.0` | [Collector releases](https://github.com/open-telemetry/opentelemetry-collector-releases), Apache-2.0 project license |
+| OpenTelemetry Collector | `otel/opentelemetry-collector-contrib:0.160.0` with the contrib File Storage extension | [Collector releases](https://github.com/open-telemetry/opentelemetry-collector-releases), Apache-2.0 project license |
 | Collector probe builder | `docker.io/library/gcc:14-bookworm` (build stage only) | [Official GCC image](https://hub.docker.com/_/gcc); Debian/GCC licenses apply to the disposable builder and are not included in the runtime image |
 | ClickHouse | `clickhouse/clickhouse-server:26.5` | [ClickHouse](https://github.com/ClickHouse/ClickHouse), Apache-2.0 project license |
 | PostgreSQL | `postgres:15` / `postgres:16` (also the base of the `bootstrap` build stage) | [PostgreSQL](https://www.postgresql.org/about/licence/), PostgreSQL License |

@@ -17,6 +17,8 @@ source_manifest="${OTEL_SOURCE_MANIFEST:-$script_dir/.otel-source-manifest.json}
 materialization_backup_dir="${OTEL_MATERIALIZATION_BACKUP_DIR:-}"
 expected_candidate_config_user="${OTEL_EXPECTED_CANDIDATE_CONFIG_USER:-10001:10001}"
 mount_destination="/etc/otelcol-contrib/config.yaml"
+queue_mount_destination="/var/lib/otelcol/file_storage"
+queue_volume_name="ai-agent-observability-otel-collector-queue-data"
 probe_path="/usr/local/bin/otel-health-probe"
 backup_root="${OTEL_BACKUP_ROOT:-$repo_dir/.otel-health-probe-backups}"
 mode="${1:---install}"
@@ -363,6 +365,8 @@ grep -Fq 'pipelines:' "$collector_config" || fail 'collector config has no pipel
 grep -Fq 'endpoint: 127.0.0.1:13133' "$collector_config" || fail 'collector health endpoint moved off loopback'
 grep -Fq 'health_check:' "$collector_config" || fail 'collector health extension is absent'
 grep -Fq 'component_health:' "$collector_config" || fail 'component health status is absent'
+grep -Fq 'file_storage/telemetry:' "$collector_config" || fail 'persistent Collector storage extension is absent'
+grep -Fq 'storage: file_storage/telemetry' "$collector_config" || fail 'persistent exporter queue storage is absent'
 grep -Fq 'sending_queue:' "$collector_config" || \
   fail 'Collector queue metrics are not configured for the quiescence observer'
 grep -Fq 'without_type_suffix: true' "$collector_config" || \
@@ -372,6 +376,8 @@ grep -Fq 'extension.healthcheck.useComponentStatus' "$compose_file" || fail 'com
 grep -Fq '/usr/local/bin/otel-health-probe' "$compose_file" || fail 'native probe healthcheck is absent'
 grep -Fq './otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro' "$compose_file" || \
   fail 'collector config mount is not read-only'
+grep -Fq 'otel-collector-queue-data:/var/lib/otelcol/file_storage' "$compose_file" || \
+  fail 'Collector persistent queue volume is not mounted'
 if grep -Eq 'published:.*13133|:13133:' "$compose_file"; then
   fail 'collector health endpoint is published on the host'
 fi
@@ -640,6 +646,19 @@ active_labels="$(bounded_capture 'active Collector label inspect' "$inspect_time
   fail 'active Collector Compose project or service identity does not match the reviewed target'
 container_inspect_raw="$(bounded_capture 'active Collector container inspect' "$inspect_timeout_seconds" \
   "${engine[@]}" inspect "$container_name")"
+queue_mount_matches() {
+  local inspect_json="$1"
+  jq -e --arg destination "$queue_mount_destination" --arg volume "$queue_volume_name" '
+    [.[0].Mounts[]? | select((.Destination // "") == $destination)] as $mounts |
+    ($mounts | length) == 1 and
+    ($mounts[0].Type // "") == "volume" and
+    ($mounts[0].Name // "") == $volume and
+    ($mounts[0].Destination // "") == $destination and
+    ($mounts[0].RW // false) == true
+  ' <<<"$inspect_json" >/dev/null
+}
+queue_mount_matches "$container_inspect_raw" || \
+  fail 'active Collector persistent queue volume is missing, wrong, or read-only'
 container_inspect="$(python3 -c '
 import json
 import sys
@@ -1271,6 +1290,7 @@ verify_runtime_state() {
   labels="$(jq -r '.[0].Config.Labels as $l | (($l["com.docker.compose.project"] // "") + "\t" + ($l["com.docker.compose.service"] // ""))' <<<"$inspect_json")" || return 1
   [[ "$labels" == "$project_name"$'\t'otel-collector ]] || return 1
   metrics_port_binding_contract_matches "$inspect_json" || return 1
+  queue_mount_matches "$inspect_json" || return 1
   runtime_sha256="$(runtime_identity "$inspect_json" | sha256sum | awk '{print $1}')" || return 1
   [[ "$runtime_sha256" == "$expected_runtime" ]] || return 1
   mounts="$(jq -r '.[0].Mounts[]? | [.Type,.Source,.Destination,.RW,.Mode] | @tsv' <<<"$inspect_json")" || return 1
