@@ -24,6 +24,7 @@ config_path=deploy/otel-collector.yaml
 materialization_cleanup_enabled=false
 materialization_original_tree=''
 materialization_original_tree_manifest=''
+materialization_original_bind_state=''
 materialization_candidate_manifest=''
 materialization_target_manifest=''
 
@@ -428,6 +429,37 @@ for entry in data.get("entries", []):
 PY
 }
 
+restore_bind_sources_in_place() {
+  local tree="$1"
+  local restore_root="$2"
+  local bind_state="$3"
+  for bind_relative in deploy/compose.yaml deploy/otel-collector.yaml deploy/.env; do
+    cat -- "$restore_root/$bind_relative" >"$tree/$bind_relative"
+  done
+  python3 - "$tree" "$bind_state" <<'PY'
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve()
+data = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+for entry in data.get("entries", []):
+    path = root / entry["path"]
+    current = path.lstat()
+    if not stat.S_ISREG(current.st_mode):
+        raise SystemExit(f"rollback bind source is not a regular file: {entry['path']}")
+    os.chmod(path, entry["mode"])
+    try:
+        os.chown(path, entry["uid"], entry["gid"])
+    except PermissionError:
+        current = path.stat()
+        if current.st_uid != entry["uid"] or current.st_gid != entry["gid"]:
+            raise SystemExit(f"rollback bind source ownership could not be restored: {entry['path']}")
+PY
+}
+
 materialization_failure_cleanup() {
   local status=$?
   trap - EXIT
@@ -439,8 +471,21 @@ materialization_failure_cleanup() {
     # needs to read or print candidate secret content.
     set +e
     if [[ -f "$materialization_original_tree" ]]; then
-      tar --xattrs --acls --no-same-owner --preserve-permissions \
-        -C "$live_root" -xpf "$materialization_original_tree" >/dev/null 2>&1
+      cleanup_restore_root="$(mktemp -d 2>/dev/null || true)"
+      if [[ -n "$cleanup_restore_root" ]]; then
+        tar --xattrs --acls --no-same-owner --preserve-permissions \
+          -C "$cleanup_restore_root" -xpf "$materialization_original_tree" >/dev/null 2>&1
+        tar --xattrs --acls --no-same-owner --preserve-permissions \
+          --exclude=./deploy/compose.yaml --exclude=./deploy/otel-collector.yaml \
+          --exclude=./deploy/.env --exclude=deploy/compose.yaml \
+          --exclude=deploy/otel-collector.yaml --exclude=deploy/.env \
+          -C "$live_root" -xpf "$materialization_original_tree" >/dev/null 2>&1
+        if [[ -f "$materialization_original_bind_state" ]]; then
+          restore_bind_sources_in_place "$live_root" "$cleanup_restore_root" \
+            "$materialization_original_bind_state" >/dev/null 2>&1
+        fi
+        rm -rf -- "$cleanup_restore_root"
+      fi
       if [[ -f "$materialization_candidate_manifest" && \
             -f "$materialization_original_tree_manifest" ]]; then
         python3 - "$live_root" "$materialization_candidate_manifest" \
@@ -510,6 +555,7 @@ if [[ "$mode" == --materialize ]]; then
 
   materialization_original_tree="$original_tree"
   materialization_original_tree_manifest="$original_tree_manifest"
+  materialization_original_bind_state="$original_bind_state"
   materialization_candidate_manifest="$candidate_manifest"
   materialization_target_manifest="$target_manifest"
   materialization_cleanup_enabled=true
@@ -594,31 +640,7 @@ tar --xattrs --acls --no-same-owner --preserve-permissions \
   --exclude=./deploy/.env --exclude=deploy/compose.yaml \
   --exclude=deploy/otel-collector.yaml --exclude=deploy/.env \
   -C "$live_root" -xpf "$original_tree"
-for bind_relative in deploy/compose.yaml deploy/otel-collector.yaml deploy/.env; do
-  cat -- "$rollback_restore_root/$bind_relative" >"$live_root/$bind_relative"
-done
-python3 - "$live_root" "$original_bind_state" <<'PY'
-import json
-import os
-import stat
-import sys
-from pathlib import Path
-
-root = Path(sys.argv[1]).resolve()
-data = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
-for entry in data.get("entries", []):
-    path = root / entry["path"]
-    current = path.lstat()
-    if not stat.S_ISREG(current.st_mode):
-        raise SystemExit(f"rollback bind source is not a regular file: {entry['path']}")
-    os.chmod(path, entry["mode"])
-    try:
-        os.chown(path, entry["uid"], entry["gid"])
-    except PermissionError:
-        current = path.stat()
-        if current.st_uid != entry["uid"] or current.st_gid != entry["gid"]:
-            raise SystemExit(f"rollback bind source ownership could not be restored: {entry['path']}")
-PY
+restore_bind_sources_in_place "$live_root" "$rollback_restore_root" "$original_bind_state"
 python3 - "$live_root" "$candidate_manifest" "$original_tree_manifest" <<'PY'
 import json
 import os
