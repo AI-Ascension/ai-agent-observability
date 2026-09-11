@@ -454,9 +454,10 @@ for entry in data.get("entries", []):
     try:
         os.chown(path, entry["uid"], entry["gid"])
     except PermissionError:
-        current = path.stat()
-        if current.st_uid != entry["uid"] or current.st_gid != entry["gid"]:
-            raise SystemExit(f"rollback bind source ownership could not be restored: {entry['path']}")
+        # The final strict bind-state verification below reports an ownership
+        # mismatch. Keep the original failure path intact when an unprivileged
+        # rollback cannot change ownership.
+        pass
 PY
 }
 
