@@ -24,6 +24,7 @@ config_path=deploy/otel-collector.yaml
 materialization_cleanup_enabled=false
 materialization_original_tree=''
 materialization_original_tree_manifest=''
+materialization_original_bind_state=''
 materialization_candidate_manifest=''
 materialization_target_manifest=''
 
@@ -428,6 +429,70 @@ for entry in data.get("entries", []):
 PY
 }
 
+restore_original_bound_files() {
+  local archive="$1"
+  local bind_state="$2"
+  local scratch relative source target metadata mode uid gid
+  scratch="$(mktemp -d)"
+  if ! tar --xattrs --acls --no-same-owner --preserve-permissions \
+      --wildcards --no-anchored -C "$scratch" -xpf "$archive" \
+      'deploy/compose.yaml' 'deploy/otel-collector.yaml'; then
+    rm -rf -- "$scratch"
+    return 1
+  fi
+  for relative in deploy/compose.yaml deploy/otel-collector.yaml; do
+    source="$scratch/$relative"
+    target="$live_root/$relative"
+    [[ -f "$source" && ! -L "$source" ]] || {
+      rm -rf -- "$scratch"
+      die "original archive bind-source is missing or is a symlink: $relative"
+    }
+    metadata="$(jq -r --arg path "$relative" \
+      '.entries[] | select(.path == $path) | "\(.mode) \(.uid) \(.gid)"' "$bind_state")"
+    read -r mode uid gid <<<"$metadata"
+    [[ "$mode" =~ ^[0-9]+$ && "$uid" =~ ^[0-9]+$ && "$gid" =~ ^[0-9]+$ ]] || {
+      rm -rf -- "$scratch"
+      die "original bind state metadata is invalid: $relative"
+    }
+    cat -- "$source" >"$target"
+    chmod "$(printf '%04o' "$mode")" "$target"
+    chown "$uid:$gid" "$target"
+  done
+  rm -rf -- "$scratch"
+}
+
+verify_original_bind_ownership() {
+  local bind_state="$1"
+  local relative metadata mode uid gid
+  for relative in deploy/compose.yaml deploy/otel-collector.yaml; do
+    metadata="$(jq -r --arg path "$relative" \
+      '.entries[] | select(.path == $path) | "\(.mode) \(.uid) \(.gid)"' "$bind_state")"
+    read -r mode uid gid <<<"$metadata"
+    [[ "$mode" =~ ^[0-9]+$ && "$uid" =~ ^[0-9]+$ && "$gid" =~ ^[0-9]+$ ]] || \
+      die "original bind state metadata is invalid: $relative"
+    [[ "$(stat -c '%u:%g' -- "$live_root/$relative")" == "$uid:$gid" ]] || \
+      die "source/bind metadata changed: $relative"
+  done
+}
+
+extract_original_tree() {
+  local archive="$1"
+  local bind_state="$2"
+  # deploy/.env belongs exclusively to the existing target. It remains in the
+  # protected original archive for recovery custody, but is never extracted
+  # back into the target. Restore only the two other file-bound sources in
+  # place so their inodes remain stable as well. The non-anchored member
+  # patterns accept both ./deploy/... and deploy/... archive spellings without
+  # selecting the target-local secret.
+  verify_original_bind_ownership "$bind_state"
+  tar --xattrs --acls --no-same-owner --preserve-permissions \
+    --exclude='./deploy/compose.yaml' --exclude='deploy/compose.yaml' \
+    --exclude='./deploy/otel-collector.yaml' --exclude='deploy/otel-collector.yaml' \
+    --exclude='./deploy/.env' --exclude='deploy/.env' \
+    -C "$live_root" -xpf "$archive"
+  restore_original_bound_files "$archive" "$bind_state"
+}
+
 materialization_failure_cleanup() {
   local status=$?
   trap - EXIT
@@ -439,8 +504,7 @@ materialization_failure_cleanup() {
     # needs to read or print candidate secret content.
     set +e
     if [[ -f "$materialization_original_tree" ]]; then
-      tar --xattrs --acls --no-same-owner --preserve-permissions \
-        -C "$live_root" -xpf "$materialization_original_tree" >/dev/null 2>&1
+      extract_original_tree "$materialization_original_tree" "$materialization_original_bind_state" >/dev/null 2>&1
       if [[ -f "$materialization_candidate_manifest" && \
             -f "$materialization_original_tree_manifest" ]]; then
         python3 - "$live_root" "$materialization_candidate_manifest" \
@@ -510,6 +574,7 @@ if [[ "$mode" == --materialize ]]; then
 
   materialization_original_tree="$original_tree"
   materialization_original_tree_manifest="$original_tree_manifest"
+  materialization_original_bind_state="$original_bind_state"
   materialization_candidate_manifest="$candidate_manifest"
   materialization_target_manifest="$target_manifest"
   materialization_cleanup_enabled=true
@@ -573,7 +638,7 @@ verify_bind_state "$live_root" "$original_bind_state"
 cmp -s -- "$live_root/deploy/.otel-source-manifest.json" "$candidate_manifest" || \
   die 'materialized source manifest changed before rollback'
 
-tar --xattrs --acls --no-same-owner --preserve-permissions -C "$live_root" -xpf "$original_tree"
+extract_original_tree "$original_tree" "$original_bind_state"
 python3 - "$live_root" "$candidate_manifest" "$original_tree_manifest" <<'PY'
 import json
 import os

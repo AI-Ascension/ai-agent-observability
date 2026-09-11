@@ -63,6 +63,9 @@ Caddy routes.
   upgrade procedures.
 - [`docs/PRIVACY.md`](docs/PRIVACY.md) — retention, redaction, and egress
   boundaries.
+- [`docs/MAP_ARTIFACTS.md`](docs/MAP_ARTIFACTS.md) — bounded optional map
+  artifact telemetry contract; source-derived only until both backends are
+  queried.
 - [`prompts/AI_AGENT_OBSERVABILITY_ORCHESTRATION_PROMPT.md`](prompts/AI_AGENT_OBSERVABILITY_ORCHESTRATION_PROMPT.md)
   — the reusable orchestration prompt requested for multi-agent completion.
 

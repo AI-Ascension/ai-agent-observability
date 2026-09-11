@@ -109,7 +109,28 @@ before first initialization if a different operator identity is required.
 
 ## Backups and upgrades
 
-Back up the six named volumes with a host-approved, quiesced procedure before
+Before an approved source update, use
+`deploy/prepare-reviewed-upgrade.sh --plan` from the clean reviewed candidate
+to record its exact Git, Compose, Collector, and Dockerfile identities. The
+planner is intentionally non-mutating: it prints the exact arguments for a
+root-owned, narrowly allowlisted host wrapper. The current generic
+`podman-svc` read-only wrapper is insufficient for materialization, volume
+backup, image build, or Compose update and must not be bypassed. Do not grant
+generic `podman`, `docker`, `compose`, a shell, or unrestricted environment
+execution through sudo.
+
+The required host wrapper must accept only the candidate SHA and three file
+hashes emitted by the planner. Its deployment and backup paths are fixed when
+the wrapper is installed and it accepts neither caller-provided paths from
+argv/environment nor paths printed by the planner. It must create a mode-0700
+backup outside the deployment tree, preserve target `.env`, invoke the reviewed
+materializer with its approval guard, snapshot this project's named volumes
+before an approved update, and support rollback only to that recorded backup.
+It must refuse arbitrary paths, project names, Compose files, volume deletion,
+and image pruning. Its installation and use are separate root-reserved
+mutations.
+
+Back up the eight named volumes with a host-approved, quiesced procedure before
 upgrading. At minimum, preserve Laminar PostgreSQL, ClickHouse, Quickwit, and
 MLflow PostgreSQL/RustFS data. Record the image tags and Compose commit with
 each backup. Never use `down -v` as a backup or rollback mechanism.
@@ -122,15 +143,22 @@ delete live volumes to force a migration.
 
 ## Failure boundaries
 
-The Collector's sending queues are in memory; its acknowledgement is not proof
-that both backends have durably stored a trace. Export retries can duplicate
-delivery, and queue overflow, retry exhaustion, or process replacement can lose
-pending spans. RabbitMQ has no named persistent volume in this initial stack;
-container recreation can lose queued ingest work. The six named volumes preserve
-the configured databases, artifacts, search data, and ClickHouse logs, not all
-in-flight telemetry. Quiesce producers and verify both downstream records before
-using restart survival as experimental evidence. Durable ingestion across
-outages requires a separately validated queue/storage design.
+The Collector has one bounded, fsync-backed sending queue per downstream
+exporter on `otel-collector-data`; Laminar's RabbitMQ state is also retained on
+its own named volume. A Collector acknowledgement still is not proof that both
+backends durably stored a trace. Retries can duplicate delivery, and queue or
+storage exhaustion can lose pending spans. The Collector's normal metrics expose
+queue depth/capacity and failed enqueue/send counters on the existing loopback
+metrics endpoint; inspect them before and after a controlled replacement.
+
+The persistent queues preserve accepted requests across Collector process
+replacement, not an end-to-end delivery guarantee. Quiesce producers, record a
+non-sensitive trace identity, query MLflow and Laminar independently before and
+after replacement, and record matching rules and row/span counts. Do not infer
+backend storage from HTTP 200, Collector health, a queue file, or a restarted
+container. The named volumes preserve product and queue state but are not a
+consistent backup snapshot; back up and restore only through an approved,
+quiesced procedure.
 
 The Laminar bootstrap applies workspace/project creation, collector-key
 replacement, and invitation creation in one PostgreSQL transaction. A failed
