@@ -36,6 +36,10 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+          # The root-packet lifecycle fixture clones this checkout and verifies
+          # that it contains the reviewed candidate commit, so the full history
+          # must be present rather than a single-commit shallow checkout.
+          fetch-depth: 0
 
       - name: Install shellcheck
         run: |
