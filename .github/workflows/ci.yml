@@ -44,10 +44,10 @@ jobs:
 
       - name: Check shell syntax and style
         run: |
-          for script in deploy/init.sh deploy/laminar/bootstrap-project-key.sh deploy/laminar/provision-query-readonly.sh tests/*.sh tests/fixtures/*; do
+          for script in deploy/init.sh deploy/materialize-otel-source.sh deploy/ai-agent-observability-reviewed-upgrade deploy/laminar/bootstrap-project-key.sh deploy/laminar/provision-query-readonly.sh tests/*.sh tests/fixtures/*; do
             bash -n "$script"
           done
-          shellcheck --severity=warning deploy/init.sh deploy/laminar/bootstrap-project-key.sh deploy/laminar/provision-query-readonly.sh tests/*.sh tests/fixtures/*
+          shellcheck --severity=warning deploy/init.sh deploy/materialize-otel-source.sh deploy/ai-agent-observability-reviewed-upgrade deploy/laminar/bootstrap-project-key.sh deploy/laminar/provision-query-readonly.sh tests/*.sh tests/fixtures/*
 
       - name: Test bootstrap without a container runtime
         run: |
@@ -57,6 +57,7 @@ jobs:
           bash tests/otel-health-probe.sh
           COLLECTOR_PERSISTENCE_RUNTIME=required bash tests/collector-persistence-invariants.sh
           bash tests/reviewed-upgrade-plan.sh
+          bash tests/reviewed-upgrade-wrapper.sh
           bash tests/otel-installer-guards.sh
           bash tests/otel-materialize-guards.sh
 
