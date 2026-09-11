@@ -3,8 +3,8 @@
 ## Exact merged source
 
 This packet is the bounded root-installation artifact for merged commit
-`c309c8e532574754609d9491f0a10be584f83a83`, tree
-`7028a3b76581a4ac7e65bc9b282212ac9342aae9`. The existing-test-environment
+`7c5f3eab18446dea7f1eeafb8427cbe574c1d199`, tree
+`2e4076d66b529a54968871724f9ca97723af7e9e`. The existing-test-environment
 deployment scope already authorizes this work; root coordinates the reserved
 operations. The blocker is unavailable rootful/sudo entitlement, not missing
 per-step consent for the listed paths, protected `.env` transfer, reservation,
@@ -34,7 +34,7 @@ Use these new root-owned paths instead:
 | Purpose | Path | Required property |
 | --- | --- | --- |
 | Canonical materialized source | `/srv/ai-agent-observability-reviewed/live` | root-owned regular tree; no symlink or group/other write in any component |
-| Clean candidate checkout | `/srv/ai-agent-observability-reviewed/candidate/c309c8e532574754609d9491f0a10be584f83a83` | root-owned clean Git checkout at the exact merged commit |
+| Clean candidate checkout | `/srv/ai-agent-observability-reviewed/candidate/7c5f3eab18446dea7f1eeafb8427cbe574c1d199` | root-owned clean Git checkout at the exact merged commit |
 | Backup and journal root | `/var/backups/ai-agent-observability-reviewed-upgrade` | root:root `0700` |
 | Installed wrapper | `/usr/local/sbin/ai-agent-observability-reviewed-upgrade` | root:root `0755`; byte-identical to the merged wrapper |
 | Protected configuration | `/etc/ai-agent-observability-reviewed-upgrade.conf` | root:root `0600` |
@@ -69,7 +69,7 @@ of every key:
 
 ```ini
 DEPLOYMENT_ROOT=/srv/ai-agent-observability-reviewed/live
-CANDIDATE_ROOT=/srv/ai-agent-observability-reviewed/candidate/c309c8e532574754609d9491f0a10be584f83a83
+CANDIDATE_ROOT=/srv/ai-agent-observability-reviewed/candidate/7c5f3eab18446dea7f1eeafb8427cbe574c1d199
 BACKUP_ROOT=/var/backups/ai-agent-observability-reviewed-upgrade
 ENGINE_BIN=/usr/bin/podman
 READER_IMAGE_ID=sha256:<approved-already-local-64-lowercase-hex-image-id>
@@ -131,7 +131,7 @@ host window; no per-step user reauthorization is implied:
    original source and running workload untouched. Verify candidate commit,
    clean state, modes, ownership, and protected config.
 3. From the candidate, generate the four identity arguments with
-   `OBSERVABILITY_EXPECTED_GIT_HEAD=c309c8e532574754609d9491f0a10be584f83a83 deploy/prepare-reviewed-upgrade.sh --plan`.
+   `OBSERVABILITY_EXPECTED_GIT_HEAD=7c5f3eab18446dea7f1eeafb8427cbe574c1d199 deploy/prepare-reviewed-upgrade.sh --plan`.
    Do not add paths, project names, secrets, or an engine argument.
 4. Invoke the installed wrapper only within that reservation. It checks the
    baseline source digest; rejects unknown project objects; journals baseline
