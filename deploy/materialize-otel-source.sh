@@ -429,68 +429,60 @@ for entry in data.get("entries", []):
 PY
 }
 
-restore_original_bound_files() {
+restore_original_tree() {
   local archive="$1"
-  local bind_state="$2"
-  local scratch relative source target metadata mode uid gid
-  scratch="$(mktemp -d)"
-  if ! tar --xattrs --acls --no-same-owner --preserve-permissions \
-      --wildcards --no-anchored -C "$scratch" -xpf "$archive" \
-      'deploy/compose.yaml' 'deploy/otel-collector.yaml'; then
-    rm -rf -- "$scratch"
-    return 1
-  fi
-  for relative in deploy/compose.yaml deploy/otel-collector.yaml; do
-    source="$scratch/$relative"
-    target="$live_root/$relative"
-    [[ -f "$source" && ! -L "$source" ]] || {
-      rm -rf -- "$scratch"
-      die "original archive bind-source is missing or is a symlink: $relative"
-    }
-    metadata="$(jq -r --arg path "$relative" \
-      '.entries[] | select(.path == $path) | "\(.mode) \(.uid) \(.gid)"' "$bind_state")"
-    read -r mode uid gid <<<"$metadata"
-    [[ "$mode" =~ ^[0-9]+$ && "$uid" =~ ^[0-9]+$ && "$gid" =~ ^[0-9]+$ ]] || {
-      rm -rf -- "$scratch"
-      die "original bind state metadata is invalid: $relative"
-    }
-    cat -- "$source" >"$target"
-    chmod "$(printf '%04o' "$mode")" "$target"
-    chown "$uid:$gid" "$target"
-  done
-  rm -rf -- "$scratch"
-}
+  local binds="$2"
+  # The backup is private local state, not an untrusted import. Verify its
+  # recorded checksum and pinned bind identities before any extraction, including
+  # automatic cleanup (which has no completed materialization-state file).
+  [[ -f "$archive" && ! -L "$archive" && -f "$archive.sha256" && ! -L "$archive.sha256" ]] || return 1
+  [[ "$(sha256sum -- "$archive" | awk '{print $1}')" == "$(awk '{print $1}' "$archive.sha256")" ]] || return 1
+  verify_bind_state "$live_root" "$binds" || return 1
+  python3 - "$archive" "$binds" <<'PY' || return 1
+import hashlib
+import json
+import tarfile
+import sys
+from pathlib import PurePosixPath
 
-verify_original_bind_ownership() {
-  local bind_state="$1"
-  local relative metadata mode uid gid
-  for relative in deploy/compose.yaml deploy/otel-collector.yaml; do
-    metadata="$(jq -r --arg path "$relative" \
-      '.entries[] | select(.path == $path) | "\(.mode) \(.uid) \(.gid)"' "$bind_state")"
-    read -r mode uid gid <<<"$metadata"
-    [[ "$mode" =~ ^[0-9]+$ && "$uid" =~ ^[0-9]+$ && "$gid" =~ ^[0-9]+$ ]] || \
-      die "original bind state metadata is invalid: $relative"
-    [[ "$(stat -c '%u:%g' -- "$live_root/$relative")" == "$uid:$gid" ]] || \
-      die "source/bind metadata changed: $relative"
-  done
-}
-
-extract_original_tree() {
-  local archive="$1"
-  local bind_state="$2"
-  # deploy/.env belongs exclusively to the existing target. It remains in the
-  # protected original archive for recovery custody, but is never extracted
-  # back into the target. Restore only the two other file-bound sources in
-  # place so their inodes remain stable as well. The non-anchored member
-  # patterns accept both ./deploy/... and deploy/... archive spellings without
-  # selecting the target-local secret.
-  verify_original_bind_ownership "$bind_state"
-  tar --xattrs --acls --no-same-owner --preserve-permissions \
-    --exclude='./deploy/compose.yaml' --exclude='deploy/compose.yaml' \
-    --exclude='./deploy/otel-collector.yaml' --exclude='deploy/otel-collector.yaml' \
-    --exclude='./deploy/.env' --exclude='deploy/.env' \
-    -C "$live_root" -xpf "$archive"
-  restore_original_bound_files "$archive" "$bind_state"
+expected = {e["path"]: e for e in json.load(open(sys.argv[2]))["entries"]}
+if set(expected) != {"deploy/compose.yaml", "deploy/otel-collector.yaml", "deploy/.env"}:
+    raise SystemExit("original bind paths are invalid")
+with tarfile.open(sys.argv[1]) as archive:
+    members = {}
+    for member in archive.getmembers():
+        path = PurePosixPath(member.name)
+        if path.is_absolute() or ".." in path.parts:
+            raise SystemExit("original archive contains an unsafe path")
+        name = str(path)
+        if name in members:
+            raise SystemExit("original archive contains duplicate paths")
+        members[name] = member
+    for name, member in members.items():
+        for parent in PurePosixPath(name).parents:
+            if str(parent) in members and not members[str(parent)].isdir():
+                raise SystemExit("original archive has a non-directory ancestor")
+    for name, entry in expected.items():
+        member = members.get(name)
+        if member is None or not member.isreg() or member.mode != entry["mode"]:
+            raise SystemExit("original archive bind metadata mismatch")
+        if member.uid != entry["uid"] or member.gid != entry["gid"]:
+            raise SystemExit("bind-source uid/gid changed in original archive")
+        with archive.extractfile(member) as source:
+            h = hashlib.file_digest(source, "sha256").hexdigest()
+        if h != entry["sha256"]:
+            raise SystemExit("original archive bind checksum mismatch")
+PY
+  # Normal tar extraction may unlink existing files. Keep all three bind
+  # sources out of it; .env has never changed and must not be rewritten.
+  tar --xattrs --acls --no-same-owner --preserve-permissions -C "$live_root" \
+    --exclude=./deploy/compose.yaml --exclude=./deploy/otel-collector.yaml \
+    --exclude=./deploy/.env -xpf "$archive" || return 1
+  # --overwrite opens these already verified regular files in place, restoring
+  # bytes, permissions, ACLs and xattrs without unlinking the bound inodes.
+  tar --overwrite --xattrs --acls --no-same-owner --preserve-permissions \
+    -C "$live_root" -xpf "$archive" ./deploy/compose.yaml ./deploy/otel-collector.yaml || return 1
+  verify_bind_state "$live_root" "$binds" true
 }
 
 materialization_failure_cleanup() {
@@ -503,8 +495,7 @@ materialization_failure_cleanup() {
     # and explicitly excludes the deployment secret, so this cleanup never
     # needs to read or print candidate secret content.
     set +e
-    if [[ -f "$materialization_original_tree" ]]; then
-      extract_original_tree "$materialization_original_tree" "$materialization_original_bind_state" >/dev/null 2>&1
+    if restore_original_tree "$materialization_original_tree" "$materialization_original_bind_state"; then
       if [[ -f "$materialization_candidate_manifest" && \
             -f "$materialization_original_tree_manifest" ]]; then
         python3 - "$live_root" "$materialization_candidate_manifest" \
@@ -538,6 +529,8 @@ PY
       if [[ -n "$materialization_target_manifest" ]]; then
         rm -f -- "$materialization_target_manifest"
       fi
+    else
+      printf '%s\n' 'otel source materializer: automatic restoration failed; preserve backup for reconciliation' >&2
     fi
     set -e
   fi
@@ -638,7 +631,7 @@ verify_bind_state "$live_root" "$original_bind_state"
 cmp -s -- "$live_root/deploy/.otel-source-manifest.json" "$candidate_manifest" || \
   die 'materialized source manifest changed before rollback'
 
-extract_original_tree "$original_tree" "$original_bind_state"
+restore_original_tree "$original_tree" "$original_bind_state"
 python3 - "$live_root" "$candidate_manifest" "$original_tree_manifest" <<'PY'
 import json
 import os

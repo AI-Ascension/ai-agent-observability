@@ -6,24 +6,6 @@ materializer="$repo_root/deploy/materialize-otel-source.sh"
 test_root="$(mktemp -d)"
 candidate_env_path="$repo_root/deploy/.env"
 candidate_env_created=false
-# This fixture creates an ignored candidate .env to prove that materialization
-# never transfers it.  The candidate worktree can be shared by independently
-# launched gates, so hold one cross-process lock before inspecting, creating,
-# or removing that shared ignored file.
-candidate_env_lock_dir="${TMPDIR:-/tmp}/ai-agent-observability-materialize-guards"
-candidate_env_lock_key="$(printf '%s' "$(readlink -f -- "$repo_root")" | sha256sum | awk '{print $1}')"
-mkdir -p -- "$candidate_env_lock_dir"
-[[ -d "$candidate_env_lock_dir" && ! -L "$candidate_env_lock_dir" ]] || {
-  printf '%s\n' 'materializer fixture lock path is not a directory' >&2
-  exit 1
-}
-chmod 0700 -- "$candidate_env_lock_dir"
-[[ "$(stat -c '%a:%u' -- "$candidate_env_lock_dir")" == "700:$UID" ]] || {
-  printf '%s\n' 'materializer fixture lock directory is not private to this user' >&2
-  exit 1
-}
-exec {candidate_env_lock_fd}>"$candidate_env_lock_dir/$candidate_env_lock_key.lock"
-flock "$candidate_env_lock_fd"
 cleanup() {
   rm -rf -- "$test_root"
   if [[ "$candidate_env_created" == true ]]; then
@@ -206,69 +188,29 @@ jq -e '[.files[] | select(.path == "deploy/.env")] | length == 0' \
 [[ "$(jq -r '.entries[] | select(.path == "deploy/otel-collector.yaml") | .uid' "$backup_dir/original-bind-state.json")" == "$(stat -c '%u' "$target/deploy/otel-collector.yaml")" ]] || exit 1
 [[ "$(jq -r '.entries[] | select(.path == "deploy/otel-collector.yaml") | .uid' "$backup_dir/candidate-bind-state.json")" == "$(stat -c '%u' "$target/deploy/otel-collector.yaml")" ]] || exit 1
 
-env_replace_bin="$test_root/env-replace-bin"
-mkdir -p -- "$env_replace_bin"
-cat >"$env_replace_bin/tar" <<'FAKE_TAR'
-#!/usr/bin/env bash
-set -Eeuo pipefail
+# A corrupt backup must fail before either ordinary or bound files are restored.
+cp -- "$backup_dir/original-tree.tar" "$test_root/original-tree.saved.tar"
+printf 'corrupt-backup' >>"$backup_dir/original-tree.tar"
+candidate_config_hash="$(sha256sum "$target/deploy/otel-collector.yaml" | awk '{print $1}')"
+if env "${candidate_env[@]}" PATH="$fake_bin:$PATH" OTEL_LIVE_SOURCE_DIR="$target" OTEL_MATERIALIZATION_BACKUP_ROOT="$backup_root" \
+    OTEL_EXPECTED_GIT_HEAD="$head" OTEL_MATERIALIZATION_BACKUP_DIR="$backup_dir" \
+    "$materializer" --rollback >"$test_root/corrupt-backup.out" 2>"$test_root/corrupt-backup.err"; then
+  printf '%s\n' 'rollback accepted a corrupt backup' >&2
+  exit 1
+fi
+grep -Fq 'original tree archive checksum is invalid' "$test_root/corrupt-backup.err"
+[[ "$(sha256sum "$target/deploy/otel-collector.yaml" | awk '{print $1}')" == "$candidate_config_hash" ]] || exit 1
+[[ "$(stat -c '%d:%i' "$target/deploy/.env")" == "$env_inode" ]] || exit 1
+cp -- "$test_root/original-tree.saved.tar" "$backup_dir/original-tree.tar"
 
-real_tar="${OTEL_REAL_TAR:?}"
-target="${OTEL_ENV_ARCHIVE_TARGET:?}"
-saw_extract=false
-saw_env_exclude=false
-selected_env=false
-saw_bound_compose=false
-saw_bound_config=false
-extract_root=''
-args=("$@")
-for ((index=0; index < ${#args[@]}; index++)); do
-  argument="${args[index]}"
-  case "$argument" in
-    -xpf) saw_extract=true ;;
-    --exclude=./deploy/.env|--exclude=deploy/.env) saw_env_exclude=true ;;
-    ./deploy/.env|deploy/.env) selected_env=true ;;
-    ./deploy/compose.yaml|deploy/compose.yaml) saw_bound_compose=true ;;
-    ./deploy/otel-collector.yaml|deploy/otel-collector.yaml) saw_bound_config=true ;;
-    -C)
-      extract_root="${args[index + 1]}"
-      ((index += 1))
-      ;;
-  esac
-done
-if [[ "$saw_extract" == true && "$selected_env" == true ]]; then
-  printf '%s\n' 'recovery tar selected target-local deploy/.env' >&2
-  exit 81
-fi
-if [[ "$saw_extract" == true && "$extract_root" == "$target" && "$saw_env_exclude" != true ]]; then
-  printf '%s\n' 'recovery tar did not exclude target-local deploy/.env' >&2
-  exit 83
-fi
-if [[ "$saw_extract" == true && "$extract_root" != "$target" && \
-      ( "$saw_bound_compose" != true || "$saw_bound_config" != true ) ]]; then
-  printf '%s\n' 'recovery tar did not restrict scratch extraction to strict bind files' >&2
-  exit 82
-fi
-"$real_tar" "$@"
-# Make archive replacement behavior deterministic.  A rollback that fails to
-# exclude target-local .env must fail its final strict bind check; the repaired
-# command never enters this branch.  No secret bytes are emitted.
-if [[ "$saw_extract" == true && "$extract_root" == "$target" && "$saw_env_exclude" != true ]]; then
-  cp -- "$target/deploy/.env" "$target/deploy/.env.fixture-replacement"
-  chmod --reference="$target/deploy/.env" "$target/deploy/.env.fixture-replacement"
-  mv -f -- "$target/deploy/.env.fixture-replacement" "$target/deploy/.env"
-fi
-FAKE_TAR
-chmod +x "$env_replace_bin/tar"
-
-env "${candidate_env[@]}" PATH="$env_replace_bin:$fake_bin:$PATH" \
-  OTEL_REAL_TAR="$(command -v tar)" OTEL_ENV_ARCHIVE_TARGET="$target" \
-  OTEL_LIVE_SOURCE_DIR="$target" OTEL_MATERIALIZATION_BACKUP_ROOT="$backup_root" \
+env "${candidate_env[@]}" PATH="$fake_bin:$PATH" OTEL_LIVE_SOURCE_DIR="$target" OTEL_MATERIALIZATION_BACKUP_ROOT="$backup_root" \
   OTEL_EXPECTED_GIT_HEAD="$head" OTEL_MATERIALIZATION_BACKUP_DIR="$backup_dir" \
   "$materializer" --rollback
 [[ ! -e "$target/deploy/.otel-source-manifest.json" ]] || exit 1
 [[ "$(cat "$target/deploy/otel-collector.yaml")" == 'original config' ]] || exit 1
 [[ "$(cat "$target/deploy/compose.yaml")" == 'original compose' ]] || exit 1
 [[ "$(stat -c '%a' "$target/deploy/otel-collector.yaml")" == 777 ]] || exit 1
+[[ "$(stat -c '%d:%i' "$target/deploy/compose.yaml")" == "$compose_inode" ]] || exit 1
 [[ "$(stat -c '%d:%i' "$target/deploy/otel-collector.yaml")" == "$config_inode" ]] || exit 1
 [[ "$(stat -c '%d:%i' "$target/deploy/.env")" == "$env_inode" ]] || exit 1
 [[ "$(sha256sum "$target/deploy/.env" | awk '{print $1}')" == "$env_hash" ]] || exit 1
@@ -302,6 +244,8 @@ chmod +x "$tar_fail_bin/tar"
 target_failed_extract="$test_root/live-failed-extract"
 backup_failed_extract="$test_root/backups-failed-extract"
 make_target "$target_failed_extract"
+failed_config_inode="$(stat -c '%d:%i' "$target_failed_extract/deploy/otel-collector.yaml")"
+failed_compose_inode="$(stat -c '%d:%i' "$target_failed_extract/deploy/compose.yaml")"
 failed_env_inode="$(stat -c '%d:%i' "$target_failed_extract/deploy/.env")"
 failed_env_hash="$(sha256sum "$target_failed_extract/deploy/.env" | awk '{print $1}')"
 failed_env_mode="$(stat -c '%a' "$target_failed_extract/deploy/.env")"
@@ -319,6 +263,9 @@ fi
 [[ -e "$tar_fail_marker" ]] || exit 1
 [[ "$(cat "$target_failed_extract/deploy/compose.yaml")" == 'original compose' ]] || exit 1
 [[ "$(cat "$target_failed_extract/deploy/otel-collector.yaml")" == 'original config' ]] || exit 1
+[[ "$(stat -c '%d:%i' "$target_failed_extract/deploy/otel-collector.yaml")" == "$failed_config_inode" ]] || exit 1
+[[ "$(stat -c '%d:%i' "$target_failed_extract/deploy/compose.yaml")" == "$failed_compose_inode" ]] || exit 1
+[[ "$(stat -c '%a' "$target_failed_extract/deploy/otel-collector.yaml")" == 777 ]] || exit 1
 [[ "$(stat -c '%d:%i' "$target_failed_extract/deploy/.env")" == "$failed_env_inode" ]] || exit 1
 [[ "$(sha256sum "$target_failed_extract/deploy/.env" | awk '{print $1}')" == "$failed_env_hash" ]] || exit 1
 [[ "$(stat -c '%a' "$target_failed_extract/deploy/.env")" == "$failed_env_mode" ]] || exit 1
@@ -417,7 +364,9 @@ output="$(env "${candidate_env[@]}" PATH="$fake_bin:$PATH" \
   OTEL_EXPECTED_GIT_HEAD="$head" OTEL_SOURCE_MATERIALIZE_APPROVED=true \
   "$materializer" --materialize)"
 backup_false_pin_dir="${output##*original backup=}"
-cp -- "$target_false_pin/deploy/otel-collector.yaml" "$target_false_pin/deploy/config-replacement"
+# Isolate inode drift even under a restrictive caller umask; metadata drift has
+# its own fixtures below and must not mask the inode rejection assertion.
+cp -p -- "$target_false_pin/deploy/otel-collector.yaml" "$target_false_pin/deploy/config-replacement"
 mv -- "$target_false_pin/deploy/config-replacement" "$target_false_pin/deploy/otel-collector.yaml"
 if env OTEL_LIVE_SOURCE_DIR="$target_false_pin" OTEL_MATERIALIZATION_BACKUP_ROOT="$backup_false_pin" \
   OTEL_EXPECTED_GIT_HEAD="$head" OTEL_MATERIALIZATION_BACKUP_DIR="$backup_false_pin_dir" \
