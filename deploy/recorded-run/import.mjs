@@ -18,9 +18,9 @@ export async function main(args) {
   const [command, ...rest] = args;
   if (command === 'import' && (rest.length === 2 || (rest.length === 4 && rest[2] === '--collector'))) {
     const [bundle, database, , target] = rest;
-    if (target) collectorEndpoint(target);
+    if (rest.length === 4) collectorEndpoint(target);
     const result = importBundle(bundle, database);
-    if (target) {
+    if (rest.length === 4) {
       const store = new ImportStore(database);
       try { Object.assign(result, await deliver(store, result.runId, result.semanticDigest, target)); }
       finally { store.close(); }
@@ -28,7 +28,7 @@ export async function main(args) {
     return result;
   }
   if (command === 'inspect' && rest.length === 2 && /^[a-f0-9]{64}$/.test(rest[1])) {
-    const store = new ImportStore(rest[0]);
+    const store = new ImportStore(rest[0], { readOnly: true });
     try { return { revisions: store.inspect(rest[1]) }; } finally { store.close(); }
   }
   throw new Error('usage_import_bundle_db_or_inspect_db_run_key');

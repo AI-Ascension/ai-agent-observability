@@ -94,11 +94,36 @@ test('mock OTLP acknowledgement and partial success have distinct durable outcom
     const first = store.stage(snapshot(), bodies);
     const result = await deliver(store, first.runId, first.semanticDigest, endpoint);
     assert.equal(result.backendPersistence, 'unverified');
-    await deliver(store, first.runId, first.semanticDigest, endpoint);
+    assert.equal(result.delivery, 'collector_acknowledged');
+    assert.equal(result.acknowledgedParts, 1);
+    const duplicate = await deliver(store, first.runId, first.semanticDigest, endpoint);
+    assert.equal(duplicate.delivery, 'already_acknowledged');
+    assert.equal(duplicate.acknowledgedParts, 0);
     assert.equal(requests, 1);
     partial = true;
     const second = store.stage(snapshot('b'.repeat(64)), bodies);
     await assert.rejects(deliver(store, second.runId, second.semanticDigest, endpoint), /reconciliation/);
     assert.equal(store.inspect(first.runId)[1].delivery[0].state, 'unknown');
+  } finally { store.close(); await new Promise(resolve => server.close(resolve)); }
+});
+
+test('empty projection rolls back; missing and empty outboxes cannot acknowledge delivery', async () => {
+  const store = new ImportStore(':memory:');
+  let requests = 0;
+  const server = createServer((req, res) => { requests++; res.end('{}'); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const endpoint = `http://127.0.0.1:${server.address().port}/v1/traces`;
+  try {
+    assert.throws(() => store.stage(snapshot(), () => []), /empty_delivery_projection/);
+    for (const table of ['runs', 'revisions', 'outbox'])
+      assert.equal(store.db.prepare(`SELECT count(*) AS n FROM ${table}`).get().n, 0);
+    const first = store.stage(snapshot(), bodies);
+    await assert.rejects(deliver(store, first.runId, 'b'.repeat(64), endpoint), /delivery_not_found/);
+    await assert.rejects(deliver(store, 'c'.repeat(64), first.semanticDigest, endpoint), /delivery_not_found/);
+    // Simulate an old/corrupt revision with no delivery parts, which stage now prevents.
+    store.db.prepare('DELETE FROM outbox WHERE run_id=?').run(first.runId);
+    await assert.rejects(deliver(store, first.runId, first.semanticDigest, endpoint), /delivery_outbox_empty/);
+    assert.equal(requests, 0);
+    assert.equal(store.inspect(first.runId).length, 1);
   } finally { store.close(); await new Promise(resolve => server.close(resolve)); }
 });

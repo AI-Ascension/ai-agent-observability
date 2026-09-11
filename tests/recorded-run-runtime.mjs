@@ -194,6 +194,7 @@ try {
     assert(!serialized.includes(marker));
   const retry = await main(['import', source, database, '--collector', intake]);
   assert.equal(retry.disposition, 'duplicate'); assert.equal(retry.acknowledgedParts, 0);
+  assert.equal(retry.delivery, 'already_acknowledged');
   assert.equal((await traces()).length, 1);
   assert.deepEqual(await getTrace(traceId), trace);
   let revisionsVerified = 1, expectedTrace = trace;

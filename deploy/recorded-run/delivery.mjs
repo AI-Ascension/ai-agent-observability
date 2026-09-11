@@ -1,6 +1,7 @@
 // All normal tracking ingestion stays on the existing loopback Collector path.
 export function collectorEndpoint(value) {
-  const url = new URL(value);
+  let url;
+  try { url = new URL(value); } catch { throw new Error('collector_endpoint_must_be_loopback'); }
   if (url.protocol !== 'http:' || !['127.0.0.1', '[::1]'].includes(url.hostname)
     || url.username || url.password || url.search || url.hash || url.pathname !== '/v1/traces') {
     throw new Error('collector_endpoint_must_be_loopback');
@@ -13,7 +14,7 @@ export async function deliver(store, runId, semanticDigest, target) {
   let acknowledgedParts = 0;
   for (;;) {
     const row = store.claim(runId, semanticDigest, endpoint);
-    if (!row) return { delivery: 'collector_acknowledged', acknowledgedParts,
+    if (!row) return { delivery: acknowledgedParts ? 'collector_acknowledged' : 'already_acknowledged', acknowledgedParts,
       backendPersistence: 'unverified' };
     try {
       const response = await fetch(endpoint, { method: 'POST', redirect: 'error',

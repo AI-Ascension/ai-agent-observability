@@ -1,13 +1,34 @@
 // Local import/outbox state, not a replacement for the MLflow/Laminar stores.
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
-import { openSync, closeSync, constants } from 'node:fs';
+import { openSync, closeSync, fstatSync, constants } from 'node:fs';
 
 export const digest = value => createHash('sha256').update(value).digest('hex');
 export const runKey = identity => digest(JSON.stringify(['recorded-run', identity.namespace, identity.value]));
 
 export class ImportStore {
-  constructor(path) {
+  constructor(path, { readOnly = false } = {}) {
+    if (readOnly) {
+      let fd;
+      try {
+        fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        if (!fstatSync(fd).isFile()) throw new Error('database_not_regular');
+      } catch (error) {
+        if (error.code === 'ENOENT') throw new Error('database_not_found');
+        if (error.code === 'ELOOP' || error.message === 'database_not_regular') throw new Error('database_not_regular');
+        throw new Error('database_unreadable');
+      } finally { if (fd !== undefined) closeSync(fd); }
+      try {
+        this.db = new DatabaseSync(path, { readOnly: true });
+        // Inspection must neither initialize nor repair a database schema.
+        this.db.prepare('SELECT run_id,digest,summary FROM revisions LIMIT 0').all();
+        this.db.prepare('SELECT run_id,digest,part,state FROM outbox LIMIT 0').all();
+      } catch {
+        this.db?.close();
+        throw new Error('database_invalid');
+      }
+      return;
+    }
     if (path !== ':memory:') {
       const fd = openSync(path, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
       closeSync(fd);
@@ -62,6 +83,7 @@ export class ImportStore {
       this.db.prepare('INSERT INTO revisions VALUES (?,?,?)')
         .run(id, summary.semanticDigest, JSON.stringify(summary));
       const bodies = makeBodies(id, summary);
+      if (!Array.isArray(bodies) || bodies.length === 0) throw new Error('empty_delivery_projection');
       const insert = this.db.prepare("INSERT INTO outbox VALUES (?,?,?,?,NULL,'pending')");
       bodies.forEach((body, i) => insert.run(id, summary.semanticDigest, i, JSON.stringify(body)));
       this.db.exec('COMMIT');
@@ -82,6 +104,10 @@ export class ImportStore {
     try {
       const rows = this.db.prepare('SELECT * FROM outbox WHERE run_id=? AND digest=? ORDER BY part')
         .all(id, semanticDigest);
+      if (!rows.length) {
+        const revision = this.db.prepare('SELECT 1 FROM revisions WHERE run_id=? AND digest=?').get(id, semanticDigest);
+        throw new Error(revision ? 'delivery_outbox_empty' : 'delivery_not_found');
+      }
       if (rows.some(row => row.endpoint && row.endpoint !== endpoint)) throw new Error('endpoint_conflict');
       if (rows.some(row => ['sending', 'unknown'].includes(row.state))) throw new Error('delivery_reconciliation_required');
       const row = rows.find(row => row.state === 'pending');

@@ -8,6 +8,9 @@ semantics from raw logs, fetch artifact URLs, or execute imported content.
 ## Exact pins and execution
 
 Node 24.16.0 supplies the CLI, bounded decompressor and SQLite. No npm dependencies.
+Inspection requires an existing regular database and opens it read-only, without
+schema creation. Missing, nonregular and invalid databases produce distinct fixed
+errors. An explicitly empty `--collector` is an endpoint error before import.
 The active protocol artifact is vendored in `contract/recorded-run-bundle-v1-candidate3/`.
 The independent implementation checks the inventory and all bound files at startup.
 
@@ -91,7 +94,10 @@ the admitted relative path, byte length, media type and digest.
 
 Outbox sends are transactionally claimed. HTTP 200 with a valid OTLP JSON success
 response marks a part acknowledged; a repeat import does not resend acknowledged
-parts. Partial-success, timeout, network errors, or a crash after claiming a part
+parts and returns `already_acknowledged` with zero new requests. Missing revisions
+fail with `delivery_not_found`; an existing revision without outbox parts fails with
+`delivery_outbox_empty`. New empty projections are rejected transactionally.
+Partial-success, timeout, network errors, or a crash after claiming a part
 leave delivery unknown/sending. Further sends fail with
 `delivery_reconciliation_required` rather than risk duplicating an ambiguous send.
 Endpoint changes for already claimed/sent parts fail. Operator reconciliation must
