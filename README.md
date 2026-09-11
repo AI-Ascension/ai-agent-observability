@@ -45,6 +45,21 @@ The operator should use an SSH tunnel or an approved private reverse proxy for
 browser access. The initial deployment intentionally does not modify shared
 Caddy routes.
 
+## Recorded-run import (candidate)
+
+The independent recorded-run consumer validates portable ZIP recordings, stores
+immutable local snapshot revisions, and can deliver admitted tracking metadata
+through the existing Collector. It supports `1.0.0-candidate.2`; release admission
+and real Train interoperability remain separate gates.
+
+```sh
+node deploy/recorded-run/import.mjs import recording.zip imports.sqlite
+```
+
+Requires Node 24.16.0. Default import is offline. See
+[`docs/RECORDED_RUN.md`](docs/RECORDED_RUN.md) for Collector delivery, duplicate
+and update behavior, exact contract pins, and the disposable MLflow runtime test.
+
 ## Repository map
 
 - [`deploy/compose.yaml`](deploy/compose.yaml) — complete service topology.

@@ -1,0 +1,36 @@
+{
+  "result": "passed",
+  "fixtureProvenance": "synthetic",
+  "mlflowVersion": "3.16.0",
+  "collectorVersion": "0.160.0",
+  "schemaDigest": "d5098e5f969d99707d3ad1d97acdbc803285b93f1eb1dcfe5dc3f63c534192af",
+  "wireVersion": "1.0.0-candidate.2",
+  "inventoryDigest": "41d760f8c41064c4e6b49a48dbe6e1a6c8f2a9958afbc50374986a54858fd598",
+  "revisionsVerified": 2,
+  "storedSpans": 38,
+  "accountingVerified": true,
+  "artifactSha256": "a4f7b97df3ee55c35bb42c97ef57518e7a634c700c332025e08db4a3af785c1c",
+  "semanticDigest": "de818d975e78dc7ac9bc235a7192abbfeef9859308bffb0dc34a54d12b198bc9",
+  "logicalRunKey": "2a054f5c7c9d835956d663c8bda9ab1d33dcf2d5dedc123409b857b8fcc7a2fd",
+  "traceId": "tr-1d114b863361bb08647bd309ecfae7b8",
+  "tracesBefore": 1,
+  "tracesAfterRetry": 1,
+  "tracesAfterRestart": 1,
+  "counts": {
+    "event_records": 8,
+    "accounting_records": 1,
+    "unsupported_records": 0,
+    "unknown_action_outcomes": 2,
+    "settled_action_outcomes": 0
+  },
+  "evidence": {
+    "action": "unknown",
+    "gameplay": "episode_failed",
+    "outcome": "unknown",
+    "process_exit": "completed",
+    "request": "unknown"
+  },
+  "mlflowTelemetryDisabled": true,
+  "laminar": "unverified",
+  "topology": "loopback-collector-to-mlflow"
+}

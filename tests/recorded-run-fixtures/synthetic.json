@@ -1,0 +1,458 @@
+{
+  "manifest": {
+    "format": "ai-ascension.recorded-run-bundle",
+    "format_version": "1.0.0-candidate.1",
+    "contract_schema_sha256": "8030beb4027922d10806a96212dc1f9463792133a0bb3eb6e9e5f6431256df30",
+    "required_profiles": [
+      "ai-ascension.recorded-run.common.v1",
+      "ai-ascension.sts2.seed-readiness.v1"
+    ],
+    "optional_profiles": [],
+    "bundle_id": "",
+    "recording": {
+      "identity": {
+        "namespace": "seed-readiness.recording.sha256",
+        "value": "07dc52a6baea1245c5492724089a3115a201650d1362fba68d0c5813a5bc7d8b"
+      },
+      "identities": {}
+    },
+    "producer": {
+      "name": "sts2-harness",
+      "version": "synthetic",
+      "source_format": "seed-readiness-controller-release-v2"
+    },
+    "adapter": {
+      "name": "synthetic-fixture",
+      "version": "1",
+      "source_revision": "synthetic"
+    },
+    "versions": {},
+    "capabilities": {
+      "inspection": true,
+      "execution_replay": false,
+      "live_control": false,
+      "raw_mcp": false
+    },
+    "completeness": {
+      "status": "complete",
+      "source_snapshot": "stable"
+    },
+    "evidence": {
+      "process_exit": "completed",
+      "request": "unknown",
+      "action": "unknown",
+      "outcome": "unknown",
+      "gameplay": "episode_failed"
+    },
+    "entries": [],
+    "integrity": {
+      "digest_algorithm": "sha-256",
+      "bundle_semantic_digest": ""
+    }
+  },
+  "report": {
+    "profile": "ai-ascension.recorded-run.common.v1",
+    "fixture_provenance": "synthetic",
+    "streams": [
+      {
+        "stream": "decisions",
+        "state": "present",
+        "input_records": 1,
+        "emitted_rows": 1,
+        "filtered_rows": 0,
+        "unsupported_rows": 0,
+        "rejected_rows": 0,
+        "output_records": 1,
+        "dispositions": [],
+        "field_omissions": [
+          {
+            "rule": "raw_decision_text_disallowed",
+            "affected_rows": 1
+          }
+        ]
+      },
+      {
+        "stream": "manifest",
+        "state": "omitted",
+        "input_records": 1,
+        "emitted_rows": 0,
+        "filtered_rows": 1,
+        "unsupported_rows": 0,
+        "rejected_rows": 0,
+        "output_records": 0,
+        "dispositions": [
+          {
+            "first": 0,
+            "last": 0,
+            "disposition": "filtered",
+            "reason": "private_source_metadata"
+          }
+        ],
+        "field_omissions": []
+      },
+      {
+        "stream": "mcp",
+        "state": "omitted",
+        "input_records": 230,
+        "emitted_rows": 0,
+        "filtered_rows": 230,
+        "unsupported_rows": 0,
+        "rejected_rows": 0,
+        "output_records": 0,
+        "dispositions": [
+          {
+            "first": 0,
+            "last": 229,
+            "disposition": "filtered",
+            "reason": "raw_mcp_disallowed"
+          }
+        ],
+        "field_omissions": [],
+        "mcp_redacted_path_count": 0
+      },
+      {
+        "stream": "provider-accounting",
+        "state": "present",
+        "input_records": 1,
+        "emitted_rows": 1,
+        "filtered_rows": 0,
+        "unsupported_rows": 0,
+        "rejected_rows": 0,
+        "output_records": 1,
+        "dispositions": [],
+        "field_omissions": []
+      },
+      {
+        "stream": "result",
+        "state": "present",
+        "input_records": 1,
+        "emitted_rows": 1,
+        "filtered_rows": 0,
+        "unsupported_rows": 0,
+        "rejected_rows": 0,
+        "output_records": 1,
+        "dispositions": [],
+        "field_omissions": []
+      },
+      {
+        "stream": "trajectory",
+        "state": "present",
+        "input_records": 6,
+        "emitted_rows": 6,
+        "filtered_rows": 0,
+        "unsupported_rows": 0,
+        "rejected_rows": 0,
+        "output_records": 6,
+        "dispositions": [],
+        "field_omissions": []
+      }
+    ]
+  },
+  "events": [
+    {
+      "profile": "ai-ascension.recorded-run.common.v1",
+      "source": {
+        "stream": "decisions",
+        "record_ordinal": 0,
+        "subrecord_ordinal": 0
+      },
+      "identities": {},
+      "evidence": {
+        "process_exit": "unknown",
+        "request": "unknown",
+        "action": "unknown",
+        "outcome": "unknown",
+        "gameplay": "unknown"
+      },
+      "payload": {
+        "profile": "ai-ascension.sts2.seed-readiness.v1",
+        "kind": "decision_summary",
+        "value": {
+          "action_id_digests": [
+            "a4e1fbc018514bab2b7ba9f6e54f3b67e123a387b8720d48c162e9b4c7a0c2a3"
+          ]
+        }
+      },
+      "time": {
+        "unix_ns": "1789090000123456789"
+      }
+    },
+    {
+      "profile": "ai-ascension.recorded-run.common.v1",
+      "source": {
+        "stream": "result",
+        "record_ordinal": 0,
+        "subrecord_ordinal": 0
+      },
+      "identities": {
+        "session": {
+          "namespace": "seed-readiness.result.session",
+          "value": "synthetic-session"
+        }
+      },
+      "evidence": {
+        "process_exit": "completed",
+        "request": "unknown",
+        "action": "unknown",
+        "outcome": "unknown",
+        "gameplay": "unknown"
+      },
+      "payload": {
+        "profile": "ai-ascension.sts2.seed-readiness.v1",
+        "kind": "process_result",
+        "value": {
+          "exit_code": 0
+        }
+      }
+    },
+    {
+      "profile": "ai-ascension.recorded-run.common.v1",
+      "source": {
+        "stream": "trajectory",
+        "record_ordinal": 0,
+        "subrecord_ordinal": 0
+      },
+      "identities": {
+        "operation": {
+          "namespace": "sts2.seeded.operation",
+          "value": "synthetic-start"
+        },
+        "session": {
+          "namespace": "sts2.runtime.session",
+          "value": "synthetic-session"
+        }
+      },
+      "evidence": {
+        "process_exit": "unknown",
+        "request": "accepted",
+        "action": "settled",
+        "outcome": "observed",
+        "gameplay": "unknown"
+      },
+      "payload": {
+        "profile": "ai-ascension.sts2.seed-readiness.v1",
+        "kind": "seed_start",
+        "value": {
+          "protocol_version": "seeded-run-v1",
+          "schema_digest": "1e1072d3997c33379b72291e6ce9af3cd5fce4045b534cf659df0443e3ccac31",
+          "context_digest": "756c258fbbbc427f970e15843fcd773e7aad3e57e9c8f87adbae1ee1355cf08f",
+          "generation": "8",
+          "run_started": true,
+          "host_ready": true,
+          "effect_kind": "run_started",
+          "requested_seed_digest": "662c108d1fe7f23f0c16984d873af289b91cff46c733f53285858e48b3155141",
+          "canonical_seed_digest": "662c108d1fe7f23f0c16984d873af289b91cff46c733f53285858e48b3155141",
+          "seed_match": true,
+          "status": "settled"
+        }
+      }
+    },
+    {
+      "profile": "ai-ascension.recorded-run.common.v1",
+      "source": {
+        "stream": "trajectory",
+        "record_ordinal": 1,
+        "subrecord_ordinal": 0
+      },
+      "identities": {
+        "model_execution": {
+          "namespace": "seed-readiness.trajectory.model-execution",
+          "value": "17"
+        }
+      },
+      "evidence": {
+        "process_exit": "unknown",
+        "request": "unknown",
+        "action": "unknown",
+        "outcome": "unknown",
+        "gameplay": "unknown"
+      },
+      "payload": {
+        "profile": "ai-ascension.sts2.seed-readiness.v1",
+        "kind": "decision_summary",
+        "value": {
+          "action_id_digests": [
+            "a4e1fbc018514bab2b7ba9f6e54f3b67e123a387b8720d48c162e9b4c7a0c2a3"
+          ],
+          "reused_model_execution": false
+        }
+      }
+    },
+    {
+      "profile": "ai-ascension.recorded-run.common.v1",
+      "source": {
+        "stream": "trajectory",
+        "record_ordinal": 2,
+        "subrecord_ordinal": 0
+      },
+      "identities": {
+        "operation": {
+          "namespace": "sts2.runtime.operation",
+          "value": "synthetic-operation"
+        },
+        "action": {
+          "namespace": "ai-ascension.action.sha256",
+          "value": "a4e1fbc018514bab2b7ba9f6e54f3b67e123a387b8720d48c162e9b4c7a0c2a3"
+        }
+      },
+      "evidence": {
+        "process_exit": "unknown",
+        "request": "unknown",
+        "action": "unknown",
+        "outcome": "unknown",
+        "gameplay": "unknown"
+      },
+      "payload": {
+        "profile": "ai-ascension.sts2.seed-readiness.v1",
+        "kind": "action_outcome",
+        "value": {
+          "status": "unknown"
+        }
+      }
+    },
+    {
+      "profile": "ai-ascension.recorded-run.common.v1",
+      "source": {
+        "stream": "trajectory",
+        "record_ordinal": 3,
+        "subrecord_ordinal": 0
+      },
+      "identities": {
+        "operation": {
+          "namespace": "sts2.runtime.operation",
+          "value": "synthetic-operation"
+        },
+        "action": {
+          "namespace": "ai-ascension.action.sha256",
+          "value": "a4e1fbc018514bab2b7ba9f6e54f3b67e123a387b8720d48c162e9b4c7a0c2a3"
+        }
+      },
+      "evidence": {
+        "process_exit": "unknown",
+        "request": "unknown",
+        "action": "unknown",
+        "outcome": "unknown",
+        "gameplay": "unknown"
+      },
+      "payload": {
+        "profile": "ai-ascension.sts2.seed-readiness.v1",
+        "kind": "action_outcome",
+        "value": {
+          "status": "unknown"
+        }
+      }
+    },
+    {
+      "profile": "ai-ascension.recorded-run.common.v1",
+      "source": {
+        "stream": "trajectory",
+        "record_ordinal": 4,
+        "subrecord_ordinal": 0
+      },
+      "identities": {},
+      "evidence": {
+        "process_exit": "unknown",
+        "request": "unknown",
+        "action": "unknown",
+        "outcome": "unknown",
+        "gameplay": "unknown"
+      },
+      "payload": {
+        "profile": "ai-ascension.sts2.seed-readiness.v1",
+        "kind": "diagnostic",
+        "value": {
+          "code": "operation_wait_completed"
+        }
+      }
+    },
+    {
+      "profile": "ai-ascension.recorded-run.common.v1",
+      "source": {
+        "stream": "trajectory",
+        "record_ordinal": 5,
+        "subrecord_ordinal": 0
+      },
+      "identities": {},
+      "evidence": {
+        "process_exit": "unknown",
+        "request": "unknown",
+        "action": "unknown",
+        "outcome": "unknown",
+        "gameplay": "episode_failed"
+      },
+      "payload": {
+        "profile": "ai-ascension.sts2.seed-readiness.v1",
+        "kind": "diagnostic",
+        "value": {
+          "code": "episode_failed",
+          "value_digest": "f3e65f12c586ed010d1aa7da5e9c422d808d60651c21b977c559c9665eaf6f6d"
+        }
+      }
+    }
+  ],
+  "accounting": [
+    {
+      "profile": "ai-ascension.recorded-run.common.v1",
+      "source": {
+        "stream": "provider-accounting",
+        "record_ordinal": 0,
+        "subrecord_ordinal": 0
+      },
+      "identities": {
+        "model_execution": {
+          "namespace": "seed-readiness.accounting.model-execution",
+          "value": "different-execution"
+        }
+      },
+      "evidence": {
+        "process_exit": "unknown",
+        "request": "unknown",
+        "action": "unknown",
+        "outcome": "unknown",
+        "gameplay": "unknown"
+      },
+      "payload": {
+        "profile": "ai-ascension.sts2.seed-readiness.v1",
+        "kind": "accounting",
+        "value": {
+          "source_schema": "sts2.provider-accounting-v1",
+          "provider": "synthetic-provider",
+          "model": "synthetic-model",
+          "provider_execution_status": "completed",
+          "decision_status": "valid",
+          "provider_request_identity_kind": "codex_thread_id",
+          "provider_request_identity_status": "reported",
+          "request_sha256": "f07165b64216ae9a4988fc779b08f0dbe74750bd08a7504a6fb368cdc6c084d2",
+          "decision_sha256": "b6e3e254995d7facf8ae17f6d355daf4600301ea46913d4e5aa603c00d350ccb",
+          "counts": {
+            "event_count": "9",
+            "turn_count": "1",
+            "completed_turn_count": "1",
+            "stdout_bytes": "120",
+            "stderr_bytes": "0"
+          },
+          "usage": {
+            "input_tokens": {
+              "unit": "tokens",
+              "scope": "model_execution",
+              "value_status": "reported",
+              "value": "20"
+            },
+            "output_tokens": {
+              "unit": "tokens",
+              "scope": "model_execution",
+              "value_status": "reported",
+              "value": "7"
+            },
+            "cached_input_tokens": {
+              "unit": "tokens",
+              "scope": "model_execution",
+              "value_status": "unknown",
+              "value": null
+            }
+          }
+        }
+      }
+    }
+  ]
+}

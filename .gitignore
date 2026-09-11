@@ -3,6 +3,11 @@ deploy/.env
 deploy/.env.*
 !deploy/.env.example
 *.log
+.local-test/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
 
 # Tool and editor state
 .DS_Store
