@@ -118,6 +118,8 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+    volumes:
+      - laminar-rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
       interval: 10s
@@ -344,6 +346,8 @@ services:
         condition: service_healthy
       laminar-bootstrap:
         condition: service_completed_successfully
+      otel-collector-storage-init:
+        condition: service_completed_successfully
     command:
       - "--feature-gates=+extension.healthcheck.useComponentStatus"
       - "--config=/etc/otelcol-contrib/config.yaml"
@@ -356,6 +360,7 @@ services:
       - "${BIND_ADDRESS:?BIND_ADDRESS is required}:${OTEL_METRICS_PORT:?OTEL_METRICS_PORT is required}:8888"
     volumes:
       - ./otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - otel-collector-data:/var/lib/otelcol:rw
     healthcheck:
       test: ["CMD", "/usr/local/bin/otel-health-probe"]
       interval: 30s
@@ -365,9 +370,53 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    user: "10001:10001"
+    cap_drop:
+      - ALL
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
+
+  # The Collector image runs as UID/GID 10001. New named volumes are commonly
+  # root-owned, so this narrow one-shot initializer prepares only the queue
+  # directories before the non-root, read-only Collector starts. It never
+  # deletes or replaces retained telemetry.
+  otel-collector-storage-init:
+    image: docker.io/library/alpine:3.22.1
+    container_name: ai-agent-observability-otel-collector-storage-init
+    pull_policy: missing
+    user: "0:0"
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        mkdir -p /var/lib/otelcol/storage/mlflow /var/lib/otelcol/storage/laminar \
+          /var/lib/otelcol/compaction/mlflow /var/lib/otelcol/compaction/laminar
+        chmod 0750 /var/lib/otelcol /var/lib/otelcol/storage \
+          /var/lib/otelcol/storage/mlflow /var/lib/otelcol/storage/laminar \
+          /var/lib/otelcol/compaction /var/lib/otelcol/compaction/mlflow \
+          /var/lib/otelcol/compaction/laminar
+        # Change children before parents. Rootless container root can retain
+        # only CAP_CHOWN, while the eventual non-root Collector owns/traverses
+        # all finalized paths.
+        chown 10001:10001 /var/lib/otelcol/storage/mlflow \
+          /var/lib/otelcol/storage/laminar /var/lib/otelcol/compaction/mlflow \
+          /var/lib/otelcol/compaction/laminar /var/lib/otelcol/storage \
+          /var/lib/otelcol/compaction /var/lib/otelcol
+    volumes:
+      - otel-collector-data:/var/lib/otelcol:rw
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    # Ownership of a newly created named volume requires CAP_CHOWN. Do not add
+    # any other capability to this one-shot root initializer.
+    cap_add:
+      - CHOWN
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
 
 volumes:
   mlflow-postgres-data:
@@ -382,6 +431,10 @@ volumes:
     name: ai-agent-observability-laminar-postgres-data
   laminar-quickwit-data:
     name: ai-agent-observability-laminar-quickwit-data
+  laminar-rabbitmq-data:
+    name: ai-agent-observability-laminar-rabbitmq-data
+  otel-collector-data:
+    name: ai-agent-observability-otel-collector-data
 
 networks:
   default:

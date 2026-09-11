@@ -30,7 +30,7 @@ revalidated before an upgrade or redistribution.
   from the static CI checks). Other architectures depend on the upstream
   images publishing a compatible manifest and are `unverified` until tested.
 - Host ports must be free or explicitly overridden in `.env`.
-- A persistent filesystem is required for all six named volumes.
+- A persistent filesystem is required for all eight named volumes.
 
 ## Upgrade rules
 

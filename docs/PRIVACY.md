@@ -32,6 +32,12 @@ harness adapters must:
    values are unavoidable; and
 4. document the data classification and retention period for each experiment.
 
+Persistent Collector queues retain the same accepted payloads until delivery or
+bounded storage exhaustion. Treat the queue volume as research data:
+do not export it in diagnostics, copy it into an issue, or use it as a substitute
+for a reviewed retention policy. Queue metrics may support loss accounting, but
+they must not include raw span payloads, prompts, model output, or credentials.
+
 The generated Laminar collector key is ingest-only. The database stores only
 its hash; the plaintext is kept in the target `.env` so the Collector can send
 the bearer header.
