@@ -83,6 +83,15 @@ endpoint state when reading the next sibling exporter. The fix preserves the cho
 endpoint and rejects repeated definitions. Runtime ingestion must still pass before
 claiming this resolves the full CI failure.
 
+Run 34702985965 confirms Collector health now passes and the missing-ingestion
+negative case succeeds. The positive case accepts the OTLP request, then MLflow
+rejects its search requests with HTTP 403: the log names an invalid Host header
+containing the ephemeral published port. The test now uses the already admitted
+`localhost:5000` authority while connecting to its private ephemeral loopback port;
+production Host validation is unchanged. It also uses current span timestamps and
+real newlines between multiple trace IDs. Positive end-to-end acceptance remains
+pending the next run.
+
 Unverified: exact root cause of the log file-access failure, production image digest,
 actual production data sizing, production hard allocation provisioning and account
 grants, production startup/migration, pressure/stop/reboot controls, bounded host log

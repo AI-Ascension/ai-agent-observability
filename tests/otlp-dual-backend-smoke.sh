@@ -98,8 +98,14 @@ port_for() { "${compose[@]}" -p "$project" --env-file "$work/.env" -f "$work/iso
 collector_port=$(port_for otel-collector 4318); mlflow_port=$(port_for mlflow 5000)
 [[ "$collector_port" == 127.0.0.1:* && "$mlflow_port" == 127.0.0.1:* ]] || { echo 'ephemeral loopback ports unavailable' >&2; exit 1; }
 collector="http://$collector_port/v1/traces"; mlflow="http://$mlflow_port"
+# The test connects through an ephemeral published port but addresses MLflow's
+# existing admitted authority. Keep the deployment's Host validation intact.
+mlflow_request() {
+  curl --max-time 5 --fail --silent --show-error -H 'Host: localhost:5000' "$@"
+}
 trace_hex=$(openssl rand -hex 16); span_hex=$(openssl rand -hex 8); trace_identity="ci-smoke-$trace_hex"
-payload=$(printf '{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"%s","spanId":"%s","name":"ci.synthetic.dual.backend","kind":1,"startTimeUnixNano":"1","endTimeUnixNano":"2","attributes":[{"key":"ci.trace_identity","value":{"stringValue":"%s"}}]}]}]}]}' "$trace_hex" "$span_hex" "$trace_identity")
+read -r start_ns end_ns < <(node -e 'const t=BigInt(Date.now())*1000000n; console.log(t.toString(),(t+1000000n).toString())')
+payload=$(printf '{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"%s","spanId":"%s","name":"ci.synthetic.dual.backend","kind":1,"startTimeUnixNano":"%s","endTimeUnixNano":"%s","attributes":[{"key":"ci.trace_identity","value":{"stringValue":"%s"}}]}]}]}]}' "$trace_hex" "$span_hex" "$start_ns" "$end_ns" "$trace_identity")
 if [[ ${OTLP_SMOKE_MODE:-success} == missing-ingestion ]]; then
   "${compose[@]}" -p "$project" --env-file "$work/.env" -f "$work/isolated.json" stop otel-collector
   if curl --max-time 3 --fail --silent --show-error -H 'content-type: application/json' --data "$payload" "$collector" >/dev/null; then
@@ -114,12 +120,12 @@ if [[ ${OTLP_SMOKE_MODE:-success} == missing-ingestion ]]; then
 fi
 curl --max-time 10 --fail --silent --show-error -H 'content-type: application/json' --data "$payload" "$collector" >"$logs/collector-receipt.json"
 for _ in $(seq 1 30); do
-  search=$(curl --max-time 5 --fail --silent --show-error -H 'content-type: application/json' --data '{"locations":[{"mlflow_experiment":{"experiment_id":"0"}}],"max_results":100}' "$mlflow/api/3.0/mlflow/traces/search" || true)
-  ids=$(printf '%s' "$search" | node -e 'let x="";process.stdin.on("data",d=>x+=d).on("end",()=>{try{const ids=[];const walk=v=>{if(v&&typeof v==="object"){if(typeof v.trace_id==="string")ids.push(v.trace_id);for(const q of Object.values(v))walk(q)}};walk(JSON.parse(x));console.log([...new Set(ids)].join("\\n"))}catch{}})')
+  search=$(mlflow_request -H 'content-type: application/json' --data '{"locations":[{"mlflow_experiment":{"experiment_id":"0"}}],"max_results":100}' "$mlflow/api/3.0/mlflow/traces/search" || true)
+  ids=$(printf '%s' "$search" | node -e 'let x="";process.stdin.on("data",d=>x+=d).on("end",()=>{try{const ids=[];const walk=v=>{if(v&&typeof v==="object"){if(typeof v.trace_id==="string")ids.push(v.trace_id);for(const q of Object.values(v))walk(q)}};walk(JSON.parse(x));console.log([...new Set(ids)].join("\n"))}catch{}})')
   mlflow_match=0
   while IFS= read -r trace_id; do
     [[ -n "$trace_id" ]] || continue
-    detail=$(curl --max-time 5 --fail --silent --show-error "$mlflow/api/3.0/mlflow/traces/get?trace_id=$trace_id" || true)
+    detail=$(mlflow_request "$mlflow/api/3.0/mlflow/traces/get?trace_id=$trace_id" || true)
     grep -Fq "$trace_identity" <<<"$detail" && { mlflow_match=1; break; }
   done <<<"$ids"
   laminar=$("${compose[@]}" -p "$project" --env-file "$work/.env" -f "$work/isolated.json" exec -T laminar-clickhouse clickhouse-client --query "SELECT count() FROM default.spans WHERE position(toString(attributes), '$trace_identity') > 0" 2>/dev/null || true)
