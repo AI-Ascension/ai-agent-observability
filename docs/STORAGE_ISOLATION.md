@@ -92,7 +92,11 @@ records and any rotation overshoot.
 
 Before migration, use `deploy/storage/inspect-clickhouse.sh` through normal admin
 access. It reports selected metadata and effective logger keys, never environments,
-credentials or table contents. A container file-access error does not by itself prove
+credentials or application rows. It includes immutable image metadata, preprocessed
+logger settings when present, aggregate active/inactive part footprints, disk reserves
+and the owning unit paths. Keep the raw report private: schema names and host paths
+are operational metadata. A single snapshot does not establish growth or merge peaks.
+A container file-access error does not by itself prove
 a missing directory. Inspect ownership and rotation permissions inside its namespace.
 Record the exact image digest and source hashes; the current floating release tag
 must not cause an incidental upgrade during this incident.
@@ -129,7 +133,8 @@ loop-backed ext4 filesystems (1GiB data, 64MiB diagnostics, mkfs discard disable
 It exercises the CLI equivalent of the read-only container mounts and tmpfs paths,
 authenticated startup and profile settings, rejection of an insert under data
 exhaustion, queries with full diagnostic storage, and row preservation through
-container replacement. It is an executable test candidate until its CI result passes.
+container replacement. This CLI test passed at 183238f in run 34702985965; see
+`docs/evidence/clickhouse-storage-candidate.md` for the immutable image and limits.
 These loop mounts are intentionally unsupported by production physical-device
 admission; the test does not claim to exercise that admission contract, the actual
 Compose API path, host syslog forwarding, or the pressure timer and alert delivery.
@@ -159,3 +164,5 @@ References:
 - https://raw.githubusercontent.com/ClickHouse/ClickHouse/v26.5.7.64-stable/programs/server/config.xml
 - https://www.freedesktop.org/software/systemd/man/252/journald.conf.html
 - https://clickhouse.com/docs/concepts/features/operations/delete/ttl
+- https://clickhouse.com/docs/reference/system-tables/parts
+- https://clickhouse.com/docs/reference/system-tables/disks

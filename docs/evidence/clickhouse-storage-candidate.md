@@ -1,6 +1,28 @@
 # ClickHouse storage candidate evidence
 
-Issue #28. Source implementation only; no production rollout or quota acceptance.
+Issue #28. Source and disposable runtime evidence; no production rollout or acceptance.
+
+## Exact-release disposable runtime
+
+Confirmed in GitHub Actions run 34702985965, job 103577913449, at commit 183238f:
+Podman 4.9.3 tested ClickHouse 26.5.7.64, immutable image ID
+`06ff3b41deae711cc50269b31cf438fca8dcbd1fd180145d538bf9389eae9ea9`.
+Native file sinks were absent and console logging enabled. The finite log flood
+retained 57,766 aggregate bytes, counting rotation files, with a configured 512KB
+limit and a 2MiB maximum test bound.
+
+The isolated server test passed read-only startup with bounded temporary mounts,
+authenticated account and profile checks, rejection of a large insert due to full
+data storage, existing-row reads with full diagnostic storage, and preservation of
+two committed rows through container replacement. Test storage used fully allocated
+1GiB/64MiB loop-backed ext4 filesystems on a disposable runner.
+
+This establishes CLI container behavior for that exact image, not production device
+admission, the Compose API integration, a continuous error flood into a full log sink,
+bounded alternate host logging, real ingestion, pressure-monitor/alert delivery,
+production migration or Windows recovery. The production image digest remains unknown.
+
+## Earlier compatibility evidence and remaining gates
 
 Confirmed on the inspected Podman 4.9.3 host:
 
@@ -62,6 +84,6 @@ endpoint and rejects repeated definitions. Runtime ingestion must still pass bef
 claiming this resolves the full CI failure.
 
 Unverified: exact root cause of the log file-access failure, production image digest,
-actual data sizing, hard allocation provisioning, effective runtime account grants,
-full startup, data migration, pressure/stop/reboot controls, bounded host log routing,
-end-to-end ingestion, rollback, sustained observation and Windows block-error recovery.
+actual production data sizing, production hard allocation provisioning and account
+grants, production startup/migration, pressure/stop/reboot controls, bounded host log
+routing, end-to-end ingestion, rollback, sustained observation and Windows recovery.
