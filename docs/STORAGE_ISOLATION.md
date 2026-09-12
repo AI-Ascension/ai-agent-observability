@@ -121,6 +121,19 @@ when ClickHouse is unavailable, and service-stop failures must be visible.
 
 ## Validation
 
+The disposable CI job `Disposable ClickHouse storage faults` stages the exact
+26.5.7.64 release and records its local immutable image ID before testing. The
+runtime scripts never pull implicitly. `tests/clickhouse-isolation-runtime.sh`
+requires root on a disposable CI runner and creates two private, fully allocated
+loop-backed ext4 filesystems (1GiB data, 64MiB diagnostics, mkfs discard disabled).
+It exercises the CLI equivalent of the read-only container mounts and tmpfs paths,
+authenticated startup and profile settings, rejection of an insert under data
+exhaustion, queries with full diagnostic storage, and row preservation through
+container replacement. It is an executable test candidate until its CI result passes.
+These loop mounts are intentionally unsupported by production physical-device
+admission; the test does not claim to exercise that admission contract, the actual
+Compose API path, host syslog forwarding, or the pressure timer and alert delivery.
+
 `tests/storage-lifecycle.sh` exercises actual process locks, injected persistent-state
 failure, stop ordering and continued shutdown after one stop fails. It checks missing,
 symlink-substituted and nested bind paths using disposable paths and mount metadata

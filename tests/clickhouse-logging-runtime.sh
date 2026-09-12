@@ -52,9 +52,9 @@ for ((attempt=0;attempt<60;attempt++)); do
   sleep 1
 done
 [[ $complete == 1 ]] || { echo 'Flood did not complete.' >&2; exit 1; }
-bytes=$(stat -c %s "$test_dir/console.log")
+bytes=$(find "$test_dir" -type f -printf '%s\n' | awk '{total += $1} END {printf "%.0f\n", total}')
 # Permit one bounded oversized record; report it instead of promising an exact cap.
 ((bytes <= 2097152)) || { echo "Unbounded capture: $bytes bytes" >&2; exit 1; }
-printf 'Native file sinks absent; console enabled; finite flood retained %s bytes (512KB configured; <=2MiB test bound).\n' "$bytes"
+printf 'Native file sinks absent; console enabled; finite flood retained %s aggregate bytes including rotations (512KB configured; <=2MiB test bound).\n' "$bytes"
 echo 'This tests log-driver behavior, not a hard filesystem quota or full server/ingestion acceptance.'
 passed=1

@@ -104,6 +104,27 @@ jobs:
           docker buildx build --check --file deploy/Dockerfile.laminar deploy
           docker buildx build --check --file deploy/Dockerfile.otel deploy
 
+  clickhouse-storage-runtime:
+    name: Disposable ClickHouse storage faults
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Install Podman on the disposable runner
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes podman
+          sudo podman --version
+      - name: Exercise exact-release logging and isolated storage
+        run: |
+          sudo podman pull docker.io/clickhouse/clickhouse-server:26.5.7.64
+          image=$(sudo podman image inspect --format '{{.Id}}' docker.io/clickhouse/clickhouse-server:26.5.7.64)
+          [[ "$image" == sha256:* ]] || image="sha256:$image"
+          sudo bash tests/clickhouse-logging-runtime.sh "$image"
+          sudo env CI=true bash tests/clickhouse-isolation-runtime.sh "$image"
+
   otlp-runtime:
     name: Disposable OTLP dual-backend smoke
     runs-on: ubuntu-24.04
