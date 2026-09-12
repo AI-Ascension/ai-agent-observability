@@ -53,6 +53,14 @@ the Collector's health-check metadata and loopback component status for diagnosi
 Base-main run 34699763967 at 3390924 also failed both ingestion modes at Collector
 health. The symptom predates this branch; it remains an acceptance blocker.
 
+Run 34702403289's missing-ingestion diagnostic archive reports HTTP 200,
+`healthy: true`, `StatusOK` from the Collector's loopback component endpoint while
+the installed probe exits 1. A regression test using the checked-in two-exporter
+configuration reproduces a parser defect: `exporter_endpoint` reset its selected
+endpoint state when reading the next sibling exporter. The fix preserves the chosen
+endpoint and rejects repeated definitions. Runtime ingestion must still pass before
+claiming this resolves the full CI failure.
+
 Unverified: exact root cause of the log file-access failure, production image digest,
 actual data sizing, hard allocation provisioning, effective runtime account grants,
 full startup, data migration, pressure/stop/reboot controls, bounded host log routing,

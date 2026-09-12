@@ -957,6 +957,7 @@ static int exporter_endpoint(const char *config, size_t length, const char *name
     size_t target_indent = 0;
     int in_exporters = 0;
     int in_target = 0;
+    int target_seen = 0;
     int endpoint_seen = 0;
 
     while (position < length) {
@@ -986,8 +987,15 @@ static int exporter_endpoint(const char *config, size_t length, const char *name
         if (yaml_mapping_name(content, content_length, mapping_name, sizeof(mapping_name), NULL) &&
             indent == exporters_indent + 2) {
             in_target = strcmp(mapping_name, name) == 0;
-            target_indent = indent;
-            endpoint_seen = 0;
+            if (in_target) {
+                /* Preserve the selected endpoint when later sibling exporters
+                 * are read; a repeated definition is still ambiguous. */
+                if (target_seen) {
+                    return 0;
+                }
+                target_seen = 1;
+                target_indent = indent;
+            }
             continue;
         }
         if (in_target && indent == target_indent + 2 &&
@@ -998,7 +1006,7 @@ static int exporter_endpoint(const char *config, size_t length, const char *name
             endpoint_seen = 1;
         }
     }
-    return in_exporters && in_target && endpoint_seen;
+    return in_exporters && target_seen && endpoint_seen;
 }
 
 static int dependencies_are_healthy(int64_t deadline) {
