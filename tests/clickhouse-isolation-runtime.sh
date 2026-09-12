@@ -14,9 +14,11 @@ podman image exists "$image" || exit 77
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 work=$(mktemp -d)
 name="obs-storage-runtime-$(basename "$work")"
+flood_name="$name-flood"
 mounted_data=0 mounted_logs=0
 cleanup() {
   status=$?
+  podman rm -f "$flood_name" >/dev/null 2>&1 || true
   podman rm -f "$name" >/dev/null 2>&1 || true
   if [[ $mounted_logs == 1 ]]; then umount "$work/logs" || status=1; fi
   if [[ $mounted_data == 1 ]]; then umount "$work/data" || status=1; fi
@@ -98,11 +100,48 @@ query 'INSERT INTO default.storage_acceptance VALUES (2)'
 
 # Exhaust the diagnostic allocation independently and measure its hard ceiling.
 # A failed logger must not gain a writable image root or a new host-log route.
+mkdir "$work/control"
+podman run -d --name "$flood_name" --pull never --network none --read-only \
+  --memory 128m --cpus 1 --restart no --entrypoint /bin/bash \
+  --log-driver k8s-file --log-opt path="$work/logs/flood.log" --log-opt max-size=512kb \
+  -v "$work/control:/control:rw" "$image" -ec \
+  'printf "READY\n"; while [[ ! -e /control/go ]]; do sleep 0.1; done; touch /control/attempted; for ((i=0;i<60000;i++)); do printf "full-sink-test-%0100d\n" "$i"; done; touch /control/done; sleep 30' >/dev/null
+ready=0
+for ((attempt=0;attempt<50;attempt++)); do
+  if grep -q READY "$work/logs/flood.log" 2>/dev/null; then ready=1; break; fi
+  sleep 0.1
+done
+[[ $ready == 1 ]] || { echo 'Full-sink writer did not establish its normal log route.' >&2; exit 1; }
+conmon_pid=$(podman inspect --format '{{.State.ConmonPid}}' "$flood_name")
+[[ "$conmon_pid" =~ ^[1-9][0-9]*$ ]]
+flood_start=$(date +%s)
 if dd if=/dev/zero of="$work/logs/test-filler" bs=4096 status=none 2>"$work/full-log.out"; then
   echo 'Expected the diagnostic filesystem to run out of space.' >&2; exit 1
 fi
 available=$(df -B1 --output=avail "$work/logs" | tail -1 | tr -d ' ')
 ((available <= 4096))
+touch "$work/control/go"
+finished=0
+for ((attempt=0;attempt<30;attempt++)); do
+  used=$(df -B1 --output=used "$work/logs" | tail -1 | tr -d ' ')
+  ((used <= 67108864))
+  if [[ -e "$work/control/done" ]] || [[ $(podman inspect --format '{{.State.Running}}' "$flood_name") == false ]]; then
+    finished=1; break
+  fi
+  sleep 1
+done
+[[ $finished == 1 && -e "$work/control/attempted" ]] || {
+  echo 'Writer never attempted the full sink or did not finish within its bounded window.' >&2; exit 1;
+}
+timeout 15s podman stop --time 5 "$flood_name" >/dev/null
+# Observe this conmon process only; never copy unrelated runner journal contents.
+if command -v journalctl >/dev/null; then
+  journal_bytes=$(journalctl --since "@$flood_start" "_PID=$conmon_pid" --no-pager -o cat 2>/dev/null | wc -c)
+  printf 'Full-sink conmon journal output: %s bytes during the finite flood.\n' "$journal_bytes"
+  ((journal_bytes <= 2097152)) || { echo 'Full-sink runtime diagnostics exceeded the 2MiB test bound.' >&2; exit 1; }
+else
+  echo 'journalctl is required to observe alternate runtime diagnostics.' >&2; exit 77
+fi
 [[ $(podman inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$name") == true ]]
 query 'SELECT count() FROM default.storage_acceptance' >"$work/count.out"
 [[ $(cat "$work/count.out") == 2 ]]
@@ -114,5 +153,5 @@ podman rm "$name" >/dev/null
 start_server
 wait_ready
 [[ $(query 'SELECT groupArray(id) FROM (SELECT id FROM default.storage_acceptance ORDER BY id)') == '[1,2]' ]]
-echo 'Exact-version read-only startup, account/profile settings, full data rejection, log allocation ceiling and row persistence passed.'
+echo 'Exact-version read-only startup, account/profile settings, full data rejection, full-sink flood, log allocation ceiling and row persistence passed.'
 echo 'CLI runtime evidence only: production admission, host log forwarding, full ingestion, alerts and migration remain separate gates.'

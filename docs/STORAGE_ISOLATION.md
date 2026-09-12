@@ -139,6 +139,12 @@ These loop mounts are intentionally unsupported by production physical-device
 admission; the test does not claim to exercise that admission contract, the actual
 Compose API path, host syslog forwarding, or the pressure timer and alert delivery.
 
+The test also starts a separate bounded writer before exhausting diagnostics, proves
+its normal log route, then emits 60,000 lines into the full allocation. It samples the
+filesystem ceiling and counts only that writer's conmon journal output against an
+explicit 2MiB finite-test bound. This extension remains unverified until its updated
+CI run passes; even a pass does not establish an indefinitely bounded host log route.
+
 `tests/storage-lifecycle.sh` exercises actual process locks, injected persistent-state
 failure, stop ordering and continued shutdown after one stop fails. It checks missing,
 symlink-substituted and nested bind paths using disposable paths and mount metadata

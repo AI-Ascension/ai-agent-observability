@@ -92,6 +92,12 @@ production Host validation is unchanged. It also uses current span timestamps an
 real newlines between multiple trace IDs. Positive end-to-end acceptance remains
 pending the next run.
 
+Run 34703522312 at 28b382a passed all five jobs. Its positive-ingestion archive
+contains a successful dual-backend synthetic trace check and Collector health with
+zero failing streak. The missing-ingestion negative case also passed. This is
+disposable end-to-end evidence for the base Compose deployment, not the isolated
+production Compose override or preserved production records.
+
 Unverified: exact root cause of the log file-access failure, production image digest,
 actual production data sizing, production hard allocation provisioning and account
 grants, production startup/migration, pressure/stop/reboot controls, bounded host log
