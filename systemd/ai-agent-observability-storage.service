@@ -1,0 +1,13 @@
+[Unit]
+Description=Enforce observability storage admission and latch unsafe ingestion
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/ai-agent-observability/deploy/storage/stop-on-pressure.sh
+TimeoutStartSec=300
+UMask=0077
+NoNewPrivileges=yes
+LimitCORE=0
+LogRateLimitIntervalSec=60s
+LogRateLimitBurst=10
