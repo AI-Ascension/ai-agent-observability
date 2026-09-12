@@ -1,0 +1,34 @@
+# Rootful Podman-only candidate. Apply after migration and mount admission.
+# Existing named volumes remain intact. See docs/STORAGE_ISOLATION.md.
+services:
+  laminar-clickhouse:
+    read_only: true
+    restart: "no"
+    logging:
+      driver: k8s-file
+      options:
+        path: ${OBS_DIAGNOSTIC_ROOT:?Set admitted diagnostic mount}/clickhouse.log
+        max-size: 50mb
+    volumes:
+      # Compose merges volume entries by container target, replacing named mounts.
+      - type: bind
+        source: ${OBS_DATA_ROOT:?Set admitted data mount}/clickhouse
+        target: /var/lib/clickhouse
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${OBS_DIAGNOSTIC_ROOT:?Set admitted diagnostic mount}/legacy-clickhouse
+        target: /var/log/clickhouse-server
+        read_only: true
+        bind:
+          create_host_path: false
+    # Upstream entrypoint generates users.d/default-user.xml. The existing read-only
+    # profiles mount remains nested here; validate effective grants after startup.
+    tmpfs:
+      - /etc/clickhouse-server/users.d:rw,nosuid,nodev,size=1m,mode=0755
+      - /tmp:rw,nosuid,nodev,size=64m,mode=1777
+      - /run:rw,nosuid,nodev,size=8m,mode=0755
+    ulimits:
+      core:
+        soft: 0
+        hard: 0

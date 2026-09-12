@@ -48,10 +48,10 @@ jobs:
 
       - name: Check shell syntax and style
         run: |
-          for script in deploy/init.sh deploy/materialize-otel-source.sh deploy/ai-agent-observability-reviewed-upgrade deploy/install-reviewed-upgrade-root-packet.sh deploy/laminar/bootstrap-project-key.sh deploy/laminar/provision-query-readonly.sh tests/*.sh tests/fixtures/*; do
+          for script in deploy/storage/*.sh deploy/init.sh deploy/materialize-otel-source.sh deploy/ai-agent-observability-reviewed-upgrade deploy/install-reviewed-upgrade-root-packet.sh deploy/laminar/bootstrap-project-key.sh deploy/laminar/provision-query-readonly.sh tests/*.sh tests/fixtures/*; do
             bash -n "$script"
           done
-          shellcheck --severity=warning deploy/init.sh deploy/materialize-otel-source.sh deploy/ai-agent-observability-reviewed-upgrade deploy/install-reviewed-upgrade-root-packet.sh deploy/laminar/bootstrap-project-key.sh deploy/laminar/provision-query-readonly.sh tests/*.sh tests/fixtures/*
+          shellcheck --severity=warning deploy/storage/*.sh deploy/init.sh deploy/materialize-otel-source.sh deploy/ai-agent-observability-reviewed-upgrade deploy/install-reviewed-upgrade-root-packet.sh deploy/laminar/bootstrap-project-key.sh deploy/laminar/provision-query-readonly.sh tests/*.sh tests/fixtures/*
 
       - name: Enable unprivileged user namespaces
         run: |
@@ -66,6 +66,7 @@ jobs:
       - name: Test bootstrap without a container runtime
         run: |
           bash tests/bootstrap.sh
+          bash tests/storage-admission.sh
           bash tests/validation-regressions.sh
           bash tests/query-provision-invariants.sh
           bash tests/otel-health-probe.sh
@@ -94,6 +95,7 @@ jobs:
         run: |
           docker compose --env-file deploy/.env.example -f deploy/compose.yaml config --quiet
           bash tests/compose-required-settings.sh
+          bash tests/storage-compose.sh
 
       - name: Lint Dockerfile syntax
         run: |

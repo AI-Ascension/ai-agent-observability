@@ -173,14 +173,34 @@ EOF
   printf '%s\n' 'Created deploy/.env with fresh target-local secrets (mode 0600).'
 fi
 
+compose_files=(-f compose.yaml)
+if [[ ${OBS_STORAGE_ISOLATION:-0} == 1 ]]; then
+  # Opt-in after the operator's consistent migration, never a silent empty volume.
+  [[ ${COMPOSE_ENGINE:-docker} == docker && ${DOCKER_HOST:-} == unix:///run/podman/podman.sock ]] || {
+    echo 'Storage isolation currently requires the reviewed rootful Podman API.' >&2; exit 69;
+  }
+  [[ ! -e /var/lib/ai-agent-observability/storage-isolation/stopped ]] || {
+    echo 'Storage isolation stop is latched; operator reconciliation is required.' >&2; exit 69;
+  }
+  storage_manifest=${OBS_STORAGE_MANIFEST:?Set the reviewed storage manifest}
+  bash "$script_dir/storage/require-root-manifest.sh" "$storage_manifest"
+  bash "$script_dir/storage/check-storage.sh" --manifest "$storage_manifest"
+  # The strict guard validates keys, uniqueness and path syntax. Never source it.
+  OBS_DATA_ROOT=$(awk -F '\t' '$1 == "data.mountpoint" {print $2}' "$storage_manifest")
+  OBS_DIAGNOSTIC_ROOT=$(awk -F '\t' '$1 == "diagnostic.mountpoint" {print $2}' "$storage_manifest")
+  export OBS_DATA_ROOT OBS_DIAGNOSTIC_ROOT
+  compose_files+=(-f compose.storage-isolation.yaml)
+elif [[ ${OBS_STORAGE_ISOLATION:-0} != 0 ]]; then
+  echo 'OBS_STORAGE_ISOLATION must be 0 or 1.' >&2; exit 64
+fi
 ensure_network
-compose -p "$project_name" -f compose.yaml config --quiet
+compose -p "$project_name" "${compose_files[@]}" config --quiet
 case "${COMPOSE_BUILD:-true}" in
   true)
-    compose -p "$project_name" -f compose.yaml up -d --build
+    compose -p "$project_name" "${compose_files[@]}" up -d --build
     ;;
   false)
-    compose -p "$project_name" -f compose.yaml up -d --no-build
+    compose -p "$project_name" "${compose_files[@]}" up -d --no-build
     ;;
   *)
     printf '%s\n' 'COMPOSE_BUILD must be true or false' >&2
