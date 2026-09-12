@@ -36,6 +36,23 @@ that omitted mount paths fail, data mounts replace the named-volume target, logg
 is bounded and the root filesystem is read-only. These are static/fixture results;
 they are not proof that an actual physical allocation or pressure-stop works.
 
+Review follow-up: local lifecycle tests now use real process locks to prove mutual
+exclusion and inject persistent-marker failure while checking that all three stop
+attempts still occur. Missing, symlink-substituted and nested bind directories are
+rejected in fixture tests. Startup shares the monitor lock, requires prebuilt images,
+prohibits automatic pulls, and limits its external command durations. Runtime and
+persistent markers are checked; failed persistent writes still require operator
+reconciliation before reboot. This is not yet live shutdown/reboot evidence.
+
+GitHub Actions run 34701880578 at candidate 35de751 passed deployment-contract and
+recorded-run-consumer checks. Both disposable ingestion jobs failed at Collector
+health, before trace injection. The archived stack metadata reports ClickHouse and
+Laminar healthy and Collector unhealthy; Collector output has no diagnostic errors.
+This does not establish why its health probe failed. The smoke test now captures
+the Collector's health-check metadata and loopback component status for diagnosis.
+Base-main run 34699763967 at 3390924 also failed both ingestion modes at Collector
+health. The symptom predates this branch; it remains an acceptance blocker.
+
 Unverified: exact root cause of the log file-access failure, production image digest,
 actual data sizing, hard allocation provisioning, effective runtime account grants,
 full startup, data migration, pressure/stop/reboot controls, bounded host log routing,

@@ -16,6 +16,18 @@ cleanup() {
   status=$?
   "${compose[@]}" -p "$project" --env-file "$work/.env" -f "$work/isolated.json" ps >"$logs/ps.txt" 2>&1 || true
   "${compose[@]}" -p "$project" --env-file "$work/.env" -f "$work/isolated.json" logs --no-color >"$logs/compose.log" 2>&1 || true
+  # Diagnose a quiet but unhealthy Collector without exporting its environment
+  # or credentials. The helper image is already used by this disposable stack.
+  collector_id=$("${compose[@]}" -p "$project" --env-file "$work/.env" -f "$work/isolated.json" ps -q otel-collector) || collector_id=
+  if [[ -n "$collector_id" ]]; then
+    "$engine" inspect --format '{{json .State.Health}}' "$collector_id" >"$logs/collector-health.json" 2>&1 || true
+    timeout 15s "$engine" run --rm --pull never --read-only --cap-drop ALL \
+      --name "$project-health-diagnostic" \
+      --network "container:$collector_id" docker.io/library/alpine:3.22.1 \
+      sh -c 'printf "GET /status HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n" | nc -w 5 127.0.0.1 13133' \
+      >"$logs/collector-status.http" 2>&1 || true
+    "$engine" rm -f "$project-health-diagnostic" >/dev/null 2>&1 || true
+  fi
   # Do not use down -v or prune: only this project's containers/network stop.
   "${compose[@]}" -p "$project" --env-file "$work/.env" -f "$work/isolated.json" down --remove-orphans >"$logs/cleanup.log" 2>&1 || cleanup_failed=1
   tar -C "$work" -czf "$root/otlp-runtime-diagnostics.tar.gz" diagnostics 2>/dev/null || true

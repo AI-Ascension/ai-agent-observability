@@ -67,6 +67,7 @@ jobs:
         run: |
           bash tests/bootstrap.sh
           bash tests/storage-admission.sh
+          bash tests/storage-lifecycle.sh
           bash tests/validation-regressions.sh
           bash tests/query-provision-invariants.sh
           bash tests/otel-health-probe.sh

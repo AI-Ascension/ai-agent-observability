@@ -44,8 +44,15 @@ docker compose --env-file deploy/.env \
 Do not apply this example directly to a running deployment. Include both Compose
 files in the reviewed startup lifecycle and require mount admission before `up`.
 The initializer includes the overlay only when `OBS_STORAGE_ISOLATION=1`, requiring
-the reviewed rootful Podman API and `OBS_STORAGE_MANIFEST`. It checks the persistent
-stop latch and runs mount admission before invoking Compose. Container restart `no`
+root, the reviewed rootful Podman API, `COMPOSE_BUILD=false` and
+`OBS_STORAGE_MANIFEST`. Build and stage the pinned images before admission;
+isolated startup prohibits automatic image pulls. It checks persistent and runtime
+stop latches and runs mount and bind-directory admission before invoking Compose.
+Startup and the pressure monitor share a lock under
+`/run/ai-agent-observability-storage` through startup completion. Network operations
+are limited to 20 seconds each and Compose calls to 120 seconds each so admission
+cannot hold the lock indefinitely. A busy monitor retries on its next timer tick.
+Container restart `no`
 does not prevent an explicit Compose start or host boot orchestration that omits this
 gate. Manual direct starts are outside the admitted workflow.
 
@@ -61,9 +68,16 @@ is an emergency containment policy, not a consistent backup procedure. Its exter
 alert integration and runtime stop behavior remain unverified.
 
 Install the manifest and scripts with root ownership and no untrusted writable parent
-directories. Keep the small latch under `/var/lib/ai-agent-observability/storage-isolation`.
+directories. Mount roots must be root-owned and not group/other writable; bind children
+must exist, be canonical directories, and remain on the admitted mount with no nested
+mount. Keep the persistent latch under `/var/lib/ai-agent-observability/storage-isolation`
+and the runtime latch under `/run/ai-agent-observability-storage`.
+Failure to allocate the persistent latch still triggers all container stop attempts
+and leaves the runtime latch when possible. A runtime latch does not survive reboot:
+if persistent storage is unwritable, reconcile and persist the incident before reboot.
+Such a failure returns nonzero and is not evidence of durable restart protection.
 After an incident, inspect all mounts and reconcile accepted records before manually
-removing that exact latch. Removing it does not start a service. Re-run admission and
+removing both exact `stopped` markers. Removing them does not start a service. Re-run admission and
 start through the managed lifecycle; do not remove it merely to silence an error.
 
 ## Capacity and migration gate
@@ -106,6 +120,11 @@ must latch until capacity and identity are revalidated. The monitoring path must
 when ClickHouse is unavailable, and service-stop failures must be visible.
 
 ## Validation
+
+`tests/storage-lifecycle.sh` exercises actual process locks, injected persistent-state
+failure, stop ordering and continued shutdown after one stop fails. It checks missing,
+symlink-substituted and nested bind paths using disposable paths and mount metadata
+fixtures. This is local lifecycle evidence, not a live systemd or Podman stop test.
 
 `tests/clickhouse-logging-runtime.sh IMAGE_ID_OR_DIGEST` uses a pre-existing immutable
 image in disposable Podman containers. It checks effective native logger keys and a

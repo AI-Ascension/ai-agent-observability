@@ -23,7 +23,11 @@ compose() {
 
   case "${COMPOSE_ENGINE:-docker}" in
     docker)
-      COMPOSE_BAKE="$compose_bake" docker compose "$@"
+      if [[ ${OBS_STORAGE_ISOLATION:-0} == 1 ]]; then
+        COMPOSE_BAKE="$compose_bake" timeout 120s docker compose "$@"
+      else
+        COMPOSE_BAKE="$compose_bake" docker compose "$@"
+      fi
       ;;
     podman)
       COMPOSE_BAKE="$compose_bake" podman compose "$@"
@@ -36,26 +40,30 @@ compose() {
 }
 
 ensure_network() {
+  local -a podman_command=(podman)
+  if [[ ${OBS_STORAGE_ISOLATION:-0} == 1 ]]; then
+    podman_command=(timeout 20s podman)
+  fi
   case "${COMPOSE_ENGINE:-docker}" in
     podman)
-      if podman network inspect "$network_name" >/dev/null 2>&1; then
-        if ! podman network inspect "$network_name" | grep -Fq '"isolate": "false"'; then
+      if "${podman_command[@]}" network inspect "$network_name" >/dev/null 2>&1; then
+        if ! "${podman_command[@]}" network inspect "$network_name" | grep -Fq '"isolate": "false"'; then
           printf '%s\n' "Podman network $network_name exists without isolate=false; remove it only after confirming it is dedicated to this stack." >&2
           exit 69
         fi
       else
-        podman network create --opt isolate=false "$network_name" >/dev/null
+        "${podman_command[@]}" network create --opt isolate=false "$network_name" >/dev/null
       fi
       ;;
     docker)
       if [[ "${DOCKER_HOST:-}" == *podman.sock ]] && command -v podman >/dev/null 2>&1; then
-        if podman network inspect "$network_name" >/dev/null 2>&1; then
-          if ! podman network inspect "$network_name" | grep -Fq '"isolate": "false"'; then
+        if "${podman_command[@]}" network inspect "$network_name" >/dev/null 2>&1; then
+          if ! "${podman_command[@]}" network inspect "$network_name" | grep -Fq '"isolate": "false"'; then
             printf '%s\n' "Podman network $network_name exists without isolate=false; remove it only after confirming it is dedicated to this stack." >&2
             exit 69
           fi
         else
-          podman network create --opt isolate=false "$network_name" >/dev/null
+          "${podman_command[@]}" network create --opt isolate=false "$network_name" >/dev/null
         fi
       else
         docker network inspect "$network_name" >/dev/null 2>&1 || docker network create --driver bridge "$network_name" >/dev/null
@@ -174,22 +182,32 @@ EOF
 fi
 
 compose_files=(-f compose.yaml)
+compose_up_args=()
 if [[ ${OBS_STORAGE_ISOLATION:-0} == 1 ]]; then
   # Opt-in after the operator's consistent migration, never a silent empty volume.
   [[ ${COMPOSE_ENGINE:-docker} == docker && ${DOCKER_HOST:-} == unix:///run/podman/podman.sock ]] || {
     echo 'Storage isolation currently requires the reviewed rootful Podman API.' >&2; exit 69;
   }
-  [[ ! -e /var/lib/ai-agent-observability/storage-isolation/stopped ]] || {
+  [[ $EUID == 0 && ${COMPOSE_BUILD:-true} == false ]] || {
+    echo 'Storage isolation requires root and prebuilt images (COMPOSE_BUILD=false).' >&2; exit 69;
+  }
+  # shellcheck source=deploy/storage/lifecycle.sh
+  source "$script_dir/storage/lifecycle.sh"
+  storage_take_lock /run/ai-agent-observability-storage 250
+  [[ ! -e /var/lib/ai-agent-observability/storage-isolation/stopped &&
+     ! -e /run/ai-agent-observability-storage/stopped ]] || {
     echo 'Storage isolation stop is latched; operator reconciliation is required.' >&2; exit 69;
   }
   storage_manifest=${OBS_STORAGE_MANIFEST:?Set the reviewed storage manifest}
   bash "$script_dir/storage/require-root-manifest.sh" "$storage_manifest"
   bash "$script_dir/storage/check-storage.sh" --manifest "$storage_manifest"
+  bash "$script_dir/storage/check-bind-paths.sh" "$storage_manifest"
   # The strict guard validates keys, uniqueness and path syntax. Never source it.
   OBS_DATA_ROOT=$(awk -F '\t' '$1 == "data.mountpoint" {print $2}' "$storage_manifest")
   OBS_DIAGNOSTIC_ROOT=$(awk -F '\t' '$1 == "diagnostic.mountpoint" {print $2}' "$storage_manifest")
   export OBS_DATA_ROOT OBS_DIAGNOSTIC_ROOT
   compose_files+=(-f compose.storage-isolation.yaml)
+  compose_up_args+=(--pull never)
 elif [[ ${OBS_STORAGE_ISOLATION:-0} != 0 ]]; then
   echo 'OBS_STORAGE_ISOLATION must be 0 or 1.' >&2; exit 64
 fi
@@ -200,7 +218,7 @@ case "${COMPOSE_BUILD:-true}" in
     compose -p "$project_name" "${compose_files[@]}" up -d --build
     ;;
   false)
-    compose -p "$project_name" "${compose_files[@]}" up -d --no-build
+    compose -p "$project_name" "${compose_files[@]}" up -d --no-build "${compose_up_args[@]}"
     ;;
   *)
     printf '%s\n' 'COMPOSE_BUILD must be true or false' >&2
