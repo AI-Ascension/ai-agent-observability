@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sts2-exact-checkpoint-reference-v1",
+  "type": "object",
+  "description": "Public, digest-free checkpoint reference for ordinary agents, transcripts, and dashboards. It carries a keyed opaque handle and permitted boundary/assurance summaries only; by construction there is no member for an exact-state, checkpoint, blob, or compatibility digest, and additional properties are rejected. Schema validity does not prove coverage, restorability, or that the handle was honestly issued.",
+  "properties": {
+    "schema": {
+      "const": "ascension.exact_checkpoint_reference.v1"
+    },
+    "reference_version": {
+      "const": "exact-checkpoint-reference-v1"
+    },
+    "handle": {
+      "type": "string",
+      "pattern": "^ckpt-h1:[0-9a-f]{64}$"
+    },
+    "occurrence": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.:-]{1,256}$"
+    },
+    "boundary_kind": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "boundary_phase": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "assurance": {
+      "enum": [
+        "public_observation_only",
+        "capture_only",
+        "restore_supported",
+        "restore_verified",
+        "continuation_certified"
+      ]
+    },
+    "restore_verified": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schema",
+    "reference_version",
+    "handle",
+    "occurrence",
+    "boundary_kind",
+    "boundary_phase",
+    "assurance",
+    "restore_verified"
+  ],
+  "additionalProperties": false
+}

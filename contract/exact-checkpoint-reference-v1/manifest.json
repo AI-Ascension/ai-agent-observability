@@ -1,0 +1,22 @@
+{
+  "artifact": "sts2-protocol/exact-checkpoint-reference-v1",
+  "protocol_version": "exact-checkpoint-reference-v1",
+  "schema": "schema.json",
+  "schema_digest": "028e00d06f9f2b16cb9097f47aedd057e74046a7cb2ba97362978e18029f48ab",
+  "provenance": {
+    "source": "schemas/exact-checkpoint-reference-v1.schema.json",
+    "generator": "hand-authored",
+    "license": "MIT"
+  },
+  "consumers": [
+    "sts2-harness",
+    "sts2-mcp-server",
+    "ascension-map-visualizer"
+  ],
+  "goldens": [
+    "golden/reference.json",
+    "golden/invalid-privileged.json",
+    "golden/unsupported-version.json"
+  ],
+  "checksums": "SHA256SUMS"
+}

@@ -1,0 +1,10 @@
+{
+  "schema": "ascension.exact_checkpoint_reference.v1",
+  "reference_version": "exact-checkpoint-reference-v1",
+  "handle": "ckpt-h1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "occurrence": "run:alpha:1",
+  "boundary_kind": "decision",
+  "boundary_phase": "COMBAT",
+  "assurance": "restore_verified",
+  "restore_verified": true
+}

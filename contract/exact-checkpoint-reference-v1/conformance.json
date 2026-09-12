@@ -1,0 +1,14 @@
+{
+  "case_id": "CT-EXACT-CHECKPOINT-REFERENCE-V1-001",
+  "case": "../../conformance/cases/exact-checkpoint-reference-v1.json",
+  "profile": "exact-checkpoint-reference-v1",
+  "deterministic": true,
+  "requires_live_runtime": false,
+  "checks": [
+    "source schema bytes equal the artifact schema bytes",
+    "every listed checksum matches its file bytes",
+    "the golden reference validates against the schema",
+    "a reference carrying an exact-state digest is rejected",
+    "an unsupported reference version is rejected rather than coerced"
+  ]
+}
