@@ -11,6 +11,28 @@ repository implementation does not enable the overlay or install the timer.
 Issue #28 remains open for the following deployment acceptance gates; do not close
 it based on a source merge or a green CI run:
 
+Use `deploy/storage/acceptance-report.sh` as an effect-free repository checklist
+against a reviewed, absolute-path manifest:
+
+```bash
+bash ./deploy/storage/acceptance-report.sh \
+  --manifest /absolute/path/to/reviewed/storage.tsv
+```
+
+The report parses the repository manifest contract and emits a deterministic
+`key=value` checklist. It does not require root, Podman, Docker, ClickHouse,
+systemd, network access, credentials or application data, and it never starts or
+stops a service, changes a mount, or inspects a host. `repository_checks=confirmed`
+means only that the manifest syntax and schema passed; host/runtime, logger,
+mount, timer, log-forwarding, migration, backup, alert, sustained-load and
+reboot fields remain `unverified`. A valid report exits nonzero (`1`) by design
+because external acceptance is still open; malformed input exits with a usage
+error. Use
+[`docs/evidence/storage-acceptance.md`](evidence/storage-acceptance.md) to map
+the output to each operator-owned gate. Keep issue #28 open while any row is
+not `confirmed`; a repository report cannot close privileged host, deployment,
+or migration acceptance.
+
 - Record the production image digest, measured data/merge budgets, administrator
   access and the provisioned physical data and diagnostic allocations.
 - Exercise the actual Compose-to-Podman startup path with the admitted manifest,

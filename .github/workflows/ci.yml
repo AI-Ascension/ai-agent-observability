@@ -67,6 +67,8 @@ jobs:
         run: |
           bash tests/bootstrap.sh
           bash tests/storage-admission.sh
+          # Effect-free checklist coverage; no host/runtime acceptance is implied.
+          bash tests/storage-acceptance-report.sh
           bash tests/storage-lifecycle.sh
           bash tests/validation-regressions.sh
           bash tests/query-provision-invariants.sh
