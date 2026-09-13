@@ -88,6 +88,10 @@ two mounted filesystems and enables that gate. Adapt its paths to the admitted r
 The separate storage timer runs `stop-on-pressure.sh` independently of database health.
 It latches admission failures, stops Collector first, Laminar ingest next, and then
 ClickHouse. It retries failed stops and never restarts a container automatically.
+Only a successful inspection reporting a stopped container skips its stop attempt.
+Failed or unexpected inspection results still trigger bounded shutdown and leave
+the monitor result unsuccessful, so the next timer tick retries and the error stays
+visible even if the stop command succeeds.
 Collector shutdown also interrupts delivery to MLflow: preserve and reconcile its
 queues, notify producers of the maintenance boundary and account for rejected spans.
 Container stop has a 60-second grace period and may terminate forcibly after it; this
@@ -177,6 +181,14 @@ evidence record for the distinction between finite fault testing and acceptance.
 failure, stop ordering and continued shutdown after one stop fails. It checks missing,
 symlink-substituted and nested bind paths using disposable paths and mount metadata
 fixtures. This is local lifecycle evidence, not a live systemd or Podman stop test.
+
+`tests/storage-stop-runtime.sh` additionally exercises the actual shutdown helper
+against three disposable Podman containers using the already staged immutable
+image. It refuses occupied service names or failed inventory, cleans up only IDs
+created by its invocation, verifies all three stop, and repeats shutdown to check
+idempotence. The existing storage-fault CI job invokes it on its disposable runner.
+This validates helper/runtime integration; installed timers, fault detection,
+production admission, alerts and reboot behavior remain separate acceptance gates.
 
 `tests/clickhouse-logging-runtime.sh IMAGE_ID_OR_DIGEST` uses a pre-existing immutable
 image in disposable Podman containers. It checks effective native logger keys and a

@@ -33,12 +33,19 @@ storage_latch_stop() {
 storage_stop_containers() {
   local container running failed=0
   for container in ai-agent-observability-otel-collector ai-agent-observability-laminar-app-server ai-agent-observability-laminar-clickhouse; do
-    running=$(timeout 20s podman inspect --format '{{.State.Running}}' "$container") || { failed=1; continue; }
+    if ! running=$(timeout 20s podman inspect --format '{{.State.Running}}' "$container"); then
+      # An unavailable inspection is not evidence that ingestion has stopped.
+      running=unknown
+    fi
     case "$running" in
-      false) ;;
-      true) timeout 75s podman stop --time 60 "$container" >/dev/null || failed=1 ;;
-      *) failed=1 ;;
+      false) continue ;;
+      true) ;;
+      *)
+        printf 'Unable to confirm running state for %s; attempting emergency stop.\n' "$container" >&2
+        failed=1
+        ;;
     esac
+    timeout 75s podman stop --time 60 "$container" >/dev/null || failed=1
   done
   return "$failed"
 }

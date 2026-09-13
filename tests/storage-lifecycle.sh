@@ -24,10 +24,17 @@ cat >"$test_root/bin/podman" <<'FIXTURE'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ $1 == inspect ]]; then
-  echo true
+  case "${INSPECT_FAULT:-none}" in
+    failure) exit 125 ;;
+    timeout) exit 124 ;;
+    invalid) echo unexpected ;;
+    stopped) echo false ;;
+    failed-false) echo false; exit 125 ;;
+    *) echo true ;;
+  esac
 elif [[ $1 == stop ]]; then
   echo "${*: -1}" >>"$STOP_EVENTS"
-  [[ ${*: -1} != ai-agent-observability-otel-collector ]]
+  [[ ${STOP_FAIL:-1} != 1 || ${*: -1} != ai-agent-observability-otel-collector ]]
 else
   exit 1
 fi
@@ -42,6 +49,21 @@ storage_stop_containers || status=$?
 [[ $status == 1 ]]
 printf '%s\n' ai-agent-observability-otel-collector ai-agent-observability-laminar-app-server \
   ai-agent-observability-laminar-clickhouse >"$test_root/expected"
+cmp "$test_root/expected" "$STOP_EVENTS"
+# Unknown state must still stop every service, even if the failed command emitted
+# false. Keep the failure visible after otherwise successful shutdown attempts.
+for fault in failure timeout invalid failed-false; do
+  : >"$STOP_EVENTS"
+  status=0
+  INSPECT_FAULT=$fault STOP_FAIL=0 storage_stop_containers 2>/dev/null || status=$?
+  [[ $status == 1 ]]
+  cmp "$test_root/expected" "$STOP_EVENTS"
+done
+: >"$STOP_EVENTS"
+INSPECT_FAULT=stopped STOP_FAIL=0 storage_stop_containers
+[[ ! -s "$STOP_EVENTS" ]]
+: >"$STOP_EVENTS"
+STOP_FAIL=0 storage_stop_containers
 cmp "$test_root/expected" "$STOP_EVENTS"
 storage_latch_stop "$test_root/state" "$test_root/run"
 [[ -e "$test_root/state/stopped" ]]
