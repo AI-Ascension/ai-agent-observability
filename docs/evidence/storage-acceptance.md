@@ -57,5 +57,8 @@ privileged host/deployment path and remain `unverified` until exercised.
 The finite repository and disposable tests remain `source-derived` or
 `confirmed` component evidence only. A `confirmed` field in the snapshot means
 the corresponding read-only observation passed; it does not turn any row above
-into live, migration, sustained-load, or reboot evidence. Issue #28 remains open
-until the deployment/storage owner attaches sanitized evidence for every row.
+into live, migration, sustained-load, or reboot evidence. Issue #28 was closed
+when the repository-owned scope (bounded storage capture, fail-closed acceptance
+tooling, and disposable tests) merged; the deployment/storage operator must
+still attach sanitized evidence for every row above before any production
+acceptance is claimed.
