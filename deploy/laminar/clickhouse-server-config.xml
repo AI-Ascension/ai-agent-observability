@@ -1,6 +1,17 @@
 <?xml version="1.0"?>
 <!-- Adapted from lmnr-ai/lmnr at v0.2.3; see THIRD_PARTY_NOTICES.md. -->
 <clickhouse>
+    <!-- Replace the inherited logger: enabling console alone retains file sinks.
+         The runtime must separately bound console capture (see STORAGE_ISOLATION.md).
+         Explicit removal also handles layered image configuration. -->
+    <logger replace="replace">
+        <level>information</level>
+        <console>1</console>
+        <console_log_level>information</console_log_level>
+        <log remove="remove"/>
+        <errorlog remove="remove"/>
+        <use_syslog>0</use_syslog>
+    </logger>
     <!-- Disable internal telemetry that adds storage and I/O overhead on single-node deployments. -->
     <trace_log remove="1"/>
     <text_log remove="1"/>

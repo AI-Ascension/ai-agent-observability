@@ -1,0 +1,10 @@
+[Unit]
+Description=Check observability storage independently of ClickHouse health
+
+[Timer]
+OnBootSec=15s
+OnUnitInactiveSec=15s
+Unit=ai-agent-observability-storage.service
+
+[Install]
+WantedBy=timers.target

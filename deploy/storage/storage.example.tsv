@@ -1,0 +1,23 @@
+# Replace every REPLACE value after the physical allocation and migration review.
+version	1
+contract	block-backed-fixed-v1
+data.mountpoint	/srv/observability-data
+data.device	/dev/REPLACE_DATA_PARTITION
+data.uuid	REPLACE_DATA_UUID
+data.fstype	ext4
+data.min_free_bytes	REPLACE_ADMISSION_FLOOR
+data.min_free_inodes	REPLACE_INODE_FLOOR
+data.reserve_bytes	REPLACE_MERGE_RESERVE
+data.reserve_inodes	REPLACE_INODE_RESERVE
+data.max_bytes	REPLACE_ALLOCATION_CEILING
+data.max_inodes	REPLACE_INODE_CEILING
+diagnostic.mountpoint	/srv/observability-logs
+diagnostic.device	/dev/REPLACE_LOG_PARTITION
+diagnostic.uuid	REPLACE_LOG_UUID
+diagnostic.fstype	ext4
+diagnostic.min_free_bytes	REPLACE_ADMISSION_FLOOR
+diagnostic.min_free_inodes	REPLACE_INODE_FLOOR
+diagnostic.reserve_bytes	REPLACE_STOP_RESERVE
+diagnostic.reserve_inodes	REPLACE_INODE_RESERVE
+diagnostic.max_bytes	REPLACE_ALLOCATION_CEILING
+diagnostic.max_inodes	REPLACE_INODE_CEILING
