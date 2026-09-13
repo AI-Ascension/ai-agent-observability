@@ -40,33 +40,63 @@ readonly manifest=$2
   die_usage 'manifest path contains unsupported characters'
 [[ -f $manifest && ! -L $manifest && -r $manifest ]] ||
   die_usage 'manifest must be a readable regular file (not a symlink)'
-command -v stat >/dev/null 2>&1 ||
-  die_usage 'stat is required to bound the manifest'
 command -v od >/dev/null 2>&1 ||
   die_usage 'od is required to inspect manifest bytes'
+command -v dd >/dev/null 2>&1 ||
+  die_usage 'dd is required to snapshot manifest bytes'
+command -v mktemp >/dev/null 2>&1 ||
+  die_usage 'mktemp is required to snapshot manifest bytes'
+command -v wc >/dev/null 2>&1 ||
+  die_usage 'wc is required to bound manifest bytes'
 
-# Inspect the size without reading an unbounded input.  The lexical comparison
-# avoids shell arithmetic on an attacker-controlled value larger than uint64.
-manifest_size=$(stat -c '%s' -- "$manifest" 2>/dev/null) ||
-  die_usage 'manifest size cannot be inspected'
-[[ $manifest_size =~ ^(0|[1-9][0-9]*)$ ]] ||
-  die_usage 'manifest size is invalid'
-if (( ${#manifest_size} > ${#max_manifest_bytes} )) ||
-  { (( ${#manifest_size} == ${#max_manifest_bytes} )) &&
-    (( 10#$manifest_size > 10#$max_manifest_bytes )); }; then
-  die_usage "manifest exceeds ${max_manifest_bytes} bytes"
+# Read the original path once into a raw-byte snapshot.  A shell variable is
+# not suitable here because Bash cannot preserve NUL bytes in command
+# substitution; the temporary file keeps every byte unchanged.  Reading one
+# block that is exactly one byte larger than the admitted limit lets the
+# snapshot distinguish a 65,537th byte without ever consuming an unbounded
+# stream.
+manifest_snapshot=''
+cleanup_snapshot() {
+  [[ -z $manifest_snapshot ]] || unlink "$manifest_snapshot" || :
+}
+trap cleanup_snapshot EXIT
+manifest_snapshot=$(mktemp "${TMPDIR:-/tmp}/acceptance-report.XXXXXX") ||
+  die_usage 'manifest snapshot cannot be created'
+readonly manifest_snapshot
+
+exec 3<"$manifest" || die_usage 'manifest cannot be opened'
+if ! dd bs=65537 count=1 <&3 >"$manifest_snapshot" 2>/dev/null; then
+  exec 3<&-
+  die_usage 'manifest bytes cannot be read'
 fi
-nul_scan_status=0
-if LC_ALL=C od -An -tx1 "$manifest" |
+exec 3<&-
+
+snapshot_size=$(wc -c <"$manifest_snapshot") ||
+  die_usage 'manifest snapshot size cannot be inspected'
+snapshot_size=${snapshot_size//[[:space:]]/}
+[[ $snapshot_size =~ ^[0-9]+$ ]] ||
+  die_usage 'manifest snapshot size is invalid'
+(( snapshot_size <= max_manifest_bytes )) ||
+  die_usage "manifest exceeds ${max_manifest_bytes} bytes"
+
+# Keep both sides' statuses.  With pipefail, an od failure followed by awk's
+# expected status 1 ("no NUL") would otherwise look like a successful scan.
+nul_scan_pipeline=()
+if LC_ALL=C od -An -tx1 "$manifest_snapshot" |
   awk '{ for (field_index = 1; field_index <= NF; field_index++)
            if ($field_index == "00") found = 1 }
        END { exit(found ? 0 : 1) }'; then
-  die_usage 'manifest contains a NUL byte'
+  nul_scan_pipeline=("${PIPESTATUS[@]}")
 else
-  nul_scan_status=$?
-  (( nul_scan_status == 1 )) ||
-    die_usage 'manifest bytes cannot be inspected'
+  nul_scan_pipeline=("${PIPESTATUS[@]}")
 fi
+(( nul_scan_pipeline[0] == 0 )) ||
+  die_usage 'manifest bytes cannot be inspected'
+case "${nul_scan_pipeline[1]}" in
+  0) die_usage 'manifest contains a NUL byte' ;;
+  1) ;;
+  *) die_usage 'manifest bytes cannot be inspected' ;;
+esac
 
 declare -A settings=()
 known_key() {
@@ -82,7 +112,7 @@ known_key() {
   esac
 }
 
-exec 3<"$manifest" || die_usage 'manifest cannot be opened'
+exec 3<"$manifest_snapshot" || die_usage 'manifest snapshot cannot be opened'
 line_number=0
 while IFS= read -r line <&3 || [[ -n $line ]]; do
   ((line_number += 1))
