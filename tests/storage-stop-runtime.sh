@@ -29,7 +29,7 @@ cleanup() {
 }
 trap cleanup EXIT
 for name in "${names[@]}"; do
-  id=$(podman create --name "$name" --pull never --network none --read-only \
+  id=$(podman create --name "$name" --pull never --network none --read-only --image-volume ignore \
     --memory 64m --cpus 1 --restart no --log-driver none --entrypoint /bin/sh \
     "$image" -c 'trap "exit 0" TERM; while :; do sleep 1 & wait $!; done')
   [[ "$id" =~ ^[0-9a-f]{64}$ ]] || exit 1
