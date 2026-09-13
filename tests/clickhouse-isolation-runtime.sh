@@ -12,6 +12,8 @@ for command in podman mount umount mkfs.ext4 fallocate timeout; do
 done
 podman image exists "$image" || exit 77
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+# Reuse the already staged immutable image for a real lifecycle helper check.
+bash "$repo_root/tests/storage-stop-runtime.sh" "$image"
 work=$(mktemp -d)
 name="obs-storage-runtime-$(basename "$work")"
 flood_name="$name-flood"
