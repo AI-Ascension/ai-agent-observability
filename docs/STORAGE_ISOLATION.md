@@ -1,7 +1,34 @@
-# ClickHouse storage isolation — implementation candidate
+# ClickHouse storage isolation — opt-in implementation
 
 Tracking: issue #28. Owner: deployment/storage lane. Runtime review is independent
 of the source implementation. No host rollout or data migration is claimed here.
+
+## Merge and deployment acceptance
+
+PR #29 delivers the console logger correction, opt-in storage configuration,
+admission and lifecycle helpers, and disposable regression coverage. Merging that
+repository implementation does not enable the overlay or install the timer.
+Issue #28 remains open for the following deployment acceptance gates; do not close
+it based on a source merge or a green CI run:
+
+- Record the production image digest, measured data/merge budgets, administrator
+  access and the provisioned physical data and diagnostic allocations.
+- Exercise the actual Compose-to-Podman startup path with the admitted manifest,
+  account/profile settings and both bind mounts; prove mount loss cannot fall back
+  to host-root storage.
+- Bound every diagnostic route, including conmon errors when its file sink is
+  full and any journald/rsyslog forwarding; measure the aggregate steady-state
+  ceiling and preserve unrelated host logs.
+- Exercise the installed pressure timer, shutdown ordering, failed-stop retries,
+  durable latch, alert delivery and restart refusal under storage faults.
+- Quiesce producers, preserve a consistent backup, migrate and reconcile accepted
+  records, verify ingestion in both backends, and exercise a rollback that
+  preserves writes accepted after cutover.
+- Record upstream queue/store allocation limits, 30–60 minutes of normal load,
+  and coordinated reboot persistence on the target host.
+
+The deployment/storage owner must attach sanitized evidence for each gate to #28.
+Production provisioning, migration and rollout remain separate operator work.
 
 ## Log containment
 
@@ -142,8 +169,9 @@ Compose API path, host syslog forwarding, or the pressure timer and alert delive
 The test also starts a separate bounded writer before exhausting diagnostics, proves
 its normal log route, then emits 60,000 lines into the full allocation. It samples the
 filesystem ceiling and counts only that writer's conmon journal output against an
-explicit 2MiB finite-test bound. This extension remains unverified until its updated
-CI run passes; even a pass does not establish an indefinitely bounded host log route.
+explicit 2MiB finite-test bound. Run 34703866164 at 27f803a passed this extension;
+even a pass does not establish an indefinitely bounded host log route. See the
+evidence record for the distinction between finite fault testing and acceptance.
 
 `tests/storage-lifecycle.sh` exercises actual process locks, injected persistent-state
 failure, stop ordering and continued shutdown after one stop fails. It checks missing,

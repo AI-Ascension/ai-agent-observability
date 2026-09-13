@@ -98,6 +98,18 @@ zero failing streak. The missing-ingestion negative case also passed. This is
 disposable end-to-end evidence for the base Compose deployment, not the isolated
 production Compose override or preserved production records.
 
+Run [34703866164](https://github.com/AI-Ascension/ai-agent-observability/actions/runs/34703866164)
+at `27f803a874994a05d0dbb4d064eb6adf9e521518` passed all five jobs,
+including the added full-diagnostic-storage writer fault and both disposable
+ingestion modes. This supersedes the earlier pending CI statements above; those
+entries describe the historical diagnosis. The finite writer test passing does
+not prove indefinite containment of conmon's alternate host-log route.
+
+Repository merge acceptance is separate from deployment acceptance. The source
+and disposable checks support merging the opt-in implementation; issue #28 tracks
+the remaining production gates listed in `docs/STORAGE_ISOLATION.md`. The overlay
+and systemd timer require deliberate operator installation and activation.
+
 Unverified: exact root cause of the log file-access failure, production image digest,
 actual production data sizing, production hard allocation provisioning and account
 grants, production startup/migration, pressure/stop/reboot controls, bounded host log
