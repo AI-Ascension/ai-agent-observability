@@ -36,7 +36,8 @@ for required in \
   'OBSERVABILITY_OPERATOR_QUERY_APPROVED' \
   'ingest_key_reused: false' \
   'default.spans' \
-  'position(toString(attributes)' \
+  'JSONExtractKeys' \
+  'arrayExists' \
   'MLFLOW_EXPERIMENT_ID' \
   'sts2.run_id' \
   'sts2.export_status'; do

@@ -40,12 +40,15 @@ export const LAMINAR_SQL_COLUMNS = Object.freeze([
 // SQL is scoped to that namespace before ORDER BY/LIMIT. A co-located
 // recorded-run import (`recorded.*`) therefore cannot crowd out the bounded
 // window or fail the allowlist projection before gameplay rows are returned.
-// `position(toString(attributes), ...)` is the same type-agnostic test the OTLP
-// smoke test uses.
+// The scope extracts top-level JSON keys and tests the `sts2.` namespace, so
+// attribute values (which recorded imports may set to strings containing
+// `sts2...`) cannot match. The upstream v0.2.3 `default.spans.attributes`
+// column is a JSON `String`, so `JSONExtractKeys(attributes)` yields the
+// top-level key array.
 export const STS2_ATTRIBUTE_PREFIX = 'sts2.';
 
 export function gameplayScopePredicate() {
-  return `position(toString(attributes), '${STS2_ATTRIBUTE_PREFIX}') > 0`;
+  return `arrayExists(k -> startsWith(k, '${STS2_ATTRIBUTE_PREFIX}'), JSONExtractKeys(attributes))`;
 }
 
 // Exactly the gameplay attributes carried by the versioned STS2 contract

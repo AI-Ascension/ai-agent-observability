@@ -22,6 +22,9 @@ import {
   validateLaminarResponse,
   validateMlflowSearchResponse,
 } from '../deploy/laminar/operator-query.mjs';
+import { validateBundle } from '../deploy/recorded-run/bundle.mjs';
+import { project, otlpBodies } from '../deploy/recorded-run/projection.mjs';
+import { fixture, bundleFor } from './recorded-run-fixtures/build.mjs';
 
 const OPERATOR_TOKEN = 'a'.repeat(64);
 const INGEST_TOKEN = 'b'.repeat(64);
@@ -38,9 +41,34 @@ function response(status, body) {
   };
 }
 
+// Build ClickHouse-shaped rows from the REAL recorded-run projection so the
+// regression test exercises actual importer output, not a hand-written
+// approximation. The importer emits `recorded.*` keys whose values contain
+// `sts2.` text (for example `sts2.runtime.operation`), which is exactly why a
+// substring scope is unsafe.
+function recordedClickHouseRows() {
+  const summary = project(validateBundle(bundleFor(fixture())));
+  const spans = otlpBodies('a'.repeat(64), summary).flatMap(b => b.resourceSpans[0].scopeSpans[0].spans);
+  return spans.map((s) => {
+    const attrs = Object.fromEntries((s.attributes ?? []).map((a) => {
+      const v = a.value ?? {};
+      return [a.key, v.stringValue ?? v.intValue ?? v.boolValue ?? ''];
+    }));
+    return {
+      trace_id: s.traceId, span_id: s.spanId, name: s.name, status: 'OK',
+      start_time: '2026-02-01 00:00:00.000000000', end_time: '2026-02-01 00:00:01.000000000',
+      attributes: JSON.stringify(attrs),
+    };
+  });
+}
+
 // A deterministic, in-process simulation of the upstream route. It encodes the
 // one behavior the repository cannot test live: the standard project validator
-// returns a blank HTTP 404 for an ingest-only key on `/v1/sql/query`.
+// returns a blank HTTP 404 for an ingest-only key on `/v1/sql/query`. When the
+// request carries the gameplay scope it models `JSONExtractKeys(attributes)`
+// semantics, the `ORDER BY start_time DESC`, and the trailing `LIMIT <n>`
+// binding; without the scope it returns every row unsliced, which models the
+// old, unfixed behavior so the test can demonstrate the regression.
 function simulateLaminar({ rows, observed }) {
   return async (url, init) => {
     observed.push({ url: String(url), headers: init.headers, body: JSON.parse(init.body) });
@@ -48,8 +76,16 @@ function simulateLaminar({ rows, observed }) {
     const token = String(init.headers.authorization ?? '').replace(/^Bearer /, '');
     if (token === INGEST_TOKEN) return response(404, null);
     if (token !== OPERATOR_TOKEN) return response(401, { error: 'unauthorized' });
-    if (String(init.body).includes(gameplayScopePredicate())) {
-      const scoped = rows.filter((row) => String(JSON.stringify(row.attributes)).includes(STS2_ATTRIBUTE_PREFIX));
+    const query = String(init.body);
+    if (query.includes(gameplayScopePredicate())) {
+      const limit = Number.parseInt(query.slice(query.lastIndexOf('LIMIT ') + 'LIMIT '.length), 10);
+      const scoped = rows
+        .filter((row) => {
+          const parsed = typeof row.attributes === 'string' ? JSON.parse(row.attributes) : row.attributes;
+          return Object.keys(parsed).some((key) => key.startsWith(STS2_ATTRIBUTE_PREFIX));
+        })
+        .sort((a, b) => (a.start_time < b.start_time ? 1 : a.start_time > b.start_time ? -1 : 0))
+        .slice(0, limit);
       return response(200, { data: scoped });
     }
     return response(200, { data: rows });
@@ -113,9 +149,10 @@ test('the SQL projection is bounded and allowlisted', () => {
   const sql = buildLaminarSql(25);
   for (const column of LAMINAR_SQL_COLUMNS) assert.match(sql, new RegExp(`\\b${column}\\b`));
   assert.match(sql, /FROM default\.spans/);
-  assert.match(sql, /WHERE position\(toString\(attributes\), 'sts2\.'\) > 0 ORDER BY start_time DESC LIMIT 25$/);
-  assert.ok(sql.indexOf('WHERE') < sql.indexOf('ORDER BY'));
   assert.ok(sql.includes(gameplayScopePredicate()));
+  assert.match(sql, /arrayExists\(k -> startsWith\(k, 'sts2\.'\), JSONExtractKeys\(attributes\)\)/);
+  assert.ok(sql.indexOf('WHERE') < sql.indexOf('ORDER BY'));
+  assert.equal(/position\(/.test(sql), false);
   assert.match(sql, /LIMIT 25$/);
   for (const refused of [0, -1, MAX_RESULT_ROWS + 1, 1.5]) {
     assert.throws(() => buildLaminarSql(refused), /laminar_limit_invalid/);
@@ -142,24 +179,32 @@ test('a simulated ingest-only key cannot query while the operator key can', asyn
   assert.match(observed[0].body.query, /LIMIT 10$/);
 });
 
-test('the gameplay scope excludes a newer recorded-run span before the row limit', async () => {
-  const recordedRow = allowedRow({
-    start_time: '2026-01-02 00:00:00.000000000',
-    attributes: {
-      'recorded.logical_run_key': 'import-1',
-      'recorded.semantic_digest': 'e'.repeat(64),
-    },
-  });
+test('the gameplay scope excludes real recorded-run spans before the row limit', async () => {
+  const recorded = recordedClickHouseRows();
+  const rows = [...recorded, allowedRow()];
+  // Recorded rows are newer than the gameplay row, so any weaker scope that
+  // fails to exclude them would let them fill the binding row limit first.
+  assert.ok(recorded.every((row) => row.start_time > rows[rows.length - 1].start_time));
+  // Documents why the substring predicate was unsafe: recorded-run imports
+  // carry `sts2.` text inside attribute VALUES.
+  assert.ok(recorded.some((row) => JSON.stringify(row.attributes).includes(STS2_ATTRIBUTE_PREFIX)));
+  // Documents the key discriminator the fixed scope relies on.
+  assert.ok(recorded.every((row) => {
+    const parsed = typeof row.attributes === 'string' ? JSON.parse(row.attributes) : row.attributes;
+    return Object.keys(parsed).every((key) => !key.startsWith(STS2_ATTRIBUTE_PREFIX));
+  }));
   const observed = [];
-  const transport = simulateLaminar({ rows: [recordedRow, allowedRow()], observed });
-  const rows = await queryLaminar({
+  const transport = simulateLaminar({ rows, observed });
+  const sql = buildLaminarSql(2);
+  const projected = await queryLaminar({
     baseUrl: 'http://127.0.0.1:18000',
     token: OPERATOR_TOKEN,
-    sql: buildLaminarSql(10),
+    sql,
     transport,
   });
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].attributes['sts2.run_id'], 'run-1');
+  assert.equal(projected.length, 1);
+  assert.equal(projected[0].attributes['sts2.run_id'], 'run-1');
+  assert.ok(projected.every((row) => Object.keys(row.attributes).every((key) => !key.startsWith('recorded.'))));
   assert.equal(observed[0].body.query.includes(gameplayScopePredicate()), true);
 });
 
