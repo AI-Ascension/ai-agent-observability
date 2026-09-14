@@ -62,13 +62,37 @@ function recordedClickHouseRows() {
   });
 }
 
+// Model the scope predicate actually present in the request: key-based
+// (`JSONExtractKeys(attributes)` plus `startsWith(k, 'sts2.')`) or the old
+// substring form (`position(toString(attributes), 'sts2.')`). Then apply
+// `ORDER BY start_time DESC` and the trailing `LIMIT <n>`. A query with no
+// scope returns null so the caller can fall back to the pre-fix behavior; this
+// lets the regression tests distinguish the two scopes instead of assuming the
+// good predicate is present.
+function scopeRows(query, rows) {
+  const keyScoped = query.includes('JSONExtractKeys(attributes)') && query.includes("startsWith(k, 'sts2.')");
+  const substringScoped = query.includes("position(toString(attributes), 'sts2.')");
+  if (!keyScoped && !substringScoped) return null;
+  const limitMatch = /LIMIT ([0-9]+)/.exec(query);
+  const limit = limitMatch ? Number.parseInt(limitMatch[1], 10) : rows.length;
+  const filtered = rows.filter((row) => {
+    const serialized = typeof row.attributes === 'string' ? row.attributes : JSON.stringify(row.attributes);
+    if (keyScoped) {
+      const parsed = typeof row.attributes === 'string' ? JSON.parse(row.attributes) : row.attributes;
+      return Object.keys(parsed).some((key) => key.startsWith(STS2_ATTRIBUTE_PREFIX));
+    }
+    return serialized.includes(STS2_ATTRIBUTE_PREFIX);
+  });
+  return filtered
+    .sort((a, b) => (a.start_time < b.start_time ? 1 : a.start_time > b.start_time ? -1 : 0))
+    .slice(0, limit);
+}
+
 // A deterministic, in-process simulation of the upstream route. It encodes the
 // one behavior the repository cannot test live: the standard project validator
-// returns a blank HTTP 404 for an ingest-only key on `/v1/sql/query`. When the
-// request carries the gameplay scope it models `JSONExtractKeys(attributes)`
-// semantics, the `ORDER BY start_time DESC`, and the trailing `LIMIT <n>`
-// binding; without the scope it returns every row unsliced, which models the
-// old, unfixed behavior so the test can demonstrate the regression.
+// returns a blank HTTP 404 for an ingest-only key on `/v1/sql/query`. The scope
+// semantics come from `scopeRows`, so the tests exercise the request the
+// production code actually emits.
 function simulateLaminar({ rows, observed }) {
   return async (url, init) => {
     observed.push({ url: String(url), headers: init.headers, body: JSON.parse(init.body) });
@@ -76,19 +100,8 @@ function simulateLaminar({ rows, observed }) {
     const token = String(init.headers.authorization ?? '').replace(/^Bearer /, '');
     if (token === INGEST_TOKEN) return response(404, null);
     if (token !== OPERATOR_TOKEN) return response(401, { error: 'unauthorized' });
-    const query = String(init.body);
-    if (query.includes(gameplayScopePredicate())) {
-      const limit = Number.parseInt(query.slice(query.lastIndexOf('LIMIT ') + 'LIMIT '.length), 10);
-      const scoped = rows
-        .filter((row) => {
-          const parsed = typeof row.attributes === 'string' ? JSON.parse(row.attributes) : row.attributes;
-          return Object.keys(parsed).some((key) => key.startsWith(STS2_ATTRIBUTE_PREFIX));
-        })
-        .sort((a, b) => (a.start_time < b.start_time ? 1 : a.start_time > b.start_time ? -1 : 0))
-        .slice(0, limit);
-      return response(200, { data: scoped });
-    }
-    return response(200, { data: rows });
+    const scoped = scopeRows(String(init.body), rows);
+    return response(200, { data: scoped ?? rows });
   };
 }
 
@@ -147,6 +160,15 @@ test('only loopback listener URLs are admitted', () => {
 
 test('the SQL projection is bounded and allowlisted', () => {
   const sql = buildLaminarSql(25);
+  // Pin the complete statement so a mutated or weakened predicate (for example
+  // appending `OR 1`) cannot pass review while the behavioral model still
+  // recognizes the scope.
+  assert.equal(
+    sql,
+    'SELECT trace_id, span_id, name, status, start_time, end_time, attributes FROM default.spans '
+      + "WHERE arrayExists(k -> startsWith(k, 'sts2.'), JSONExtractKeys(attributes)) "
+      + 'ORDER BY start_time DESC LIMIT 25',
+  );
   for (const column of LAMINAR_SQL_COLUMNS) assert.match(sql, new RegExp(`\\b${column}\\b`));
   assert.match(sql, /FROM default\.spans/);
   assert.ok(sql.includes(gameplayScopePredicate()));
@@ -206,6 +228,25 @@ test('the gameplay scope excludes real recorded-run spans before the row limit',
   assert.equal(projected[0].attributes['sts2.run_id'], 'run-1');
   assert.ok(projected.every((row) => Object.keys(row.attributes).every((key) => !key.startsWith('recorded.'))));
   assert.equal(observed[0].body.query.includes(gameplayScopePredicate()), true);
+});
+
+test('the old substring scope is proven unsafe against real recorded-run spans', async () => {
+  // The same real recorded-run rows, queried with the pre-fix substring scope
+  // and a binding limit, fill the window and abort the projection. This is the
+  // regression the key-based scope fixes; it fails if the key predicate is
+  // replaced by any value-insensitive substring test.
+  const rows = [...recordedClickHouseRows(), allowedRow()];
+  const legacySql = `SELECT ${LAMINAR_SQL_COLUMNS.join(', ')} FROM default.spans `
+    + "WHERE position(toString(attributes), 'sts2.') > 0 ORDER BY start_time DESC LIMIT 2";
+  await assert.rejects(
+    queryLaminar({
+      baseUrl: 'http://127.0.0.1:18000',
+      token: OPERATOR_TOKEN,
+      sql: legacySql,
+      transport: simulateLaminar({ rows, observed: [] }),
+    }),
+    /laminar_attribute_not_allowlisted:recorded\./,
+  );
 });
 
 test('the response shape and allowlist fail closed on unknown fields', () => {
@@ -383,6 +424,32 @@ test('a deployment without MLFLOW_EXPERIMENT_ID fails closed unless overridden',
       ),
       /dotenv_missing:MLFLOW_EXPERIMENT_ID/,
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a non-numeric or oversized MLFLOW_EXPERIMENT_ID fails closed and never reaches a request', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'operator-bad-experiment-'));
+  try {
+    const envFile = join(dir, 'deploy.env');
+    const keyFile = join(dir, 'laminar-query-key');
+    writeFileSync(keyFile, `${OPERATOR_TOKEN}\n`, { mode: 0o600 });
+    const calls = [];
+    const transport = async (url) => { calls.push(String(url)); return response(200, { data: [], traces: [] }); };
+    for (const bad of ['PRIVATE_PROMPT_SENTINEL', '1'.repeat(4096), '-1', '1.5', '0x10']) {
+      writeFileSync(envFile, [
+        'BIND_ADDRESS=127.0.0.1',
+        'LAMINAR_HTTP_PORT=18000',
+        'MLFLOW_PORT=15000',
+        `MLFLOW_EXPERIMENT_ID=${bad}`,
+      ].join('\n'), { mode: 0o600 });
+      await assert.rejects(
+        main(['--env-file', envFile, '--key-file', keyFile], { OBSERVABILITY_OPERATOR_QUERY_APPROVED: 'true' }, transport),
+        /mlflow_experiment_id_invalid/,
+      );
+    }
+    assert.deepEqual(calls, []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

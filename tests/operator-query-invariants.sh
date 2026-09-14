@@ -39,6 +39,8 @@ for required in \
   'JSONExtractKeys' \
   'arrayExists' \
   'MLFLOW_EXPERIMENT_ID' \
+  'mlflow_experiment_id_invalid' \
+  'MAX_EXPERIMENT_ID_LENGTH' \
   'sts2.run_id' \
   'sts2.export_status'; do
   grep -Fq -- "$required" "$module"

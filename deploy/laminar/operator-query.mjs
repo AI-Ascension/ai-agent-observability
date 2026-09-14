@@ -22,6 +22,10 @@ import { pathToFileURL } from 'node:url';
 
 export const MAX_RESULT_ROWS = 500;
 export const MAX_TEXT_BYTES = 512;
+// MLflow experiment ids are non-negative integers. Bound them so a hostile or
+// accidental deployment value can neither be transmitted nor echoed into
+// evidence. 19 digits is below the UInt64 range.
+export const MAX_EXPERIMENT_ID_LENGTH = 19;
 
 // The deployed ClickHouse table is resolved by the provisioning preflight to
 // the `default.spans` MergeTree table; `default.spans_v0` is the read view.
@@ -88,6 +92,16 @@ export function isPlainObject(value) {
 export function assertBoundedText(value, code, maximum = MAX_TEXT_BYTES) {
   if (typeof value !== 'string' || value.length === 0 || Buffer.byteLength(value) > maximum || /[\u0000-\u001f\u007f]/.test(value)) {
     fail(code);
+  }
+  return value;
+}
+
+// An experiment id is a bounded non-negative integer string. The CLI flag and
+// the deployment `MLFLOW_EXPERIMENT_ID` both pass through here so an arbitrary
+// dotenv value can never reach the MLflow request or the evidence object.
+export function assertExperimentId(value) {
+  if (typeof value !== 'string' || !/^[0-9]+$/.test(value) || value.length > MAX_EXPERIMENT_ID_LENGTH) {
+    fail('mlflow_experiment_id_invalid');
   }
   return value;
 }
@@ -315,7 +329,7 @@ export function parseArgs(args) {
     } else if (flag === '--key-file' && value && value.startsWith('/')) {
       options.keyFile = value;
     } else if (flag === '--experiment-id' && value && /^[0-9]+$/.test(value)) {
-      options.experimentId = value;
+      options.experimentId = assertExperimentId(value);
     } else if (flag === '--limit' && value && /^[0-9]+$/.test(value)) {
       options.limit = Number(value);
     } else {
@@ -339,7 +353,7 @@ export async function main(args, environment = process.env, transport = fetch) {
   if (!LOOPBACK_HOSTS.has(bindAddress)) fail('bind_address_must_be_loopback');
   const laminarPort = requireSetting(settings, 'LAMINAR_HTTP_PORT');
   const mlflowPort = requireSetting(settings, 'MLFLOW_PORT');
-  const experimentId = options.experimentId ?? requireSetting(settings, 'MLFLOW_EXPERIMENT_ID');
+  const experimentId = assertExperimentId(options.experimentId ?? requireSetting(settings, 'MLFLOW_EXPERIMENT_ID'));
   const token = readOperatorToken(options.keyFile);
   const laminar = await queryLaminar({
     baseUrl: `http://${bindAddress}:${laminarPort}`,

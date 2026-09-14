@@ -6,9 +6,10 @@ All notable changes to this repository are recorded here.
 
 - Scope the operator Laminar query to the `sts2.*` gameplay attribute KEYS via
   `JSONExtractKeys` before ordering/limiting so recorded-run imports cannot fail
-  or crowd out gameplay rows (the scope is value-independent), and default the
+  or crowd out gameplay rows (the scope is value-independent), default the
   MLflow experiment id to the deployment `MLFLOW_EXPERIMENT_ID` with
-  `--experiment-id` as an explicit override.
+  `--experiment-id` as an explicit override, and validate that id as a bounded
+  non-negative integer before any request or evidence.
 - Add a bounded, loopback-only operator query consumer
   (`deploy/laminar/operator-query.mjs`) for gameplay acceptance, pin the exact
   Laminar `/v1/sql/query` and MLflow trace-search contract, preserve the

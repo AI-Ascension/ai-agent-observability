@@ -73,7 +73,11 @@ health probe bypasses that validation, so a healthy container does not prove
 the UI/API Host allowlist. The consumer sends the internal admitted authority
 `localhost:5000` by default and refuses any other value. The experiment id
 defaults to the deployment `.env` value `MLFLOW_EXPERIMENT_ID`; the CLI
-`--experiment-id` flag is an explicit override used only when passed.
+`--experiment-id` flag is an explicit override used only when passed. Both
+sources must be a bounded non-negative integer (at most 19 digits); any other
+value fails closed with `mlflow_experiment_id_invalid` before a request is
+issued or evidence is produced, so an arbitrary dotenv value can never be
+transmitted or echoed.
 
 ## Bounded allowlisted fields
 
