@@ -22,6 +22,10 @@ import { pathToFileURL } from 'node:url';
 
 export const MAX_RESULT_ROWS = 500;
 export const MAX_TEXT_BYTES = 512;
+// MLflow experiment ids are non-negative integers. Bound them so a hostile or
+// accidental deployment value can neither be transmitted nor echoed into
+// evidence. 19 digits is below the UInt64 range.
+export const MAX_EXPERIMENT_ID_LENGTH = 19;
 
 // The deployed ClickHouse table is resolved by the provisioning preflight to
 // the `default.spans` MergeTree table; `default.spans_v0` is the read view.
@@ -35,6 +39,21 @@ export const LAMINAR_SQL_COLUMNS = Object.freeze([
   'end_time',
   'attributes',
 ]);
+
+// Every gameplay attribute is namespaced by the versioned STS2 contract, so the
+// SQL is scoped to that namespace before ORDER BY/LIMIT. A co-located
+// recorded-run import (`recorded.*`) therefore cannot crowd out the bounded
+// window or fail the allowlist projection before gameplay rows are returned.
+// The scope extracts top-level JSON keys and tests the `sts2.` namespace, so
+// attribute values (which recorded imports may set to strings containing
+// `sts2...`) cannot match. The upstream v0.2.3 `default.spans.attributes`
+// column is a JSON `String`, so `JSONExtractKeys(attributes)` yields the
+// top-level key array.
+export const STS2_ATTRIBUTE_PREFIX = 'sts2.';
+
+export function gameplayScopePredicate() {
+  return `arrayExists(k -> startsWith(k, '${STS2_ATTRIBUTE_PREFIX}'), JSONExtractKeys(attributes))`;
+}
 
 // Exactly the gameplay attributes carried by the versioned STS2 contract
 // (`docs/STS2_TELEMETRY_CONTRACT.md`). Nothing else is a queryable field.
@@ -73,6 +92,16 @@ export function isPlainObject(value) {
 export function assertBoundedText(value, code, maximum = MAX_TEXT_BYTES) {
   if (typeof value !== 'string' || value.length === 0 || Buffer.byteLength(value) > maximum || /[\u0000-\u001f\u007f]/.test(value)) {
     fail(code);
+  }
+  return value;
+}
+
+// An experiment id is a bounded non-negative integer string. The CLI flag and
+// the deployment `MLFLOW_EXPERIMENT_ID` both pass through here so an arbitrary
+// dotenv value can never reach the MLflow request or the evidence object.
+export function assertExperimentId(value) {
+  if (typeof value !== 'string' || !/^[0-9]+$/.test(value) || value.length > MAX_EXPERIMENT_ID_LENGTH) {
+    fail('mlflow_experiment_id_invalid');
   }
   return value;
 }
@@ -153,7 +182,7 @@ export function admittedMlflowHosts(baseUrl) {
 export function buildLaminarSql(limit) {
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_RESULT_ROWS) fail('laminar_limit_invalid');
   const columns = LAMINAR_SQL_COLUMNS.join(', ');
-  return `SELECT ${columns} FROM ${LAMINAR_SPAN_TABLE} ORDER BY start_time DESC LIMIT ${limit}`;
+  return `SELECT ${columns} FROM ${LAMINAR_SPAN_TABLE} WHERE ${gameplayScopePredicate()} ORDER BY start_time DESC LIMIT ${limit}`;
 }
 
 export function validateLaminarResponse(payload) {
@@ -291,7 +320,7 @@ export function usage() {
 }
 
 export function parseArgs(args) {
-  const options = { experimentId: '0', limit: 100 };
+  const options = { limit: 100 };
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index];
     const value = args[index + 1];
@@ -300,7 +329,7 @@ export function parseArgs(args) {
     } else if (flag === '--key-file' && value && value.startsWith('/')) {
       options.keyFile = value;
     } else if (flag === '--experiment-id' && value && /^[0-9]+$/.test(value)) {
-      options.experimentId = value;
+      options.experimentId = assertExperimentId(value);
     } else if (flag === '--limit' && value && /^[0-9]+$/.test(value)) {
       options.limit = Number(value);
     } else {
@@ -324,6 +353,7 @@ export async function main(args, environment = process.env, transport = fetch) {
   if (!LOOPBACK_HOSTS.has(bindAddress)) fail('bind_address_must_be_loopback');
   const laminarPort = requireSetting(settings, 'LAMINAR_HTTP_PORT');
   const mlflowPort = requireSetting(settings, 'MLFLOW_PORT');
+  const experimentId = assertExperimentId(options.experimentId ?? requireSetting(settings, 'MLFLOW_EXPERIMENT_ID'));
   const token = readOperatorToken(options.keyFile);
   const laminar = await queryLaminar({
     baseUrl: `http://${bindAddress}:${laminarPort}`,
@@ -333,7 +363,7 @@ export async function main(args, environment = process.env, transport = fetch) {
   });
   const mlflow = await queryMlflow({
     baseUrl: `http://${bindAddress}:${mlflowPort}`,
-    experimentId: options.experimentId,
+    experimentId,
     maxResults: options.limit,
     transport,
   });
@@ -349,6 +379,7 @@ export async function main(args, environment = process.env, transport = fetch) {
     laminar_row_count: laminar.length,
     laminar_rows: laminar,
     mlflow_trace_count: mlflow.length,
+    mlflow_experiment_id: experimentId,
     mlflow_traces: mlflow,
   };
 }

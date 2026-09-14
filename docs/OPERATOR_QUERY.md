@@ -40,11 +40,24 @@ printed, or passed as a command-line value.
 
 The only projection issued is
 `SELECT trace_id, span_id, name, status, start_time, end_time, attributes FROM
-default.spans ORDER BY start_time DESC LIMIT <n>` with `1 <= n <= 500`. The
-response must have exactly one top-level `data` array; any other top-level key,
-a non-array `data`, or a non-object row fails closed. Every row field outside
-the projection, and every span attribute outside the STS2 allowlist, fails
-closed rather than being silently dropped.
+default.spans WHERE arrayExists(k -> startsWith(k, 'sts2.'), JSONExtractKeys(attributes)) ORDER BY
+start_time DESC LIMIT <n>` with `1 <= n <= 500`. The query is scoped to the
+versioned `sts2.*` gameplay namespace before ordering/limiting, so a co-located
+recorded-run import (`recorded.*`) cannot crowd out or fail the projection; the
+fail-closed attribute validation still applies to the selected gameplay records.
+
+Pinned schema: upstream Laminar `v0.2.3` defines `default.spans.attributes` as a
+JSON `String` (`frontend/lib/clickhouse/migrations/1_squashed.sql`), so the scope
+extracts the top-level JSON keys and tests the `sts2.` namespace. Because the
+scope is key-based, attribute VALUES containing `sts2...` text (as recorded-run
+imports may carry) cannot match; a substring test such as
+`position(toString(attributes), 'sts2.')` would match those values and admit
+recorded-run spans.
+
+The response must have exactly one top-level `data` array; any other top-level
+key, a non-array `data`, or a non-object row fails closed. Every row field
+outside the projection, and every span attribute outside the STS2 allowlist,
+fails closed rather than being silently dropped.
 
 ### MLflow trace query
 
@@ -58,7 +71,13 @@ closed rather than being silently dropped.
 MLflow validates the full `Host` header, including the published port. The
 health probe bypasses that validation, so a healthy container does not prove
 the UI/API Host allowlist. The consumer sends the internal admitted authority
-`localhost:5000` by default and refuses any other value.
+`localhost:5000` by default and refuses any other value. The experiment id
+defaults to the deployment `.env` value `MLFLOW_EXPERIMENT_ID`; the CLI
+`--experiment-id` flag is an explicit override used only when passed. Both
+sources must be a bounded non-negative integer (at most 19 digits); any other
+value fails closed with `mlflow_experiment_id_invalid` before a request is
+issued or evidence is produced, so an arbitrary dotenv value can never be
+transmitted or echoed.
 
 ## Bounded allowlisted fields
 
@@ -105,7 +124,7 @@ sudo env OBSERVABILITY_OPERATOR_QUERY_APPROVED=true \
   node laminar/operator-query.mjs \
   --env-file "$PWD/.env" \
   --key-file /root/ai-agent-observability/laminar-query-key \
-  --experiment-id 0 --limit 100
+  --limit 100
 ```
 
 The command reads the deployment `.env` as data (never `source`s it), requires
