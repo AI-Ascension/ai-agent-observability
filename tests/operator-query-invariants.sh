@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Static, effect-free invariants for the bounded operator query path. The
-# behavioral tests live in tests/operator-query.test.mjs; this gate proves the
+# behavioral tests live in tests/operator-query-contract.test.mjs; this gate proves the
 # checked-in source keeps its loopback, data-parsing, and secret-hygiene
 # properties even on a runner without Node.
 
