@@ -140,7 +140,7 @@ canonical_path() {
 
 validate_mountpoint() {
   local role=$1 path=$2 canonical
-  [[ $path == /* && $path != */ && $path != *'//' && $path != *'/./'* &&
+  [[ $path == /* && $path != */ && $path != *'//'* && $path != *'/./'* &&
     $path != */./ && $path != *'/../'* && $path != */../ ]] ||
     die_usage "$role.mountpoint must be an absolute canonical path"
   [[ $path =~ ^/[A-Za-z0-9._/@+=:-]+$ ]] ||
