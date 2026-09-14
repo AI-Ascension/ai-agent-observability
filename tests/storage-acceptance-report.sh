@@ -318,4 +318,65 @@ status=0
   exit 1
 }
 
+# A dotted path component is non-canonical even though realpath collapses it.
+# These regressions pin the device and mountpoint syntax gates for the `/.` and
+# `/..` forms the substring checks above miss; the report has no realpath
+# fallback, so an incomplete gate would otherwise admit these and report
+# `repository_checks=confirmed` while the privileged check-storage.sh rejects
+# them.  The trailing `/.` case also guards the final-component form.
+for case_name in \
+  dot:/dev/./sda1 \
+  dotdot:/dev/../etc \
+  trailing-dotdot:/dev/sda1/.. \
+  bare-dotdot:/dev/.. \
+  trailing-dot:/dev/sda1/. \
+  doubledotdot:/dev/../..; do
+  label=${case_name%%:*}
+  value=${case_name#*:}
+  sed "s#^data\.device.*#data.device\t${value}#" \
+    "$manifest" >"$test_root/dotted-device-${label}.tsv"
+  status=0
+  "$report" --manifest "$test_root/dotted-device-${label}.tsv" \
+    >"$test_root/dotted-device-${label}.out" \
+    2>"$test_root/dotted-device-${label}.error" || status=$?
+  [[ $status == "$report_usage_exit" &&
+    ! -s "$test_root/dotted-device-${label}.out" &&
+    -s "$test_root/dotted-device-${label}.error" ]] || {
+    printf 'Noncanonical %s device %s did not fail closed.\n' "$label" "$value" >&2
+    exit 1
+  }
+done
+
+sed 's#^diagnostic\.device.*#diagnostic.device\t/dev/../sdb2#' \
+  "$manifest" >"$test_root/dotted-diagnostic-device.tsv"
+status=0
+"$report" --manifest "$test_root/dotted-diagnostic-device.tsv" \
+  >"$test_root/dotted-diagnostic-device.out" \
+  2>"$test_root/dotted-diagnostic-device.error" || status=$?
+[[ $status == "$report_usage_exit" &&
+  ! -s "$test_root/dotted-diagnostic-device.out" &&
+  -s "$test_root/dotted-diagnostic-device.error" ]] || {
+  echo 'Noncanonical diagnostic.device did not fail closed.' >&2
+  exit 1
+}
+
+sed 's#^data\.mountpoint.*#data.mountpoint\t/srv/..#' \
+  "$manifest" >"$test_root/dotted-mount.tsv"
+status=0
+"$report" --manifest "$test_root/dotted-mount.tsv" \
+  >"$test_root/dotted-mount.out" 2>"$test_root/dotted-mount.error" || status=$?
+[[ $status == "$report_usage_exit" &&
+  ! -s "$test_root/dotted-mount.out" &&
+  -s "$test_root/dotted-mount.error" ]] || {
+  echo 'Noncanonical dotted mountpoint did not fail closed.' >&2
+  exit 1
+}
+
+# Positive control: the valid fixture must still be admitted and emit the
+# deterministic repository confirmation rather than a usage failure.
+grep -Fxq 'repository_checks=confirmed' "$test_root/report.one" || {
+  echo 'Valid fixture no longer emits repository_checks=confirmed.' >&2
+  exit 1
+}
+
 printf '%s\n' 'Storage acceptance report is deterministic, bounded, effect-free, and keeps external gates unverified.'
