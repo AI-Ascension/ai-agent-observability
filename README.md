@@ -73,6 +73,8 @@ and update behavior, exact contract pins, and the disposable MLflow runtime test
 - [`deploy/Dockerfile.laminar`](deploy/Dockerfile.laminar) — Laminar app,
   frontend, and bootstrap image targets.
 - [`deploy/init.sh`](deploy/init.sh) — non-destructive first-run setup.
+- [`deploy/laminar/operator-query.mjs`](deploy/laminar/operator-query.mjs) —
+  bounded read-only operator query consumer for gameplay acceptance.
 - [`deploy/otel-collector.yaml`](deploy/otel-collector.yaml) — OTLP fan-out.
 - [`docs/OTEL_HEALTH_PROBE.md`](docs/OTEL_HEALTH_PROBE.md) — Collector readiness
   contract and native probe boundary.
@@ -81,6 +83,8 @@ and update behavior, exact contract pins, and the disposable MLflow runtime test
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — ownership and data flow.
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md) — deploy, inspect, back up, and
   upgrade procedures.
+- [`docs/OPERATOR_QUERY.md`](docs/OPERATOR_QUERY.md) — separate operator query
+  credential, exact Laminar/MLflow contract, and read-only privilege scope.
 - [`docs/PRIVACY.md`](docs/PRIVACY.md) — retention, redaction, and egress
   boundaries.
 - [`docs/MAP_ARTIFACTS.md`](docs/MAP_ARTIFACTS.md) — bounded optional map

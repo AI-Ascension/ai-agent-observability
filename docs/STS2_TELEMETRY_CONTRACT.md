@@ -109,3 +109,10 @@ matching identity/status/action/settlement rows, quiesces producers, requests a
 root-reserved stack restart, and repeats both queries. A green Rust test,
 Collector 200, health endpoint, or synthetic trace cannot close O1/O2 by
 itself.
+
+The repository-owned bounded consumer for that Laminar/MLflow query is
+`deploy/laminar/operator-query.mjs`. It uses the separately provisioned operator
+key (never the Collector ingest-only key), refuses non-loopback listeners,
+retains only the allowlisted fields above, and sends MLflow's admitted `Host`
+header. Its exact contract and the read-only privilege scope are recorded in
+[`OPERATOR_QUERY.md`](OPERATOR_QUERY.md).

@@ -98,3 +98,20 @@ query path has been verified. If compensation reports an incomplete rollback,
 stop and reconcile the exact project and container identities from those
 backups. The Collector ingest-only row is checked before the transaction and
 is preserved.
+
+Use the checked-in bounded consumer for the actual operator query. It reads the
+deployment `.env` as data, refuses a non-loopback listener or a
+group/world-accessible key file, and queries only the allowlisted
+correlation/outcome fields over the existing loopback listeners:
+
+```bash
+sudo env OBSERVABILITY_OPERATOR_QUERY_APPROVED=true \
+  node laminar/operator-query.mjs \
+  --env-file "$PWD/.env" \
+  --key-file /root/ai-agent-observability/laminar-query-key \
+  --experiment-id 0 --limit 100
+```
+
+See [`../docs/OPERATOR_QUERY.md`](../docs/OPERATOR_QUERY.md) for the exact
+Laminar `/v1/sql/query` and MLflow trace-search contract, the admitted MLflow
+`Host` header, the read-only privilege scope, and the rollback records.

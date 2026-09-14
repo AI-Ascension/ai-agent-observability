@@ -27,6 +27,26 @@ jobs:
       - name: Verify exact contract bytes and independent consumer
         run: node --test tests/recorded-run-*.test.mjs
 
+  operator-query:
+    name: Validate bounded operator query contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.16.0'
+      - name: Verify bounded operator query contract with simulated services
+        run: |
+          # Fail closed if the test glob ever matches nothing (a renamed test
+          # must not turn this job into a silent pass).
+          shopt -s nullglob
+          operator_query_tests=(tests/operator-query-*.test.mjs)
+          (( ${#operator_query_tests[@]} > 0 ))
+          node --test "${operator_query_tests[@]}"
+
   validate:
     name: Validate deployment contract
     runs-on: ubuntu-24.04
@@ -72,6 +92,7 @@ jobs:
           bash tests/storage-lifecycle.sh
           bash tests/validation-regressions.sh
           bash tests/query-provision-invariants.sh
+          bash tests/operator-query-invariants.sh
           bash tests/otel-health-probe.sh
           bash tests/otel-exporter-config.sh
           COLLECTOR_PERSISTENCE_RUNTIME=required bash tests/collector-persistence-invariants.sh

@@ -45,6 +45,16 @@ consumer. The optional real local Collector/MLflow test is documented in
 [`docs/RECORDED_RUN.md`](docs/RECORDED_RUN.md); mocked HTTP tests alone do not
 establish tracking-backend persistence.
 
+The bounded operator query consumer has its own offline contract test (no live
+Laminar/MLflow, no network):
+
+```bash
+node --test tests/operator-query-*.test.mjs
+```
+
+The companion `tests/operator-query-invariants.sh` gate enforces the same
+loopback, data-parsing, and secret-hygiene properties without Node.
+
 ```bash
 for script in deploy/init.sh deploy/materialize-otel-source.sh deploy/ai-agent-observability-reviewed-upgrade deploy/install-reviewed-upgrade-root-packet.sh deploy/laminar/bootstrap-project-key.sh deploy/laminar/provision-query-readonly.sh tests/*.sh tests/fixtures/*; do
   bash -n "$script"
