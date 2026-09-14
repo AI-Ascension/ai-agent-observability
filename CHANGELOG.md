@@ -4,6 +4,9 @@ All notable changes to this repository are recorded here.
 
 ## [Unreleased]
 
+- Report an invalid CLI `--experiment-id` with the documented
+  `mlflow_experiment_id_invalid` code instead of the generic usage error,
+  consistent with the deployment `MLFLOW_EXPERIMENT_ID` path.
 - Scope the operator Laminar query to the `sts2.*` gameplay attribute KEYS via
   `JSONExtractKeys` before ordering/limiting so recorded-run imports cannot fail
   or crowd out gameplay rows (the scope is value-independent), default the
