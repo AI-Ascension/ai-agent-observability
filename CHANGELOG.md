@@ -4,6 +4,12 @@ All notable changes to this repository are recorded here.
 
 ## [Unreleased]
 
+- Add a bounded, loopback-only operator query consumer
+  (`deploy/laminar/operator-query.mjs`) for gameplay acceptance, pin the exact
+  Laminar `/v1/sql/query` and MLflow trace-search contract, preserve the
+  Collector ingest-only key restriction, document the read-only privilege scope
+  and rollback records, and add simulated fail-closed tests plus a separate CI
+  job.
 - Admit the configured bind address in the MLflow Host allowlist and document
   a systemd drop-in for deployment directories other than the unit default.
 - Fail closed on missing deployment listener settings and validate every

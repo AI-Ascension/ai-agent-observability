@@ -221,6 +221,26 @@ The UUID check and name-based DROP are not an atomic ClickHouse primitive.
 Record the exact container and image identity with any live evidence, and
 classify a failed query or backend check as unverified.
 
+After provisioning, use the checked-in bounded consumer to query the gameplay
+telemetry under the operator key:
+
+```bash
+cd /opt/ai-agent-observability/deploy
+sudo env OBSERVABILITY_OPERATOR_QUERY_APPROVED=true \
+  node laminar/operator-query.mjs \
+  --env-file "$PWD/.env" \
+  --key-file /root/ai-agent-observability/laminar-query-key \
+  --experiment-id 0 --limit 100
+```
+
+It reads the deployment `.env` as data, refuses a non-loopback listener or a
+group/world-accessible key file, queries only the allowlisted
+correlation/outcome fields, and prints sanitized evidence without the
+credential. It opens no listener and restarts no service. The exact
+Laminar `/v1/sql/query` and MLflow trace-search shapes, the admitted MLflow
+`Host` header, and the read-only privilege scope are documented in
+[`OPERATOR_QUERY.md`](OPERATOR_QUERY.md).
+
 - Image pull/build failure: build evidence is unavailable; existing running
   services are not changed by the failed build.
 - Database or search failure: health and end-to-end evidence are unavailable;
