@@ -7,9 +7,11 @@ import {
   LAMINAR_SQL_COLUMNS,
   MAX_RESULT_ROWS,
   STS2_ATTRIBUTE_ALLOWLIST,
+  STS2_ATTRIBUTE_PREFIX,
   admittedMlflowHosts,
   assertLoopbackUrl,
   buildLaminarSql,
+  gameplayScopePredicate,
   main,
   parseDotenv,
   projectLaminarRow,
@@ -46,6 +48,10 @@ function simulateLaminar({ rows, observed }) {
     const token = String(init.headers.authorization ?? '').replace(/^Bearer /, '');
     if (token === INGEST_TOKEN) return response(404, null);
     if (token !== OPERATOR_TOKEN) return response(401, { error: 'unauthorized' });
+    if (String(init.body).includes(gameplayScopePredicate())) {
+      const scoped = rows.filter((row) => String(JSON.stringify(row.attributes)).includes(STS2_ATTRIBUTE_PREFIX));
+      return response(200, { data: scoped });
+    }
     return response(200, { data: rows });
   };
 }
@@ -107,6 +113,9 @@ test('the SQL projection is bounded and allowlisted', () => {
   const sql = buildLaminarSql(25);
   for (const column of LAMINAR_SQL_COLUMNS) assert.match(sql, new RegExp(`\\b${column}\\b`));
   assert.match(sql, /FROM default\.spans/);
+  assert.match(sql, /WHERE position\(toString\(attributes\), 'sts2\.'\) > 0 ORDER BY start_time DESC LIMIT 25$/);
+  assert.ok(sql.indexOf('WHERE') < sql.indexOf('ORDER BY'));
+  assert.ok(sql.includes(gameplayScopePredicate()));
   assert.match(sql, /LIMIT 25$/);
   for (const refused of [0, -1, MAX_RESULT_ROWS + 1, 1.5]) {
     assert.throws(() => buildLaminarSql(refused), /laminar_limit_invalid/);
@@ -131,6 +140,27 @@ test('a simulated ingest-only key cannot query while the operator key can', asyn
   assert.equal(rows[0].attributes['sts2.run_id'], 'run-1');
   assert.equal(observed[0].url, 'http://127.0.0.1:18000/v1/sql/query');
   assert.match(observed[0].body.query, /LIMIT 10$/);
+});
+
+test('the gameplay scope excludes a newer recorded-run span before the row limit', async () => {
+  const recordedRow = allowedRow({
+    start_time: '2026-01-02 00:00:00.000000000',
+    attributes: {
+      'recorded.logical_run_key': 'import-1',
+      'recorded.semantic_digest': 'e'.repeat(64),
+    },
+  });
+  const observed = [];
+  const transport = simulateLaminar({ rows: [recordedRow, allowedRow()], observed });
+  const rows = await queryLaminar({
+    baseUrl: 'http://127.0.0.1:18000',
+    token: OPERATOR_TOKEN,
+    sql: buildLaminarSql(10),
+    transport,
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].attributes['sts2.run_id'], 'run-1');
+  assert.equal(observed[0].body.query.includes(gameplayScopePredicate()), true);
 });
 
 test('the response shape and allowlist fail closed on unknown fields', () => {
@@ -212,6 +242,7 @@ test('the operator path is loopback-only, approved, and secret-free in evidence'
       'BIND_ADDRESS=127.0.0.1',
       'LAMINAR_HTTP_PORT=18000',
       'MLFLOW_PORT=15000',
+      'MLFLOW_EXPERIMENT_ID=0',
       'LAMINAR_PROJECT_API_KEY=should-never-appear',
     ].join('\n'), { mode: 0o600 });
     writeFileSync(keyFile, `${OPERATOR_TOKEN}\n`, { mode: 0o600 });
@@ -227,6 +258,7 @@ test('the operator path is loopback-only, approved, and secret-free in evidence'
     assert.equal(evidence.mlflow_loopback, true);
     assert.equal(evidence.operator_key_source, 'protected_file');
     assert.equal(evidence.laminar_row_count, 1);
+    assert.equal(evidence.mlflow_experiment_id, '0');
     const serialized = JSON.stringify(evidence);
     assert.equal(serialized.includes(OPERATOR_TOKEN), false);
     assert.equal(serialized.includes(INGEST_TOKEN), false);
@@ -245,6 +277,66 @@ test('the operator path is loopback-only, approved, and secret-free in evidence'
     await assert.rejects(
       main(['--env-file', envFile, '--key-file', keyFile], { OBSERVABILITY_OPERATOR_QUERY_APPROVED: 'true' }, async () => response(200, { data: [] })),
       /deployment_env_permissions_too_broad/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the MLflow experiment defaults to MLFLOW_EXPERIMENT_ID unless overridden', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'operator-experiment-'));
+  try {
+    const envFile = join(dir, 'deploy.env');
+    const keyFile = join(dir, 'laminar-query-key');
+    writeFileSync(envFile, [
+      'BIND_ADDRESS=127.0.0.1',
+      'LAMINAR_HTTP_PORT=18000',
+      'MLFLOW_PORT=15000',
+      'MLFLOW_EXPERIMENT_ID=7',
+    ].join('\n'), { mode: 0o600 });
+    writeFileSync(keyFile, `${OPERATOR_TOKEN}\n`, { mode: 0o600 });
+    const mlflowBodies = [];
+    const laminarObserved = [];
+    const laminarTransport = simulateLaminar({ rows: [allowedRow()], observed: laminarObserved });
+    const transport = async (url, init) => {
+      if (String(url).includes('/v1/sql/query')) return laminarTransport(url, init);
+      mlflowBodies.push(JSON.parse(init.body));
+      return response(200, { traces: [] });
+    };
+    const approved = { OBSERVABILITY_OPERATOR_QUERY_APPROVED: 'true' };
+    const defaultEvidence = await main(['--env-file', envFile, '--key-file', keyFile], approved, transport);
+    assert.equal(mlflowBodies[0].locations[0].mlflow_experiment.experiment_id, '7');
+    assert.equal(defaultEvidence.mlflow_experiment_id, '7');
+    const overrideEvidence = await main(
+      ['--env-file', envFile, '--key-file', keyFile, '--experiment-id', '3'],
+      approved,
+      transport,
+    );
+    assert.equal(mlflowBodies[1].locations[0].mlflow_experiment.experiment_id, '3');
+    assert.equal(overrideEvidence.mlflow_experiment_id, '3');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a deployment without MLFLOW_EXPERIMENT_ID fails closed unless overridden', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'operator-no-experiment-'));
+  try {
+    const envFile = join(dir, 'deploy.env');
+    const keyFile = join(dir, 'laminar-query-key');
+    writeFileSync(envFile, [
+      'BIND_ADDRESS=127.0.0.1',
+      'LAMINAR_HTTP_PORT=18000',
+      'MLFLOW_PORT=15000',
+    ].join('\n'), { mode: 0o600 });
+    writeFileSync(keyFile, `${OPERATOR_TOKEN}\n`, { mode: 0o600 });
+    await assert.rejects(
+      main(
+        ['--env-file', envFile, '--key-file', keyFile],
+        { OBSERVABILITY_OPERATOR_QUERY_APPROVED: 'true' },
+        async () => response(200, { data: [] }),
+      ),
+      /dotenv_missing:MLFLOW_EXPERIMENT_ID/,
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
