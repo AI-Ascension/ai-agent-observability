@@ -328,7 +328,7 @@ export function parseArgs(args) {
       options.envFile = value;
     } else if (flag === '--key-file' && value && value.startsWith('/')) {
       options.keyFile = value;
-    } else if (flag === '--experiment-id' && value && /^[0-9]+$/.test(value)) {
+    } else if (flag === '--experiment-id' && value) {
       options.experimentId = assertExperimentId(value);
     } else if (flag === '--limit' && value && /^[0-9]+$/.test(value)) {
       options.limit = Number(value);

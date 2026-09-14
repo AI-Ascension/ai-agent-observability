@@ -13,6 +13,7 @@ import {
   buildLaminarSql,
   gameplayScopePredicate,
   main,
+  parseArgs,
   parseDotenv,
   projectLaminarRow,
   projectMlflowTrace,
@@ -449,6 +450,47 @@ test('a non-numeric or oversized MLFLOW_EXPERIMENT_ID fails closed and never rea
         /mlflow_experiment_id_invalid/,
       );
     }
+    assert.deepEqual(calls, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an invalid CLI --experiment-id fails with the documented code', () => {
+  const base = ['--env-file', '/x', '--key-file', '/y'];
+  assert.equal(parseArgs([...base, '--experiment-id', '7']).experimentId, '7');
+  for (const bad of ['abc', '-1', '1.5', '0x10', '1'.repeat(20)]) {
+    assert.throws(
+      () => parseArgs([...base, '--experiment-id', bad]),
+      /mlflow_experiment_id_invalid/,
+    );
+  }
+  assert.throws(() => parseArgs([...base, '--experiment-id']), /operator_query_usage/);
+  assert.throws(() => parseArgs(['--experiment-id']), /operator_query_usage/);
+});
+
+test('an invalid CLI experiment id fails before any transport call', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'operator-cli-bad-experiment-'));
+  try {
+    const envFile = join(dir, 'deploy.env');
+    const keyFile = join(dir, 'laminar-query-key');
+    writeFileSync(envFile, [
+      'BIND_ADDRESS=127.0.0.1',
+      'LAMINAR_HTTP_PORT=18000',
+      'MLFLOW_PORT=15000',
+      'MLFLOW_EXPERIMENT_ID=0',
+    ].join('\n'), { mode: 0o600 });
+    writeFileSync(keyFile, `${OPERATOR_TOKEN}\n`, { mode: 0o600 });
+    const calls = [];
+    const transport = async (url) => { calls.push(String(url)); return response(200, { data: [], traces: [] }); };
+    await assert.rejects(
+      main(
+        ['--env-file', envFile, '--key-file', keyFile, '--experiment-id', 'abc'],
+        { OBSERVABILITY_OPERATOR_QUERY_APPROVED: 'true' },
+        transport,
+      ),
+      /mlflow_experiment_id_invalid/,
+    );
     assert.deepEqual(calls, []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
