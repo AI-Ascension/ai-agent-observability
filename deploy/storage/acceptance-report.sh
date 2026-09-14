@@ -34,7 +34,7 @@ die_usage() {
 readonly manifest=$2
 [[ $manifest != *$'\n'* && $manifest != *$'\r'* ]] ||
   die_usage 'manifest path contains a line separator'
-[[ $manifest != */ && $manifest != *'//' && $manifest != *'/./'* &&
+[[ $manifest != */ && $manifest != *'//'* && $manifest != *'/./'* &&
   $manifest != */./ && $manifest != *'/../'* && $manifest != */../ &&
   $manifest =~ ^/[A-Za-z0-9._/@+=:-]+$ ]] ||
   die_usage 'manifest path contains unsupported characters'
@@ -161,14 +161,14 @@ is_uint() {
 
 is_path_syntax() {
   local value=$1
-  [[ $value == /* && $value != */ && $value != *'//' &&
+  [[ $value == /* && $value != */ && $value != *'//'* &&
     $value != *'/./'* && $value != */./ && $value != *'/../'* &&
     $value != */../ && $value =~ ^/[A-Za-z0-9._/@+=:-]+$ ]]
 }
 
 is_device_syntax() {
   local value=$1
-  [[ $value == /dev/* && $value != */ &&
+  [[ $value == /dev/* && $value != */ && $value != *'//'* &&
     $value =~ ^/dev/[A-Za-z0-9._/@+=:-]+$ ]]
 }
 

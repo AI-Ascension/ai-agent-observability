@@ -280,4 +280,42 @@ status=0
   exit 1
 }
 
+# An internal `//` is non-canonical even though realpath collapses it. These
+# regressions pin the manifest path, mountpoint, and device syntax gates; the
+# report has no realpath fallback, so an over-literal `*'//'` trailing-only
+# check would otherwise admit these and report `repository_checks=confirmed`.
+status=0
+"$report" --manifest "$test_root//storage.tsv" \
+  >"$test_root/double-slash-path.out" 2>"$test_root/double-slash-path.error" || status=$?
+[[ $status == "$report_usage_exit" &&
+  ! -s "$test_root/double-slash-path.out" &&
+  -s "$test_root/double-slash-path.error" ]] || {
+  echo 'Noncanonical double-slash manifest path did not fail closed.' >&2
+  exit 1
+}
+
+sed 's#^data\.mountpoint.*#data.mountpoint\t/srv//observability-data#' \
+  "$manifest" >"$test_root/double-slash-mount.tsv"
+status=0
+"$report" --manifest "$test_root/double-slash-mount.tsv" \
+  >"$test_root/double-slash-mount.out" 2>"$test_root/double-slash-mount.error" || status=$?
+[[ $status == "$report_usage_exit" &&
+  ! -s "$test_root/double-slash-mount.out" &&
+  -s "$test_root/double-slash-mount.error" ]] || {
+  echo 'Noncanonical double-slash mountpoint did not fail closed.' >&2
+  exit 1
+}
+
+sed 's#^data\.device.*#data.device\t/dev//sda1#' \
+  "$manifest" >"$test_root/double-slash-device.tsv"
+status=0
+"$report" --manifest "$test_root/double-slash-device.tsv" \
+  >"$test_root/double-slash-device.out" 2>"$test_root/double-slash-device.error" || status=$?
+[[ $status == "$report_usage_exit" &&
+  ! -s "$test_root/double-slash-device.out" &&
+  -s "$test_root/double-slash-device.error" ]] || {
+  echo 'Noncanonical double-slash device did not fail closed.' >&2
+  exit 1
+}
+
 printf '%s\n' 'Storage acceptance report is deterministic, bounded, effect-free, and keeps external gates unverified.'
