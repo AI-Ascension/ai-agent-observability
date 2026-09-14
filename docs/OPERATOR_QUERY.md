@@ -64,20 +64,26 @@ fails closed rather than being silently dropped.
 | Property | Value |
 | --- | --- |
 | Method and path | `POST /api/3.0/mlflow/traces/search` |
-| `Host` header | an admitted authority: `localhost:5000`, `127.0.0.1:5000`, `mlflow:5000`, or the published loopback `<host>:<port>` |
+| `Host` header | the effective URL authority: the published loopback `<host>:<port>` from the base URL, for example `127.0.0.1:15000` |
 | Request body | `{"locations":[{"mlflow_experiment":{"experiment_id":"<id>"}}],"max_results":<n>}` |
 | Success body | `{"traces": [ ... ]}` with at most `n` entries |
 
 MLflow validates the full `Host` header, including the published port. The
 health probe bypasses that validation, so a healthy container does not prove
-the UI/API Host allowlist. The consumer sends the internal admitted authority
-`localhost:5000` by default and refuses any other value. The experiment id
-defaults to the deployment `.env` value `MLFLOW_EXPERIMENT_ID`; the CLI
-`--experiment-id` flag is an explicit override used only when passed. Both
-sources must be a bounded non-negative integer (at most 19 digits); any other
-value fails closed with `mlflow_experiment_id_invalid` before a request is
-issued or evidence is produced, so an arbitrary dotenv value can never be
-transmitted or echoed.
+the UI/API Host allowlist. Node's `fetch` always sends the URL authority as the
+`Host` header and ignores an explicit `host` request header, so the consumer
+connects through the published loopback authority (`<BIND_ADDRESS>:<MLFLOW_PORT>`)
+that the deployment already admits, and validates that effective authority
+before issuing the request; an optional caller-supplied host value may only
+confirm it and is refused if it differs. The deployment's MLflow allowlist also
+admits the internal `localhost:5000`, `127.0.0.1:5000`, and `mlflow:5000`
+authorities, but the consumer only ever dials a loopback base URL, so `mlflow`
+service names are not reachable through this path. The experiment id defaults to the
+deployment `.env` value `MLFLOW_EXPERIMENT_ID`; the CLI `--experiment-id` flag
+is an explicit override used only when passed. Both sources must be a bounded
+non-negative integer (at most 19 digits); any other value fails closed with
+`mlflow_experiment_id_invalid` before a request is issued or evidence is
+produced, so an arbitrary dotenv value can never be transmitted or echoed.
 
 ## Bounded allowlisted fields
 
@@ -92,8 +98,10 @@ defined by [`STS2_TELEMETRY_CONTRACT.md`](STS2_TELEMETRY_CONTRACT.md):
   `sts2.export_status`;
 - MLflow trace: `trace_id`, `state`.
 
-Never retain credentials, prompts, model output, raw rationale, host text,
-private paths, valued saves, or full observations.
+Span `start_time` and `end_time` must be a finite number, a bounded string, or
+`null`; any other value fails closed. Never retain credentials, prompts, model
+output, raw rationale, host text, private paths, valued saves, or full
+observations.
 
 ## Minimum ClickHouse read-only privilege scope
 

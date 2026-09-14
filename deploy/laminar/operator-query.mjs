@@ -14,8 +14,9 @@
 //   - the operator key is read from a root-owned mode-0600 file, never argv;
 //   - projected evidence contains only allowlisted correlation/outcome fields.
 //
-// No live service, credential, container engine, or network is touched by the
-// repository test suite; tests inject a simulated transport.
+// No live service, credential, or container engine is touched by the repository
+// test suite; tests inject a simulated transport, except for one loopback
+// self-test that pins the Host header the real fetch transport actually sends.
 
 import { lstatSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -149,6 +150,9 @@ export function assertLoopbackUrl(raw, label) {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') fail(`${label}_scheme_forbidden`);
   if (url.username || url.password) fail(`${label}_userinfo_forbidden`);
   if (!LOOPBACK_HOSTS.has(url.hostname)) fail(`${label}_must_be_loopback`);
+  // A base URL is a listener authority only; a path would be silently replaced
+  // by the fixed query path, so reject it rather than accept two meanings.
+  if (url.pathname !== '' && url.pathname !== '/') fail(`${label}_path_forbidden`);
   return url;
 }
 
@@ -176,6 +180,9 @@ export function admittedMlflowHosts(baseUrl) {
   const host = url.hostname === '[::1]' ? '::1' : url.hostname;
   const admitted = new Set(['localhost:5000', '127.0.0.1:5000', 'mlflow:5000', host]);
   if (url.port) admitted.add(`${host}:${url.port}`);
+  // Add the authority the transport will actually send. `url.host` keeps the
+  // brackets around an IPv6 literal, unlike the hostname-derived entries above.
+  if (url.host) admitted.add(url.host);
   return admitted;
 }
 
@@ -219,6 +226,20 @@ function sanitizeAttributes(attributes) {
   return projected;
 }
 
+// Timestamps are the only span fields that are not projected as text or
+// numbers; without an explicit scalar bound a schema drift could inject
+// unbounded text or a nested object into the bounded evidence record. A
+// nullable `end_time` stays `null`.
+function projectTimeField(value, code) {
+  if (value === null) return null;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) fail(code);
+    return value;
+  }
+  if (typeof value === 'string') return assertBoundedText(value, code, 64);
+  fail(code);
+}
+
 // Reject any field outside the bounded allowlist rather than dropping it, so a
 // contract drift or an unexpected projection fails closed instead of silently
 // producing incomplete evidence.
@@ -233,8 +254,8 @@ export function projectLaminarRow(row) {
   if ('span_id' in row) projected.span_id = assertBoundedText(row.span_id, 'laminar_span_id_invalid', 64);
   if ('name' in row) projected.name = assertBoundedText(row.name, 'laminar_name_invalid');
   if ('status' in row) projected.status = assertBoundedText(row.status, 'laminar_status_invalid', 64);
-  if ('start_time' in row) projected.start_time = row.start_time;
-  if ('end_time' in row) projected.end_time = row.end_time;
+  if ('start_time' in row) projected.start_time = projectTimeField(row.start_time, 'laminar_start_time_invalid');
+  if ('end_time' in row) projected.end_time = projectTimeField(row.end_time, 'laminar_end_time_invalid');
   if ('attributes' in row) projected.attributes = sanitizeAttributes(row.attributes);
   return projected;
 }
@@ -281,16 +302,23 @@ export async function queryLaminar({ baseUrl, token, sql, transport = fetch }) {
 export async function queryMlflow({ baseUrl, hostHeader, experimentId, maxResults, transport = fetch }) {
   const url = mlflowSearchUrl(baseUrl);
   if (!Number.isInteger(maxResults) || maxResults < 1 || maxResults > MAX_RESULT_ROWS) fail('mlflow_max_results_invalid');
+  assertExperimentId(typeof experimentId === 'string' ? experimentId : String(experimentId));
   const admitted = admittedMlflowHosts(baseUrl);
-  const authority = hostHeader ?? 'localhost:5000';
-  if (!admitted.has(authority)) fail('mlflow_host_header_not_admitted');
+  // Node's fetch/undici treats `Host` as a forbidden header name and always
+  // sends the URL authority, so the admitted authority is the one the wire
+  // request actually carries, not a caller-supplied value. An optional
+  // `hostHeader` may only confirm that effective authority; anything else is
+  // refused rather than silently ignored.
+  const effectiveAuthority = url.host;
+  if (!admitted.has(effectiveAuthority)) fail('mlflow_host_header_not_admitted');
+  if (hostHeader !== undefined && hostHeader !== effectiveAuthority) fail('mlflow_host_header_not_admitted');
   const body = {
     locations: [{ mlflow_experiment: { experiment_id: String(experimentId) } }],
     max_results: maxResults,
   };
   const response = await transport(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', host: authority },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
   if (response.status === 401 || response.status === 403) fail('mlflow_query_rejected');

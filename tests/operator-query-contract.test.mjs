@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import { chmodSync, mkdtempSync, rmSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -157,6 +158,11 @@ test('only loopback listener URLs are admitted', () => {
   ]) {
     assert.throws(() => assertLoopbackUrl(refused, 'laminar'), /laminar_(must_be_loopback|userinfo_forbidden|not_a_url)/);
   }
+  // A base URL is an authority, not a path. The fixed query path replaces any
+  // path silently, so a base URL carrying one is refused rather than accepted
+  // with two meanings.
+  assert.throws(() => assertLoopbackUrl('http://127.0.0.1:18000/evil', 'laminar'), /laminar_path_forbidden/);
+  assert.throws(() => assertLoopbackUrl('http://127.0.0.1:18000/evil', 'mlflow'), /mlflow_path_forbidden/);
 });
 
 test('the SQL projection is bounded and allowlisted', () => {
@@ -273,11 +279,22 @@ test('the response shape and allowlist fail closed on unknown fields', () => {
   assert.equal(STS2_ATTRIBUTE_ALLOWLIST.includes('sts2.private_prompt'), false);
 });
 
-test('MLflow is queried through an admitted Host header with a bounded body', async () => {
+test('span timestamps are bounded scalars and fail closed on drift', () => {
+  // Valid forms: a bounded string, a finite number, and a nullable end_time.
+  assert.equal(projectLaminarRow(allowedRow()).start_time, '2026-01-01 00:00:00.000000000');
+  assert.equal(projectLaminarRow(allowedRow({ start_time: 1767225600 })).start_time, 1767225600);
+  assert.equal(projectLaminarRow(allowedRow({ end_time: null })).end_time, null);
+  for (const bad of ['x'.repeat(10000), { secret: 'PRIVATE_PROMPT_SENTINEL' }, ['a'], NaN, Infinity, true]) {
+    assert.throws(() => projectLaminarRow(allowedRow({ start_time: bad })), /laminar_start_time_invalid/);
+    assert.throws(() => projectLaminarRow(allowedRow({ end_time: bad })), /laminar_end_time_invalid/);
+  }
+});
+
+test('MLflow is queried through its effective, admitted loopback authority', async () => {
   const observed = [];
   const transport = async (url, init) => {
-    observed.push({ url: String(url), headers: init.headers, body: JSON.parse(init.body) });
-    if (init.headers.host !== 'localhost:5000') return response(403, null);
+    observed.push({ url: String(url), authority: url.host, headers: init.headers, body: JSON.parse(init.body) });
+    if (url.host !== '127.0.0.1:15000') return response(403, null);
     return response(200, { traces: [{ trace_id: TRACE_ID, trace_info: { state: 'OK' } }] });
   };
   assert.equal(admittedMlflowHosts('http://127.0.0.1:15000').has('127.0.0.1:15000'), true);
@@ -289,15 +306,57 @@ test('MLflow is queried through an admitted Host header with a bounded body', as
   });
   assert.deepEqual(traces, [{ trace_id: TRACE_ID, state: 'OK' }]);
   assert.equal(observed[0].url, 'http://127.0.0.1:15000/api/3.0/mlflow/traces/search');
-  assert.equal(observed[0].headers.host, 'localhost:5000');
+  assert.equal(observed[0].authority, '127.0.0.1:15000');
+  // The request no longer sets an explicit (and therefore ignored) Host header.
+  assert.equal(observed[0].headers.host, undefined);
   assert.deepEqual(observed[0].body, { locations: [{ mlflow_experiment: { experiment_id: '0' } }], max_results: 10 });
   await assert.rejects(
     queryMlflow({ baseUrl: 'http://127.0.0.1:15000', hostHeader: 'evil.example:5000', experimentId: '0', maxResults: 10, transport }),
     /mlflow_host_header_not_admitted/,
   );
+  await assert.rejects(
+    queryMlflow({ baseUrl: 'http://127.0.0.1:15000', experimentId: 'PRIVATE_PROMPT_SENTINEL', maxResults: 10, transport }),
+    /mlflow_experiment_id_invalid/,
+  );
+  await assert.rejects(
+    queryMlflow({ baseUrl: 'http://127.0.0.1:15000', experimentId: '1'.repeat(20), maxResults: 10, transport }),
+    /mlflow_experiment_id_invalid/,
+  );
   assert.throws(() => validateMlflowSearchResponse({ traces: [{ trace_id: TRACE_ID }] }, 0), /mlflow_response_too_many_traces/);
   assert.throws(() => validateMlflowSearchResponse({ results: [] }, 10), /mlflow_response_missing_traces/);
   assert.deepEqual(projectMlflowTrace({ trace_info: { trace_id: TRACE_ID, state: 'OK' } }), { trace_id: TRACE_ID, state: 'OK' });
+});
+
+test('the real fetch transport sends the URL authority as the Host header', async () => {
+  // The injected-transport tests cannot observe Node's forbidden-header
+  // handling. This one binds a loopback server and pins the authority that the
+  // production `fetch` actually sends, so a future switch back to an explicit
+  // `host` header (which is ignored) is caught.
+  const observedHosts = [];
+  const server = http.createServer((request, res) => {
+    observedHosts.push(request.headers.host);
+    request.resume();
+    request.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ traces: [] }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const { port } = server.address();
+    const authority = `127.0.0.1:${port}`;
+    await queryMlflow({ baseUrl: `http://${authority}`, experimentId: '0', maxResults: 5 });
+    assert.deepEqual(observedHosts, [authority]);
+    assert.equal(admittedMlflowHosts(`http://${authority}`).has(authority), true);
+    // A direct request with a conflicting explicit Host is still governed by
+    // fetch's forbidden-header handling: the server must see the URL authority,
+    // not the requested value. This is the wire property the injected-transport
+    // tests cannot observe.
+    await fetch(`http://${authority}/probe`, { headers: { host: 'evil.example:5000' } });
+    assert.deepEqual(observedHosts, [authority, authority]);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 test('the operator token is read from a protected file, never argv', () => {
