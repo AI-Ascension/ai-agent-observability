@@ -27,6 +27,17 @@ die_usage() {
   exit "$EX_USAGE"
 }
 
+# Reject any non-canonical path production: a duplicate slash, or a `.`/`..`
+# component anywhere, including when it is the final component.  The report has
+# no realpath fallback, so this syntax gate is the only repository-side defence
+# against a value that the privileged check-storage.sh gate would later reject.
+is_canonical_components() {
+  local value=$1
+  [[ $value != *'//'* && $value != *'/./'* && $value != */./ &&
+    $value != *'/../'* && $value != */../ &&
+    $value != *'/.' && $value != *'/..' ]]
+}
+
 [[ $# -eq 2 && $1 == --manifest && -n $2 && $2 == /* && $2 != -* ]] || {
   usage
   exit "$EX_USAGE"
@@ -34,9 +45,8 @@ die_usage() {
 readonly manifest=$2
 [[ $manifest != *$'\n'* && $manifest != *$'\r'* ]] ||
   die_usage 'manifest path contains a line separator'
-[[ $manifest != */ && $manifest != *'//'* && $manifest != *'/./'* &&
-  $manifest != */./ && $manifest != *'/../'* && $manifest != */../ &&
-  $manifest =~ ^/[A-Za-z0-9._/@+=:-]+$ ]] ||
+[[ $manifest != */ && $manifest =~ ^/[A-Za-z0-9._/@+=:-]+$ ]] &&
+  is_canonical_components "$manifest" ||
   die_usage 'manifest path contains unsupported characters'
 [[ -f $manifest && ! -L $manifest && -r $manifest ]] ||
   die_usage 'manifest must be a readable regular file (not a symlink)'
@@ -161,15 +171,15 @@ is_uint() {
 
 is_path_syntax() {
   local value=$1
-  [[ $value == /* && $value != */ && $value != *'//'* &&
-    $value != *'/./'* && $value != */./ && $value != *'/../'* &&
-    $value != */../ && $value =~ ^/[A-Za-z0-9._/@+=:-]+$ ]]
+  [[ $value == /* && $value != */ && $value =~ ^/[A-Za-z0-9._/@+=:-]+$ ]] &&
+    is_canonical_components "$value"
 }
 
 is_device_syntax() {
   local value=$1
-  [[ $value == /dev/* && $value != */ && $value != *'//'* &&
-    $value =~ ^/dev/[A-Za-z0-9._/@+=:-]+$ ]]
+  [[ $value == /dev/* && $value != */ &&
+    $value =~ ^/dev/[A-Za-z0-9._/@+=:-]+$ ]] &&
+    is_canonical_components "$value"
 }
 
 is_uuid() {
