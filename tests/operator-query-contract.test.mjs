@@ -344,9 +344,16 @@ test('the real fetch transport sends the URL authority as the Host header', asyn
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   try {
     const { port } = server.address();
-    await queryMlflow({ baseUrl: `http://127.0.0.1:${port}`, experimentId: '0', maxResults: 5 });
-    assert.deepEqual(observedHosts, [`127.0.0.1:${port}`]);
-    assert.equal(admittedMlflowHosts(`http://127.0.0.1:${port}`).has(`127.0.0.1:${port}`), true);
+    const authority = `127.0.0.1:${port}`;
+    await queryMlflow({ baseUrl: `http://${authority}`, experimentId: '0', maxResults: 5 });
+    assert.deepEqual(observedHosts, [authority]);
+    assert.equal(admittedMlflowHosts(`http://${authority}`).has(authority), true);
+    // A direct request with a conflicting explicit Host is still governed by
+    // fetch's forbidden-header handling: the server must see the URL authority,
+    // not the requested value. This is the wire property the injected-transport
+    // tests cannot observe.
+    await fetch(`http://${authority}/probe`, { headers: { host: 'evil.example:5000' } });
+    assert.deepEqual(observedHosts, [authority, authority]);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
