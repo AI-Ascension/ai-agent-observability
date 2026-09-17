@@ -167,4 +167,5 @@ evidence. Closing issue #8 still requires an operator to provision the
 credentials on the target host, confirm non-empty real gameplay records in both
 products, quiesce producers, restart only the initially running project
 containers, preserve stopped one-shot containers, and repeat both queries with
-matching durable identities.
+matching durable identities. Record each gate in
+[`docs/evidence/operator-query-acceptance.md`](evidence/operator-query-acceptance.md).

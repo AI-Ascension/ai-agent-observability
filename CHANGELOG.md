@@ -4,6 +4,10 @@ All notable changes to this repository are recorded here.
 
 ## [Unreleased]
 
+- Add the operator-owned gameplay-telemetry acceptance gate record
+  (`docs/evidence/operator-query-acceptance.md`) for issue #8: one `unverified`
+  row per remaining deployment-operator criterion, the pinned repository
+  snapshot and contract test names, and the exact consumer command.
 - Report an invalid CLI `--experiment-id` with the documented
   `mlflow_experiment_id_invalid` code instead of the generic usage error,
   consistent with the deployment `MLFLOW_EXPERIMENT_ID` path.
