@@ -69,6 +69,27 @@ the complete interval. It performs this live observation before the build and
 again immediately before service recreation, after rechecking the container
 identity, so a stale approval cannot substitute for current runtime evidence.
 
+## Installer source layout
+
+The installer stays a thin coordinator at `deploy/install-otel-health-probe.sh`;
+it keeps the entrypoint, the `--check`/`--install` modes, and every operator
+input unchanged, and sources cohesive modules from `deploy/otel-installer/`:
+
+| Module | Responsibility |
+| --- | --- |
+| `lib-common.sh` | guards, bounded capture/run, hashing, timeout accounting |
+| `lib-config.sh` | dotenv/Collector-config parsing and environment identity |
+| `lib-runtime.sh` | container runtime identity and runtime contract checks |
+| `lib-quiescence.sh` | approval validation and live Prometheus quiescence observer |
+| `lib-rollback.sh` | preflight backup capture, guarded restore, rollback compensation |
+| `preflight.sh` | read-only source/runtime validation (executes when sourced) |
+| `install.sh` | approved backup, image build, single-service recreation, readiness |
+
+The libraries define functions only; `preflight.sh` and `install.sh` hold the
+ordered top-level statements and run in source order. The split is
+behavior-preserving (issue #45): the whole-file `bash -n` check and the
+installer fixture suite cover the coordinator plus every module.
+
 The approval file has this schema:
 
 ```json

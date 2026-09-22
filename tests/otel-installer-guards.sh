@@ -4,6 +4,14 @@ set -Eeuo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 installer="$repo_root/deploy/install-otel-health-probe.sh"
 test_root="$(mktemp -d)"
+shopt -s nullglob
+installer_modules=("$repo_root"/deploy/otel-installer/*.sh)
+(( ${#installer_modules[@]} > 0 )) || {
+  printf '%s\n' 'the installer module directory is missing' >&2
+  exit 1
+}
+installer_combined="$test_root/installer-combined.txt"
+cat "$installer" "${installer_modules[@]}" >"$installer_combined"
 metrics_pid=""
 cleanup() {
   if [[ -n "$metrics_pid" ]]; then
@@ -15,7 +23,12 @@ cleanup() {
 trap cleanup EXIT
 
 bash -n "$installer"
-python3 - "$installer" <<'PY'
+for installer_module in "${installer_modules[@]}"; do
+  bash -n "$installer_module"
+done
+# The installer contract strings may live in the coordinator or any sourced
+# module; the combined view preserves the original single-file assertions.
+python3 - "$installer_combined" <<'PY'
 from pathlib import Path
 import sys
 
