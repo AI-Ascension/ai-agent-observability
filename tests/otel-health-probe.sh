@@ -41,6 +41,14 @@ config="$repo_root/deploy/otel-collector.yaml"
 compose="$repo_root/deploy/compose.yaml"
 dockerfile="$repo_root/deploy/Dockerfile.otel"
 installer="$repo_root/deploy/install-otel-health-probe.sh"
+shopt -s nullglob
+installer_modules=("$repo_root"/deploy/otel-installer/*.sh)
+(( ${#installer_modules[@]} > 0 )) || {
+  printf '%s\n' 'the installer module directory is missing' >&2
+  exit 1
+}
+installer_combined="$test_root/installer-combined.txt"
+cat "$installer" "${installer_modules[@]}" >"$installer_combined"
 grep -Fq 'health_check:' "$config"
 grep -Fq 'endpoint: 127.0.0.1:13133' "$config"
 grep -Fq 'component_health:' "$config"
@@ -67,33 +75,35 @@ if grep -Eq 'OTEL_HEALTH_PROBE_(MLFLOW|LAMINAR)_(HOST|PORT)' "$repo_root/deploy/
   exit 1
 fi
 bash -n "$installer"
-grep -Fq 'OTEL_HEALTH_PROBE_INSTALL_APPROVED=true' "$installer"
-grep -Fq 'OTEL_QUIESCE_APPROVED=true' "$installer"
-grep -Fq 'OTEL_EXPECTED_BUILT_IMAGE_ID' "$installer"
-grep -Fq 'OTEL_EXPECTED_ACTIVE_IMAGE_ID' "$installer"
-grep -Fq 'OTEL_EXPECTED_DOCKERFILE_SHA256' "$installer"
-grep -Fq 'OTEL_INSTALL_TIMEOUT_SECONDS' "$installer"
-grep -Fq 'remaining_timeout' "$installer"
-grep -Fq 'active traces exporter set does not match' "$installer"
-grep -Fq 'active mounted Collector config hash' "$installer"
-grep -Fq 'active Collector environment identity' "$installer"
-grep -Fq 'previous-full-env-sha256' "$installer"
-grep -Fq 'phase=verify-previous-runtime' "$installer"
-grep -Fq 'active Collector inspect could not be sanitized' "$installer"
-grep -Fq 'rollback UNKNOWN; manual reconciliation required' "$installer"
-grep -Fq 'Collector image build' "$installer"
-grep -Fq 'Collector service recreation' "$installer"
-grep -Fq 'backup verification failed' "$installer"
-grep -Fq 'rollback verified' "$installer"
-grep -Fq 'compose=(podman compose --env-file "$env_file")' "$installer"
-grep -Fq 'rollback_last_health' "$installer"
-grep -Fq 'sys.stdout.write("\n")' "$installer"
+# Contract strings may live in the coordinator or any sourced module; the
+# combined view preserves the original single-file assertions.
+grep -Fq 'OTEL_HEALTH_PROBE_INSTALL_APPROVED=true' "$installer_combined"
+grep -Fq 'OTEL_QUIESCE_APPROVED=true' "$installer_combined"
+grep -Fq 'OTEL_EXPECTED_BUILT_IMAGE_ID' "$installer_combined"
+grep -Fq 'OTEL_EXPECTED_ACTIVE_IMAGE_ID' "$installer_combined"
+grep -Fq 'OTEL_EXPECTED_DOCKERFILE_SHA256' "$installer_combined"
+grep -Fq 'OTEL_INSTALL_TIMEOUT_SECONDS' "$installer_combined"
+grep -Fq 'remaining_timeout' "$installer_combined"
+grep -Fq 'active traces exporter set does not match' "$installer_combined"
+grep -Fq 'active mounted Collector config hash' "$installer_combined"
+grep -Fq 'active Collector environment identity' "$installer_combined"
+grep -Fq 'previous-full-env-sha256' "$installer_combined"
+grep -Fq 'phase=verify-previous-runtime' "$installer_combined"
+grep -Fq 'active Collector inspect could not be sanitized' "$installer_combined"
+grep -Fq 'rollback UNKNOWN; manual reconciliation required' "$installer_combined"
+grep -Fq 'Collector image build' "$installer_combined"
+grep -Fq 'Collector service recreation' "$installer_combined"
+grep -Fq 'backup verification failed' "$installer_combined"
+grep -Fq 'rollback verified' "$installer_combined"
+grep -Fq 'compose=(podman compose --env-file "$env_file")' "$installer_combined"
+grep -Fq 'rollback_last_health' "$installer_combined"
+grep -Fq 'sys.stdout.write("\n")' "$installer_combined"
 grep -Fq 'StatusRecoverableError' "$repo_root/deploy/otel-health-probe.c"
-if grep -Fq 'timeout --foreground' "$installer"; then
+if grep -Fq 'timeout --foreground' "$installer_combined"; then
   printf '%s\n' 'the installer must use process-group timeouts' >&2
   exit 1
 fi
-if grep -Eq 'compose.*down|down.*-v|volume prune|image prune' "$installer"; then
+if grep -Eq 'compose.*down|down.*-v|volume prune|image prune' "$installer_combined"; then
   printf '%s\n' 'the guarded OTel installer contains a destructive cleanup path' >&2
   exit 1
 fi
