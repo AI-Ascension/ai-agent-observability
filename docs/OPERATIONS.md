@@ -193,6 +193,12 @@ Credentials stay in protected files or stdin; they are not passed as
 command-line values.
 The helper does not restart the stack.
 
+`provision-query-readonly.sh` is a thin coordinator: it sources the libraries
+and phases under `deploy/laminar/provision-query/` in order (issue #47,
+behavior-preserving split). The libraries define functions only and the phases
+hold the ordered top-level statements, so the root-only approval gate, the
+compensation trap and every credential path are unchanged.
+
 Before any persistent write, the helper backs up `.env`, the existing operator
 key file, and the scoped PostgreSQL operator row. It installs the new key before
 the database commit. The PostgreSQL backup reads the restore SQL and the exact
