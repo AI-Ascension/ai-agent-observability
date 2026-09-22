@@ -8,6 +8,7 @@ ARG OTEL_COLLECTOR_VERSION=0.160.0
 FROM docker.io/library/gcc:14-bookworm AS probe-builder
 WORKDIR /src
 COPY otel-health-probe.c .
+COPY otel-probe/ ./otel-probe/
 RUN gcc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -static -s \
     -o /otel-health-probe otel-health-probe.c
 

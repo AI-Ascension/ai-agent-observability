@@ -7,6 +7,19 @@ server_pid=""
 dependency_pid=""
 trap 'if [[ -n "$server_pid" ]]; then kill "$server_pid" 2>/dev/null || true; fi; if [[ -n "$dependency_pid" ]]; then kill "$dependency_pid" 2>/dev/null || true; fi; rm -r -- "$test_root"' EXIT
 
+# The probe is a single static translation unit that includes cohesive
+# fragments under deploy/otel-probe/. Contract strings may live in the
+# coordinator or any fragment, so scan the combined source.
+probe_source="$repo_root/deploy/otel-health-probe.c"
+shopt -s nullglob
+probe_modules=("$repo_root"/deploy/otel-probe/*.h)
+(( ${#probe_modules[@]} > 0 )) || {
+  printf '%s\n' 'the probe module directory is missing' >&2
+  exit 1
+}
+probe_source_scan="$test_root/probe-source-scan.txt"
+cat "$probe_source" "${probe_modules[@]}" >"$probe_source_scan"
+
 if ! command -v gcc >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1 ||
    ! command -v timeout >/dev/null 2>&1; then
   printf '%s\n' 'gcc, python3, and timeout are required for the Collector probe fixture test.' >&2
@@ -68,9 +81,9 @@ fi
 grep -Fq 'FROM docker.io/library/gcc:14-bookworm AS probe-builder' "$dockerfile"
 grep -Fq 'FROM docker.io/otel/opentelemetry-collector-contrib:${OTEL_COLLECTOR_VERSION}' "$dockerfile"
 grep -Fq 'HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3' "$dockerfile"
-grep -Fq 'CLOCK_MONOTONIC' "$repo_root/deploy/otel-health-probe.c"
-grep -Fq 'timeout_ms = 2000' "$repo_root/deploy/otel-health-probe.c"
-if grep -Eq 'OTEL_HEALTH_PROBE_(MLFLOW|LAMINAR)_(HOST|PORT)' "$repo_root/deploy/otel-health-probe.c"; then
+grep -Fq 'CLOCK_MONOTONIC' "$probe_source_scan"
+grep -Fq 'timeout_ms = 2000' "$probe_source_scan"
+if grep -Eq 'OTEL_HEALTH_PROBE_(MLFLOW|LAMINAR)_(HOST|PORT)' "$probe_source_scan"; then
   printf '%s\n' 'the probe must derive active dependency endpoints from the mounted config' >&2
   exit 1
 fi
@@ -98,7 +111,7 @@ grep -Fq 'rollback verified' "$installer_combined"
 grep -Fq 'compose=(podman compose --env-file "$env_file")' "$installer_combined"
 grep -Fq 'rollback_last_health' "$installer_combined"
 grep -Fq 'sys.stdout.write("\n")' "$installer_combined"
-grep -Fq 'StatusRecoverableError' "$repo_root/deploy/otel-health-probe.c"
+grep -Fq 'StatusRecoverableError' "$probe_source_scan"
 if grep -Fq 'timeout --foreground' "$installer_combined"; then
   printf '%s\n' 'the installer must use process-group timeouts' >&2
   exit 1
