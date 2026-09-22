@@ -3,9 +3,30 @@ set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 script="$repo_root/deploy/laminar/provision-query-readonly.sh"
-bash -n "$script"
 
-if grep -Eq -- '--password(=|[[:space:]])|sudoedit|docker exec|(^|[[:space:]])source[[:space:]]+.*\.env' "$script"; then
+# The provisioner is a thin coordinator that sources cohesive modules under
+# deploy/laminar/provision-query/. Contract strings and unsafe-pattern checks
+# cover the coordinator plus every sourced module, and fail closed if the
+# module directory is missing.
+module_dir="$repo_root/deploy/laminar/provision-query"
+shopt -s nullglob
+modules=("$module_dir"/*.sh)
+(( ${#modules[@]} > 0 )) || {
+  printf '%s\n' 'the provisioning module directory is missing' >&2
+  exit 1
+}
+
+bash -n "$script"
+for module in "${modules[@]}"; do
+  bash -n "$module"
+done
+
+scan_root="$(mktemp -d)"
+trap 'rm -rf -- "$scan_root"' EXIT
+scan="$scan_root/provision-source-scan.txt"
+cat "$script" "${modules[@]}" >"$scan"
+
+if grep -Eq -- '--password(=|[[:space:]])|sudoedit|docker exec|(^|[[:space:]])source[[:space:]]+.*\.env' "$scan"; then
   printf '%s\n' 'query provisioning exposes a credential through an unsafe command path' >&2
   exit 1
 fi
@@ -43,10 +64,10 @@ for required in \
   'commit outcome remains unknown' \
   'commit reconciliation' \
   'operator key changed since its exact backup'; do
-  grep -Fq -- "$required" "$script"
+  grep -Fq -- "$required" "$scan"
 done
 
-if grep -Fq -- 'CREATE USER IF NOT EXISTS' "$script"; then
+if grep -Fq -- 'CREATE USER IF NOT EXISTS' "$scan"; then
   printf '%s\n' 'query provisioning must refuse an existing account or reset it exactly' >&2
   exit 1
 fi

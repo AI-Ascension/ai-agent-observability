@@ -83,6 +83,10 @@ The helper retains root-only backups of the pre-change `.env`, local operator
 key, and scoped PostgreSQL operator row under `/run/ai-agent-observability/`.
 The PostgreSQL backup is one repeatable-read, locked transaction that emits both
 the SQL restore statement and the exact row ID/digest from the same snapshot.
+
+The helper is a thin coordinator over `laminar/provision-query/` (cohesive
+function libraries plus ordered phases, issue #47); the entry point, approval
+gate and rollback behaviour are unchanged.
 The replacement preassigns its row UUID and compares the locked snapshot before
 deleting it.
 If a PostgreSQL client error leaves the commit outcome unknown, compensation

@@ -20,6 +20,24 @@ root-owned, mode-`0600` file outside the repository (default
 `/root/ai-agent-observability/laminar-query-key`). No credential is committed,
 printed, or passed as a command-line value.
 
+### Provisioning module layout
+
+`provision-query-readonly.sh` is a thin coordinator that sources its
+implementation in order from `deploy/laminar/provision-query/` (issue #47,
+behavior-preserving split). The libraries only define functions; the phases
+run top-level statements in one shell, so error, trap and global-variable
+semantics are unchanged:
+
+- `lib-common.sh` — fatal errors and `.env` value parsing;
+- `lib-cleanup.sh` — staged-file / container-path cleanup trap;
+- `lib-clickhouse.sh` — ClickHouse query helper and the guarded owned-user drop;
+- `lib-postgres.sh` — protected `PGPASSFILE`-backed `psql` file runner;
+- `lib-reconcile.sh` — commit classification, evidence retention and exact row restore;
+- `lib-rollback.sh` — ordered cross-system compensation;
+- `phase-preflight.sh` — live ClickHouse/PostgreSQL reads before any backup;
+- `phase-backup.sh` — exact restorable state and prepared credentials;
+- `phase-mutate.sh` — persistent writes under the rollback trap.
+
 ## Exact deployed API contract
 
 `deploy/laminar/operator-query.mjs` targets only the loopback listeners that
