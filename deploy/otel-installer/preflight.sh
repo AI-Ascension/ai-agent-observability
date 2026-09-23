@@ -65,7 +65,7 @@ if git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   actual_head="$(git -C "$repo_dir" rev-parse HEAD 2>/dev/null || true)"
   [[ "$actual_head" == "$OTEL_EXPECTED_GIT_HEAD" ]] || fail 'source HEAD does not match OTEL_EXPECTED_GIT_HEAD'
   build_input_status="$(git -C "$repo_dir" status --porcelain=v1 --untracked-files=all -- \
-    deploy/Dockerfile.otel deploy/otel-health-probe.c 2>/dev/null || true)"
+    deploy/Dockerfile.otel deploy/otel-health-probe.c deploy/otel-probe 2>/dev/null || true)"
   [[ -z "$build_input_status" ]] || fail 'Collector build inputs are dirty'
 else
   [[ -f "$source_manifest" ]] || fail 'non-Git source requires OTEL_SOURCE_MANIFEST'

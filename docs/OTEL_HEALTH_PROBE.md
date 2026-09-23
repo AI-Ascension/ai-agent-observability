@@ -51,6 +51,14 @@ native resolver validates the DNS transaction ID, responder address, question
 name/type/class, canonical owner names, and bounded answer chain so a valid A
 record for another name cannot satisfy the check.
 
+The probe stays a single static translation unit: `deploy/otel-health-probe.c`
+holds the shared constants, the `parse_port` helper, and `main`, and includes
+cohesive unity-build fragments from `deploy/otel-probe/` in their original
+source order — `time_io.h`, `dns.h`, `http.h`, `config.h`, `exporters.h`,
+`health.h`, and `json.h`. `deploy/Dockerfile.otel` copies that directory into
+the probe builder stage, and the installer's build-input guard covers it
+(issue #46, behavior-preserving split).
+
 `deploy/install-otel-health-probe.sh --check` is a read-only owner-side
 preflight. Installation requires explicit source/config/Compose/Dockerfile
 and image identity hashes, a clean probe build input set,
