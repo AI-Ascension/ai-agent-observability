@@ -33,8 +33,13 @@ required = (
     "OTEL_QUIESCE_PROOF",
     "OTEL_ROLLBACK_TIMEOUT_SECONDS",
     "OTEL_METRICS_URL",
+    "OTEL_EXPECTED_TRACE_RECEIVERS",
     "configured loopback metrics endpoint",
     "otelcol_exporter_queue_size",
+    "OTEL_EXPECTED_TRACE_RECEIVER_SERIES",
+    "metrics_port_binding_contract_matches",
+    "StartPeriod == 30000000000",
+    "source materialization manifest",
     "healthcheck_contract_matches",
     "restore_backups_if_unchanged",
     "runtime_mutation_attempted",
@@ -59,6 +64,8 @@ fake_bin="$test_root/bin"
 state_dir="$test_root/state"
 mkdir -p -- "$fake_bin" "$state_dir"
 env_file="$test_root/.env"
+metrics_mode_file="$test_root/metrics-mode"
+printf '%s\n' normal >"$metrics_mode_file"
 metrics_port="$(python3 - <<'PY'
 import socket
 with socket.socket() as sock:
@@ -98,10 +105,18 @@ inspect_json() {
     fi
   elif [[ -e "$state_dir/id-changed" ]]; then
     sed 's/fixture-container-id/fixture-concurrent-id/g' "$source"
+  elif [[ -e "$state_dir/runtime-drift" ]]; then
+    sed 's|"WorkingDir":"/"|"WorkingDir":"/drift"|' "$source"
   elif [[ "${FAKE_STOPPED:-}" == yes ]]; then
     sed 's/"Status":"running"/"Status":"exited"/' "$source"
   else
-    cat "$source"
+    if [[ "${FAKE_BAD_METRICS_BIND:-}" == yes ]]; then
+      sed 's/"HostIp":"127.0.0.1"/"HostIp":"0.0.0.0"/g' "$source"
+    elif [[ "${FAKE_BAD_HEALTH:-}" == yes ]]; then
+      sed 's/"Retries":3/"Retries":2/' "$source"
+    else
+      cat "$source"
+    fi
   fi
 }
 
@@ -133,6 +148,9 @@ YAML
     fi
     if [[ "${FAKE_ID_CHANGE:-}" == yes ]]; then
       : >"$state_dir/id-changed"
+    fi
+    if [[ "${FAKE_RUNTIME_DRIFT:-}" == yes ]]; then
+      : >"$state_dir/runtime-drift"
     fi
     : >"$state_dir/built"
     exit 0
@@ -233,10 +251,11 @@ chmod +x "$fake_bin/podman"
 
 cat >"$test_root/metrics-server.py" <<'PY'
 import http.server
+import os
 import sys
 
 port = int(sys.argv[1])
-payload = b"""# TYPE otelcol_exporter_queue_size gauge
+payload = """# TYPE otelcol_exporter_queue_size gauge
 otelcol_exporter_queue_size{exporter=\"otlp_http/mlflow\"} 0
 otelcol_exporter_queue_size{exporter=\"otlp_http/laminar\"} 0
 # TYPE otelcol_exporter_in_flight_requests gauge
@@ -244,7 +263,24 @@ otelcol_exporter_in_flight_requests{exporter=\"otlp_http/mlflow\"} 0
 otelcol_exporter_in_flight_requests{exporter=\"otlp_http/laminar\"} 0
 # TYPE otelcol_receiver_accepted_spans counter
 otelcol_receiver_accepted_spans{receiver=\"otlp\",transport=\"http\"} 10
-"""
+otelcol_receiver_accepted_spans{receiver=\"otlp\",transport=\"grpc\"} 10
+""".encode()
+
+mode_file = os.environ["FAKE_METRICS_MODE_FILE"]
+
+def response_payload():
+    mode = open(mode_file, encoding="utf-8").read().strip()
+    text = payload.decode()
+    if mode == "missing-exporter":
+        text = text.replace('otelcol_exporter_queue_size{exporter="otlp_http/laminar"} 0\n', "")
+        text = text.replace('otelcol_exporter_in_flight_requests{exporter="otlp_http/laminar"} 0\n', "")
+    elif mode == "duplicate-exporter":
+        text += 'otelcol_exporter_queue_size{exporter="otlp_http/mlflow"} 0\n'
+    elif mode == "duplicate-receiver":
+        text += 'otelcol_receiver_accepted_spans{receiver="otlp",transport="http"} 10\n'
+    elif mode == "malformed":
+        text += 'otelcol_exporter_queue_size{exporter="otlp_http/mlflow"} broken\n'
+    return text.encode()
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -254,15 +290,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; version=0.0.4")
-        self.send_header("Content-Length", str(len(payload)))
+        body = response_payload()
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(payload)
+        self.wfile.write(body)
     def log_message(self, *_args):
         pass
 
 http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
 PY
-python3 -u "$test_root/metrics-server.py" "$metrics_port" &
+FAKE_METRICS_MODE_FILE="$metrics_mode_file" python3 -u "$test_root/metrics-server.py" "$metrics_port" &
 metrics_pid=$!
 for _ in $(seq 1 20); do
   if python3 - "$metrics_port" <<'PY'
@@ -292,6 +329,8 @@ common_env=(
   OTEL_EXPECTED_DOCKERFILE_SHA256="$(sha256sum "$repo_root/deploy/Dockerfile.otel" | awk '{print $1}')"
   OTEL_EXPECTED_ACTIVE_IMAGE_ID=sha256:fixture-active
   OTEL_EXPECTED_TRACE_EXPORTERS=otlp_http/mlflow,otlp_http/laminar
+  OTEL_EXPECTED_TRACE_RECEIVERS=otlp
+  OTEL_EXPECTED_TRACE_RECEIVER_SERIES=otlp/http,otlp/grpc
   FAKE_LOG="$log_file"
   FAKE_STATE_DIR="$state_dir"
   FAKE_CONFIG="$collector_config"
@@ -307,10 +346,14 @@ grep -Fq -- "--env-file $env_file" "$log_file"
 grep -Fq 'no mutation performed' "$test_root/check.out"
 
 proof="$test_root/quiescence.json"
-new_stamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-cat >"$proof" <<JSON
+refresh_proof() {
+  local new_stamp
+  new_stamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  cat >"$proof" <<JSON
 {"schema":"otel-quiescence-approval-v1","approved":true,"project":"ai-agent-observability","service":"otel-collector","container":"ai-agent-observability-otel-collector","container_id":"fixture-container-id","approved_at_utc":"$new_stamp"}
 JSON
+}
+refresh_proof
 
 install_log="$test_root/install.log"
 : >"$install_log"
@@ -320,6 +363,7 @@ install_env=(
   OTEL_HEALTH_PROBE_INSTALL_APPROVED=true
   OTEL_QUIESCE_APPROVED=true
   OTEL_QUIESCE_PROOF="$proof"
+  OTEL_QUIESCE_MAX_AGE_SECONDS=3600
   OTEL_EXPECTED_BUILT_IMAGE_ID=sha256:fixture-built
   OTEL_BUILD_TIMEOUT_SECONDS=10
   OTEL_RECREATE_TIMEOUT_SECONDS=10
@@ -330,7 +374,54 @@ install_env=(
   OTEL_MAX_CAPTURE_BYTES=65536
 )
 
+run_expected_install_failure() {
+  local label="$1"
+  local expected="$2"
+  local status=0
+  local output_prefix="$test_root/negative-$label"
+  : >"$output_prefix.out"
+  : >"$output_prefix.err"
+  refresh_proof
+  if env "${install_env[@]}" FAKE_LOG="$output_prefix.log" PATH="$fake_bin:$PATH" \
+      "$installer" --install >"$output_prefix.out" 2>"$output_prefix.err"; then
+    printf 'installer unexpectedly accepted negative fixture: %s\n' "$label" >&2
+    exit 1
+  else
+    status=$?
+  fi
+  [[ "$status" != 0 ]] || exit 1
+  grep -Fq "$expected" "$output_prefix.err" || {
+    cat "$output_prefix.err" >&2
+    printf 'negative fixture did not report the expected guard: %s\n' "$label" >&2
+    exit 1
+  }
+  [[ ! -e "$state_dir/built" && ! -e "$state_dir/recreated" ]] || {
+    printf 'negative fixture mutated the service: %s\n' "$label" >&2
+    exit 1
+  }
+}
+
+for negative_mode in missing-exporter duplicate-exporter duplicate-receiver malformed; do
+  printf '%s\n' "$negative_mode" >"$metrics_mode_file"
+  run_expected_install_failure "$negative_mode" 'live Collector metrics did not prove pre-build quiescence'
+done
+printf '%s\n' normal >"$metrics_mode_file"
+
+if env "${common_env[@]}" FAKE_BAD_METRICS_BIND=yes PATH="$fake_bin:$PATH" \
+    "$installer" --check >"$test_root/bad-bind.out" 2>"$test_root/bad-bind.err"; then
+  printf '%s\n' 'installer accepted an unrelated loopback metrics binding' >&2
+  exit 1
+fi
+grep -Fq 'does not own the configured loopback metrics port' "$test_root/bad-bind.err"
+if env "${common_env[@]}" FAKE_BAD_HEALTH=yes PATH="$fake_bin:$PATH" \
+    "$installer" --check >"$test_root/bad-health.out" 2>"$test_root/bad-health.err"; then
+  printf '%s\n' 'installer accepted a healthcheck timing drift' >&2
+  exit 1
+fi
+grep -Fq 'healthcheck contract' "$test_root/bad-health.err"
+
 status=0
+refresh_proof
 if env "${install_env[@]}" FAKE_BUILD_FAIL=yes FAKE_LOG="$install_log" PATH="$fake_bin:$PATH" \
     "$installer" --install >"$test_root/install.out" 2>"$test_root/install.err"; then
   status=0
@@ -359,7 +450,33 @@ if grep -Fq 'rollback UNKNOWN' "$test_root/install.err"; then
 fi
 
 rm -f "$state_dir"/built "$state_dir"/retagged "$state_dir"/recreated \
-  "$state_dir"/rollback-recreated "$state_dir"/recreate-attempted "$state_dir"/id-changed
+  "$state_dir"/rollback-recreated "$state_dir"/recreate-attempted "$state_dir"/id-changed \
+  "$state_dir"/runtime-drift
+
+runtime_drift_log="$test_root/runtime-drift.log"
+: >"$runtime_drift_log"
+status=0
+refresh_proof
+if env "${install_env[@]}" FAKE_RUNTIME_DRIFT=yes FAKE_LOG="$runtime_drift_log" PATH="$fake_bin:$PATH" \
+    "$installer" --install >"$test_root/runtime-drift.out" 2>"$test_root/runtime-drift.err"; then
+  status=0
+else
+  status=$?
+fi
+[[ "$status" == 1 ]] || {
+  cat "$test_root/runtime-drift.err" >&2
+  printf 'expected post-build runtime drift to preserve status 1, got %s\n' "$status" >&2
+  exit 1
+}
+grep -Fq 'runtime contract changed during image build' "$test_root/runtime-drift.err"
+grep -Fq 'rollback verified' "$test_root/runtime-drift.err"
+if grep -Fq 'up -d --no-build --no-deps --force-recreate otel-collector' "$runtime_drift_log"; then
+  printf '%s\n' 'post-build runtime drift unnecessarily recreated the active Collector' >&2
+  exit 1
+fi
+rm -f "$state_dir"/built "$state_dir"/retagged "$state_dir"/recreated \
+  "$state_dir"/rollback-recreated "$state_dir"/recreate-attempted "$state_dir"/id-changed \
+  "$state_dir"/runtime-drift
 
 success_log="$test_root/success.log"
 : >"$success_log"
@@ -378,6 +495,7 @@ success_env=(
   OTEL_READY_TIMEOUT_SECONDS=10
   OTEL_MAX_CAPTURE_BYTES=65536
 )
+refresh_proof
 if ! env "${success_env[@]}" FAKE_LOG="$success_log" PATH="$fake_bin:$PATH" \
     "$installer" --install >"$test_root/success.out" 2>"$test_root/success.err"; then
   cat "$test_root/success.err" >&2
