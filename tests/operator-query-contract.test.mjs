@@ -252,7 +252,7 @@ test('the old substring scope is proven unsafe against real recorded-run spans',
       sql: legacySql,
       transport: simulateLaminar({ rows, observed: [] }),
     }),
-    /laminar_attribute_not_allowlisted:recorded\./,
+    { message: 'laminar_attribute_not_allowlisted' },
   );
 });
 
@@ -264,15 +264,15 @@ test('the response shape and allowlist fail closed on unknown fields', () => {
 
   assert.throws(
     () => projectLaminarRow(allowedRow({ private_prompt: 'PRIVATE_PROMPT_SENTINEL' })),
-    /laminar_row_unexpected_field:private_prompt/,
+    { message: 'laminar_row_unexpected_field' },
   );
   assert.throws(
     () => projectLaminarRow(allowedRow({ attributes: { 'sts2.private_prompt': 'PRIVATE_PROMPT_SENTINEL' } })),
-    /laminar_attribute_not_allowlisted:sts2\.private_prompt/,
+    { message: 'laminar_attribute_not_allowlisted' },
   );
   assert.throws(
     () => projectLaminarRow(allowedRow({ attributes: { 'random.attr': 'x' } })),
-    /laminar_attribute_not_allowlisted:random\.attr/,
+    { message: 'laminar_attribute_not_allowlisted' },
   );
   const projected = projectLaminarRow(allowedRow());
   assert.deepEqual(Object.keys(projected.attributes).sort(), ['sts2.episode_id', 'sts2.id_encoding', 'sts2.run_id', 'sts2.status'].sort());
@@ -357,6 +357,60 @@ test('the real fetch transport sends the URL authority as the Host header', asyn
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+for (const backend of ['laminar', 'mlflow']) {
+  for (const status of [301, 302, 303, 307, 308]) {
+    test(`${backend} real fetch refuses HTTP ${status} without contacting the redirect target`, async () => {
+      const requests = [];
+      const server = http.createServer((request, res) => {
+        requests.push(request.url);
+        request.resume();
+        request.on('end', () => {
+          if (request.url === '/redirect-target') {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ data: [], traces: [] }));
+          } else {
+            res.writeHead(status, { location: '/redirect-target' });
+            res.end();
+          }
+        });
+      });
+      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+      try {
+        const baseUrl = `http://127.0.0.1:${server.address().port}`;
+        await assert.rejects(backend === 'laminar'
+          ? queryLaminar({ baseUrl, token: OPERATOR_TOKEN, sql: buildLaminarSql(1) })
+          : queryMlflow({ baseUrl, experimentId: '0', maxResults: 1 }));
+        assert.deepEqual(requests, [backend === 'laminar' ? '/v1/sql/query' : '/api/3.0/mlflow/traces/search']);
+      } finally {
+        await new Promise((resolve) => server.close(resolve));
+      }
+    });
+  }
+}
+
+test('untrusted response keys never appear in diagnostics', () => {
+  // The lowercase sentinel would pass the CLI diagnostic character filter.
+  for (const key of ['private.secret', 'private\nsecret', 'x'.repeat(10000)]) {
+    assert.throws(() => projectLaminarRow(allowedRow({ [key]: 'value' })),
+      { message: 'laminar_row_unexpected_field' });
+    for (const attributes of [{ [key]: 'value' }, JSON.stringify({ [key]: 'value' })]) {
+      assert.throws(() => projectLaminarRow(allowedRow({ attributes })),
+        { message: 'laminar_attribute_not_allowlisted' });
+    }
+  }
+});
+
+test('both injected transports receive a fail-closed redirect policy', async () => {
+  const transport = async (_url, init) => {
+    assert.equal(init.redirect, 'error');
+    return response(302, null);
+  };
+  await assert.rejects(queryLaminar({ baseUrl: 'http://127.0.0.1:18000', token: OPERATOR_TOKEN,
+    sql: buildLaminarSql(1), transport }), { message: 'laminar_query_failed' });
+  await assert.rejects(queryMlflow({ baseUrl: 'http://127.0.0.1:15000', experimentId: '0',
+    maxResults: 1, transport }), { message: 'mlflow_query_failed' });
 });
 
 test('the operator token is read from a protected file, never argv', () => {

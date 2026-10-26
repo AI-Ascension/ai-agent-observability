@@ -15,8 +15,8 @@
 //   - projected evidence contains only allowlisted correlation/outcome fields.
 //
 // No live service, credential, or container engine is touched by the repository
-// test suite; tests inject a simulated transport, except for one loopback
-// self-test that pins the Host header the real fetch transport actually sends.
+// test suite; tests inject a simulated transport or use disposable loopback
+// servers to verify the real fetch transport's Host and redirect behavior.
 
 import { lstatSync, readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -216,7 +216,7 @@ function sanitizeAttributes(attributes) {
   if (!isPlainObject(parsed)) fail('laminar_attributes_not_object');
   const projected = {};
   for (const [key, value] of Object.entries(parsed)) {
-    if (!STS2_ATTRIBUTE_ALLOWLIST.includes(key)) fail(`laminar_attribute_not_allowlisted:${key}`);
+    if (!STS2_ATTRIBUTE_ALLOWLIST.includes(key)) fail('laminar_attribute_not_allowlisted');
     if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
       fail(`laminar_attribute_value_not_scalar:${key}`);
     }
@@ -245,7 +245,7 @@ function projectTimeField(value, code) {
 // producing incomplete evidence.
 export function projectLaminarRow(row) {
   for (const key of Object.keys(row)) {
-    if (!LAMINAR_SQL_COLUMNS.includes(key)) fail(`laminar_row_unexpected_field:${key}`);
+    if (!LAMINAR_SQL_COLUMNS.includes(key)) fail('laminar_row_unexpected_field');
   }
   if (!('trace_id' in row)) fail('laminar_row_missing_trace_id');
   const projected = {};
@@ -290,6 +290,7 @@ export async function queryLaminar({ baseUrl, token, sql, transport = fetch }) {
   if (typeof token !== 'string' || token.length === 0) fail('laminar_operator_token_required');
   const response = await transport(url, {
     method: 'POST',
+    redirect: 'error',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
     body: JSON.stringify({ query: sql, parameters: {} }),
   });
@@ -318,6 +319,7 @@ export async function queryMlflow({ baseUrl, hostHeader, experimentId, maxResult
   };
   const response = await transport(url, {
     method: 'POST',
+    redirect: 'error',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });

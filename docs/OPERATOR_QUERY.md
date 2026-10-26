@@ -43,6 +43,10 @@ semantics are unchanged:
 `deploy/laminar/operator-query.mjs` targets only the loopback listeners that
 `deploy/compose.yaml` already publishes. It refuses any non-loopback
 `BIND_ADDRESS`, listener hostname, userinfo component, or URL path.
+Both query transports reject HTTP redirects, including redirects to another
+loopback URL, so a response cannot retarget the validated request or replay its
+credential/body elsewhere. Unknown response field and attribute names are
+rejected with fixed diagnostic codes without reflecting those untrusted names.
 
 ### Laminar span query
 
