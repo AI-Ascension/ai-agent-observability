@@ -138,20 +138,35 @@ export class ImportStore {
         const revision = this.db.prepare('SELECT 1 FROM revisions WHERE run_id=? AND digest=?').get(id, semanticDigest);
         throw new Error(revision ? 'delivery_outbox_empty' : 'delivery_not_found');
       }
+      // A manifested revision must retain its entire original projection before any
+      // part can be claimed. Check under the same write transaction as the claim.
+      // Legacy rows have no manifest; preserve their historical delivery behavior.
+      const manifest = this.db.prepare(`SELECT part_count,body_digest FROM local_import_manifest
+        WHERE run_id=? AND digest=?`).get(id, semanticDigest);
+      if (manifest && (rows.length !== manifest.part_count ||
+        rows.some((row, index) => row.part !== index) ||
+        digest(JSON.stringify(rows.map(row => row.body))) !== manifest.body_digest))
+        throw new Error('delivery_projection_integrity_conflict');
       if (rows.some(row => row.endpoint && row.endpoint !== endpoint)) throw new Error('endpoint_conflict');
       if (rows.some(row => ['sending', 'unknown'].includes(row.state))) throw new Error('delivery_reconciliation_required');
       const row = rows.find(row => row.state === 'pending');
-      if (row) this.db.prepare("UPDATE outbox SET state='sending',endpoint=? WHERE run_id=? AND digest=? AND part=?")
-        .run(endpoint, id, semanticDigest, row.part);
+      const claimed = row ? this.db.prepare(`UPDATE outbox SET state='sending',endpoint=?
+        WHERE run_id=? AND digest=? AND part=? AND state='pending' RETURNING *`)
+        .get(endpoint, id, semanticDigest, row.part) : undefined;
+      if (row && !claimed) throw new Error('delivery_claim_conflict');
       this.db.exec('COMMIT');
-      return row;
+      return claimed;
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
   settle(row, state) {
     if (!['acknowledged', 'unknown'].includes(state)) throw new Error('invalid_delivery_state');
-    this.db.prepare("UPDATE outbox SET state=? WHERE run_id=? AND digest=? AND part=? AND state='sending'")
-      .run(state, row.run_id, row.digest, row.part);
+    // Settlement is an atomic compare-and-set against the exact claimed payload
+    // and collector binding. A missing or changed claim is not an acknowledgement.
+    const result = this.db.prepare(`UPDATE outbox SET state=? WHERE run_id=? AND digest=?
+      AND part=? AND state='sending' AND endpoint=? AND body=?`)
+      .run(state, row.run_id, row.digest, row.part, row.endpoint, row.body);
+    if (result.changes !== 1) throw new Error('delivery_settlement_conflict');
   }
 
   close() { this.db.close(); }
