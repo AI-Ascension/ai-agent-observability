@@ -43,6 +43,10 @@ export class ImportStore {
         part INTEGER NOT NULL, body TEXT NOT NULL, endpoint TEXT,
         state TEXT NOT NULL CHECK(state IN ('pending','sending','acknowledged','unknown')),
         PRIMARY KEY(run_id,digest,part),
+        FOREIGN KEY(run_id,digest) REFERENCES revisions(run_id,digest));
+      CREATE TABLE IF NOT EXISTS local_import_manifest (run_id TEXT NOT NULL, digest TEXT NOT NULL,
+        part_count INTEGER NOT NULL CHECK(part_count > 0), body_digest TEXT NOT NULL,
+        PRIMARY KEY(run_id,digest),
         FOREIGN KEY(run_id,digest) REFERENCES revisions(run_id,digest));`);
   }
 
@@ -85,7 +89,12 @@ export class ImportStore {
       const bodies = makeBodies(id, summary);
       if (!Array.isArray(bodies) || bodies.length === 0) throw new Error('empty_delivery_projection');
       const insert = this.db.prepare("INSERT INTO outbox VALUES (?,?,?,?,NULL,'pending')");
-      bodies.forEach((body, i) => insert.run(id, summary.semanticDigest, i, JSON.stringify(body)));
+      const encoded = bodies.map(body => JSON.stringify(body));
+      encoded.forEach((body, i) => insert.run(id, summary.semanticDigest, i, body));
+      // Commit the complete ordered projection with the revision and outbox.
+      // A duplicate must never re-create a missing manifest from damaged rows.
+      this.db.prepare('INSERT INTO local_import_manifest VALUES (?,?,?,?)')
+        .run(id, summary.semanticDigest, encoded.length, digest(JSON.stringify(encoded)));
       this.db.exec('COMMIT');
       return { disposition: previous ? 'revision_added' : 'imported', runId: id,
         semanticDigest: summary.semanticDigest };
@@ -97,6 +106,27 @@ export class ImportStore {
       .all(id).map(row => ({ ...JSON.parse(row.summary), delivery:
         this.db.prepare('SELECT part,state FROM outbox WHERE run_id=? AND digest=? ORDER BY part')
           .all(id, row.digest) }));
+  }
+
+  // Read a coherent local import witness without exposing delivery endpoints.
+  // Pending state alone does not prove that a row is unbound.
+  inspectLocalImport(id, semanticDigest) {
+    this.db.exec('BEGIN');
+    try {
+      const revisions = this.inspect(id);
+      const rows = this.db.prepare(`SELECT part,state,body,endpoint IS NULL AS unbound
+        FROM outbox WHERE run_id=? AND digest=? ORDER BY part`).all(id, semanticDigest);
+      // Older stores have no completeness witness. Never backfill on inspection.
+      const hasManifest = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_import_manifest'").get();
+      const manifest = hasManifest ? this.db.prepare(`SELECT part_count,body_digest FROM local_import_manifest
+        WHERE run_id=? AND digest=?`).get(id, semanticDigest) : undefined;
+      const localOnly = revisions.length === 1 && revisions[0].semanticDigest === semanticDigest &&
+        rows.length > 0 && rows.length === manifest?.part_count &&
+        digest(JSON.stringify(rows.map(row => row.body))) === manifest.body_digest &&
+        rows.every((row, index) => row.part === index && row.state === 'pending' && row.unbound === 1);
+      this.db.exec('COMMIT');
+      return { revisions, localOnly };
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
   claim(id, semanticDigest, endpoint) {
