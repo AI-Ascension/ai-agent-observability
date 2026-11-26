@@ -31,7 +31,9 @@ export async function deliver(store, runId, semanticDigest, target) {
         if (bytes > 16384) throw new Error('collector_response_limit');
         chunks.push(chunk);
       }
-      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      // Malformed UTF-8 must not become a successful JSON acknowledgement.
+      const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Buffer.concat(chunks));
+      const body = JSON.parse(text);
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('invalid_collector_response');
       const partial = body.partialSuccess;
       if (partial !== undefined && (!partial || typeof partial !== 'object' || Array.isArray(partial)
