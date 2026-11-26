@@ -149,6 +149,19 @@ export class ImportStore {
         throw new Error('delivery_projection_integrity_conflict');
       if (rows.some(row => row.endpoint && row.endpoint !== endpoint)) throw new Error('endpoint_conflict');
       if (rows.some(row => ['sending', 'unknown'].includes(row.state))) throw new Error('delivery_reconciliation_required');
+      // A successful claim/settlement can only leave an acknowledged prefix
+      // bound to this collector followed by an unbound pending suffix.
+      // Do not turn an inconsistent durable state into a fresh delivery or
+      // an already-acknowledged receipt. This also applies to legacy rows.
+      let pendingSeen = false;
+      for (const row of rows) {
+        if (row.state === 'pending') {
+          if (row.endpoint !== null) throw new Error('delivery_state_integrity_conflict');
+          pendingSeen = true;
+        } else if (row.state !== 'acknowledged' || pendingSeen || row.endpoint !== endpoint) {
+          throw new Error('delivery_state_integrity_conflict');
+        }
+      }
       const row = rows.find(row => row.state === 'pending');
       const claimed = row ? this.db.prepare(`UPDATE outbox SET state='sending',endpoint=?
         WHERE run_id=? AND digest=? AND part=? AND state='pending' RETURNING *`)
