@@ -43,6 +43,10 @@ export class ImportStore {
         part INTEGER NOT NULL, body TEXT NOT NULL, endpoint TEXT,
         state TEXT NOT NULL CHECK(state IN ('pending','sending','acknowledged','unknown')),
         PRIMARY KEY(run_id,digest,part),
+        FOREIGN KEY(run_id,digest) REFERENCES revisions(run_id,digest));
+      CREATE TABLE IF NOT EXISTS local_import_manifest (run_id TEXT NOT NULL, digest TEXT NOT NULL,
+        part_count INTEGER NOT NULL CHECK(part_count > 0), body_digest TEXT NOT NULL,
+        PRIMARY KEY(run_id,digest),
         FOREIGN KEY(run_id,digest) REFERENCES revisions(run_id,digest));`);
   }
 
@@ -85,7 +89,12 @@ export class ImportStore {
       const bodies = makeBodies(id, summary);
       if (!Array.isArray(bodies) || bodies.length === 0) throw new Error('empty_delivery_projection');
       const insert = this.db.prepare("INSERT INTO outbox VALUES (?,?,?,?,NULL,'pending')");
-      bodies.forEach((body, i) => insert.run(id, summary.semanticDigest, i, JSON.stringify(body)));
+      const encoded = bodies.map(body => JSON.stringify(body));
+      encoded.forEach((body, i) => insert.run(id, summary.semanticDigest, i, body));
+      // Commit the complete ordered projection with the revision and outbox.
+      // A duplicate must never re-create a missing manifest from damaged rows.
+      this.db.prepare('INSERT INTO local_import_manifest VALUES (?,?,?,?)')
+        .run(id, summary.semanticDigest, encoded.length, digest(JSON.stringify(encoded)));
       this.db.exec('COMMIT');
       return { disposition: previous ? 'revision_added' : 'imported', runId: id,
         semanticDigest: summary.semanticDigest };
@@ -99,6 +108,27 @@ export class ImportStore {
           .all(id, row.digest) }));
   }
 
+  // Read a coherent local import witness without exposing delivery endpoints.
+  // Pending state alone does not prove that a row is unbound.
+  inspectLocalImport(id, semanticDigest) {
+    this.db.exec('BEGIN');
+    try {
+      const revisions = this.inspect(id);
+      const rows = this.db.prepare(`SELECT part,state,body,endpoint IS NULL AS unbound
+        FROM outbox WHERE run_id=? AND digest=? ORDER BY part`).all(id, semanticDigest);
+      // Older stores have no completeness witness. Never backfill on inspection.
+      const hasManifest = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_import_manifest'").get();
+      const manifest = hasManifest ? this.db.prepare(`SELECT part_count,body_digest FROM local_import_manifest
+        WHERE run_id=? AND digest=?`).get(id, semanticDigest) : undefined;
+      const localOnly = revisions.length === 1 && revisions[0].semanticDigest === semanticDigest &&
+        rows.length > 0 && rows.length === manifest?.part_count &&
+        digest(JSON.stringify(rows.map(row => row.body))) === manifest.body_digest &&
+        rows.every((row, index) => row.part === index && row.state === 'pending' && row.unbound === 1);
+      this.db.exec('COMMIT');
+      return { revisions, localOnly };
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
   claim(id, semanticDigest, endpoint) {
     this.db.exec('BEGIN IMMEDIATE');
     try {
@@ -108,20 +138,48 @@ export class ImportStore {
         const revision = this.db.prepare('SELECT 1 FROM revisions WHERE run_id=? AND digest=?').get(id, semanticDigest);
         throw new Error(revision ? 'delivery_outbox_empty' : 'delivery_not_found');
       }
+      // A manifested revision must retain its entire original projection before any
+      // part can be claimed. Check under the same write transaction as the claim.
+      // Legacy rows have no manifest; preserve their historical delivery behavior.
+      const manifest = this.db.prepare(`SELECT part_count,body_digest FROM local_import_manifest
+        WHERE run_id=? AND digest=?`).get(id, semanticDigest);
+      if (manifest && (rows.length !== manifest.part_count ||
+        rows.some((row, index) => row.part !== index) ||
+        digest(JSON.stringify(rows.map(row => row.body))) !== manifest.body_digest))
+        throw new Error('delivery_projection_integrity_conflict');
       if (rows.some(row => row.endpoint && row.endpoint !== endpoint)) throw new Error('endpoint_conflict');
       if (rows.some(row => ['sending', 'unknown'].includes(row.state))) throw new Error('delivery_reconciliation_required');
+      // A successful claim/settlement can only leave an acknowledged prefix
+      // bound to this collector followed by an unbound pending suffix.
+      // Do not turn an inconsistent durable state into a fresh delivery or
+      // an already-acknowledged receipt. This also applies to legacy rows.
+      let pendingSeen = false;
+      for (const row of rows) {
+        if (row.state === 'pending') {
+          if (row.endpoint !== null) throw new Error('delivery_state_integrity_conflict');
+          pendingSeen = true;
+        } else if (row.state !== 'acknowledged' || pendingSeen || row.endpoint !== endpoint) {
+          throw new Error('delivery_state_integrity_conflict');
+        }
+      }
       const row = rows.find(row => row.state === 'pending');
-      if (row) this.db.prepare("UPDATE outbox SET state='sending',endpoint=? WHERE run_id=? AND digest=? AND part=?")
-        .run(endpoint, id, semanticDigest, row.part);
+      const claimed = row ? this.db.prepare(`UPDATE outbox SET state='sending',endpoint=?
+        WHERE run_id=? AND digest=? AND part=? AND state='pending' RETURNING *`)
+        .get(endpoint, id, semanticDigest, row.part) : undefined;
+      if (row && !claimed) throw new Error('delivery_claim_conflict');
       this.db.exec('COMMIT');
-      return row;
+      return claimed;
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
   settle(row, state) {
     if (!['acknowledged', 'unknown'].includes(state)) throw new Error('invalid_delivery_state');
-    this.db.prepare("UPDATE outbox SET state=? WHERE run_id=? AND digest=? AND part=? AND state='sending'")
-      .run(state, row.run_id, row.digest, row.part);
+    // Settlement is an atomic compare-and-set against the exact claimed payload
+    // and collector binding. A missing or changed claim is not an acknowledgement.
+    const result = this.db.prepare(`UPDATE outbox SET state=? WHERE run_id=? AND digest=?
+      AND part=? AND state='sending' AND endpoint=? AND body=?`)
+      .run(state, row.run_id, row.digest, row.part, row.endpoint, row.body);
+    if (result.changes !== 1) throw new Error('delivery_settlement_conflict');
   }
 
   close() { this.db.close(); }

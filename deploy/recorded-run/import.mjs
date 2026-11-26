@@ -1,17 +1,39 @@
 #!/usr/bin/env node
 import { pathToFileURL } from 'node:url';
-import { readBundle } from './bundle.mjs';
+import { readBundle, validateBundle } from './bundle.mjs';
+export { BundleInputError } from './bundle.mjs';
 import { ImportStore } from './store.mjs';
 import { project, otlpBodies } from './projection.mjs';
 import { collectorEndpoint, deliver } from './delivery.mjs';
 
+// Additive owner error type: distinguish failure after validation from a rejected
+// bundle without changing the existing CLI diagnostic message contract.
+export class ImportPersistenceError extends Error {
+  constructor(cause) {
+    super(cause instanceof Error ? cause.message : 'recorded_import_failed', { cause });
+    this.name = 'ImportPersistenceError';
+    this.code = 'recorded_import_persistence_failed';
+  }
+}
+
 export function importBundle(path, database) {
+  return stageValidated(readBundle(path), database);
+}
+
+// The matrix hands the owner the exact already-pinned bytes; no second path read.
+export function importBundleBytes(bytes, database) {
+  return stageValidated(validateBundle(bytes), database);
+}
+
+function stageValidated(bundle, database) {
   // Complete validation and projection precede any database creation or writes.
-  const summary = project(readBundle(path));
-  const store = new ImportStore(database);
-  try { return { ...store.stage(summary, otlpBodies), counts: summary.counts,
-    evidence: summary.evidence, contractSchemaDigest: summary.contractSchemaDigest, wireVersion: summary.wireVersion }; }
-  finally { store.close(); }
+  const summary = project(bundle);
+  try {
+    const store = new ImportStore(database);
+    try { return { ...store.stage(summary, otlpBodies), counts: summary.counts,
+      evidence: summary.evidence, contractSchemaDigest: summary.contractSchemaDigest, wireVersion: summary.wireVersion }; }
+    finally { store.close(); }
+  } catch (error) { throw new ImportPersistenceError(error); }
 }
 
 export async function main(args) {

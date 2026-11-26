@@ -211,11 +211,23 @@ export function validateBundle(bytes) {
   return { manifest, omissions, events, accounting };
 }
 
-export function readBundle(path) {
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+// Filesystem acquisition is not a semantic verdict on a bundle's bytes.
+export class BundleInputError extends Error {
+  constructor(cause) {
+    super(cause instanceof Error ? cause.message : 'bundle_input_failed', { cause });
+    this.name = 'BundleInputError';
+    this.code = 'recorded_bundle_input_failed';
+  }
+}
+
+function acquireBundleBytes(path) {
+  // A named pipe must never block the recorded-run consumer before fstat.
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const before = fstatSync(fd);
-    check(before.isFile() && before.size <= LIMITS.archive, 'archive_file_limit');
+    if (!before.isFile()) throw new Error('bundle_input_not_regular');
+    // Preserve the existing semantic archive-size policy, outside I/O wrapping.
+    if (before.size > LIMITS.archive) return null;
     const bytes = Buffer.alloc(before.size);
     let offset = 0;
     while (offset < bytes.length) {
@@ -224,6 +236,14 @@ export function readBundle(path) {
     }
     const after = fstatSync(fd);
     check(before.size === after.size && before.mtimeMs === after.mtimeMs, 'source_file_changed');
-    return validateBundle(bytes);
+    return bytes;
   } finally { closeSync(fd); }
+}
+
+export function readBundle(path) {
+  let bytes;
+  try { bytes = acquireBundleBytes(path); }
+  catch (error) { throw new BundleInputError(error); }
+  check(bytes !== null, 'archive_file_limit');
+  return validateBundle(bytes);
 }
